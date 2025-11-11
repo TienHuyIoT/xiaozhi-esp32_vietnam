@@ -34,6 +34,7 @@ set(SOURCES "audio/audio_codec.cc"
             "settings.cc"
             "device_state_event.cc"
             "assets.cc"
+            "alarm_manager.cc"  # ← THÊM DÒNG NÀY @Alarm
             "main.cc"
             )
 

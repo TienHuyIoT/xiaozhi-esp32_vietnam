@@ -15,7 +15,7 @@
 #include "ota.h"
 #include "audio_service.h"
 #include "device_state_event.h"
-
+#include "alarm_manager.h"  // ← THÊM DÒNG NÀY @Alarm
 
 #define MAIN_EVENT_SCHEDULE (1 << 0)
 #define MAIN_EVENT_SEND_AUDIO (1 << 1)

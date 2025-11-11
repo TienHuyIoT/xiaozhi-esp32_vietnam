@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#include "alarm_manager.h"  // ← THÊM DÒNG NÀY @Alarm
 
 #define TAG "MCP"
 
@@ -121,6 +122,69 @@ void McpServer::AddCommonTools() {
     }
 #endif
 
+    // ===== ALARM/REMINDER TOOLS =====
+    // ← THÊM TỪ ĐÂY ↓ @Alarm
+    AddTool("self.alarm.set",
+        "Đặt báo thức hoặc nhắc nhở cho người dùng.\n"
+        "Tham số:\n"
+        "  `hour`: Giờ (0-23, bắt buộc)\n"
+        "  `minute`: Phút (0-59, bắt buộc)\n"
+        "  `message`: Nội dung nhắc nhở (tùy chọn)\n"
+        "  `repeated`: Lặp lại hàng ngày (true/false, mặc định false)\n"
+        "Trả về:\n"
+        "  Trạng thái đặt báo thức.",
+        PropertyList({
+            Property("hour", kPropertyTypeInteger, 0, 23),
+            Property("minute", kPropertyTypeInteger, 0, 59),
+            Property("message", kPropertyTypeString, "Báo thức"),
+            Property("repeated", kPropertyTypeBoolean, false)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_mgr = AlarmManager::getInstance();
+            
+            uint8_t hour = static_cast<uint8_t>(properties["hour"].value<int>());
+            uint8_t minute = static_cast<uint8_t>(properties["minute"].value<int>());
+            bool repeated = properties["repeated"].value<bool>();
+            
+            AlarmManager::Alarm new_alarm;
+            new_alarm.hour = hour;
+            new_alarm.minute = minute;
+            new_alarm.message = "";
+            new_alarm.enabled = true;
+            new_alarm.repeated = repeated;
+            
+            alarm_mgr.addAlarm(new_alarm);
+
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), 
+                     "{\"success\": true, \"message\": \"Đã đặt báo thức lúc %02d:%02d\"}",
+                     hour, minute);
+            
+            ESP_LOGI("MCP", "Set alarm: %02d:%02d (repeated: %d)", 
+                     hour, minute, repeated);
+            
+            return std::string(buffer);
+        });
+
+    AddTool("self.alarm.list",
+        "Xem danh sách tất cả báo thức đã đặt, sắp xếp theo thời gian gần nhất.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_mgr = AlarmManager::getInstance();
+            std::string info = alarm_mgr.getAllAlarmsInfo();
+            return "{\"success\": true, \"message\": \"" + info + "\"}";
+        });
+
+    AddTool("self.alarm.clear",
+        "Xóa tất cả báo thức.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_mgr = AlarmManager::getInstance();
+            alarm_mgr.clearAll();
+            return "{\"success\": true, \"message\": \"Đã xóa tất cả báo thức\"}";
+        });
+    // ← KẾT THÚC THÊM
+    
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());
 }

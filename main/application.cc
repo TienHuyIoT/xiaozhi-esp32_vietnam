@@ -360,6 +360,12 @@ void Application::Start() {
     audio_service_.Initialize(codec);
     audio_service_.Start();
 
+    // ← THÊM 3 DÒNG NÀY ↓ @Alarm
+    /* Initialize Alarm Manager */
+    AlarmManager::getInstance().init();
+    ESP_LOGI(TAG, "Alarm Manager initialized");
+    // ← KẾT THÚC THÊM    
+    
     AudioServiceCallbacks callbacks;
     callbacks.on_send_queue_available = [this]() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
@@ -601,7 +607,10 @@ void Application::MainEventLoop() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
-        
+
+            // ← THÊM DÒNG NÀY ↓ @Alarm
+            AlarmManager::getInstance().checkAlarms();  // Kiểm tra alarm mỗi giây            
+            
             // Print the debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
                 // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));

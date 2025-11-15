@@ -233,19 +233,7 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     if (offset_x != 0 || offset_y != 0) {
         lv_display_set_offset(display_, offset_x, offset_y);
     }
-	
-    // Initialize FFT Display with LCD adapter
-#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
-    fft_adapter_ = std::make_unique<LCDDisplayAdapter>(width_, height_);
-    if (fft_adapter_->initialize()) {
-        fft_display_ = std::make_unique<FFTDisplay>(std::move(fft_adapter_));
-        ESP_LOGI(TAG, "FFT Display initialized successfully for LCD");
-    } else {
-        ESP_LOGE(TAG, "Failed to initialize FFT Display adapter for LCD");
-    }
-#else
-    ESP_LOGW(TAG, "LVGL not enabled, FFT Display not available for LCD");
-#endif
+
     SetupUI();
 }
 
@@ -1234,6 +1222,19 @@ void LcdDisplay::clearScreen() {
 
 void LcdDisplay::start() {
     ESP_LOGI(TAG, "Starting LcdDisplay with FFT visualization");
+
+        // Initialize FFT Display with LCD adapter
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+    fft_adapter_ = std::make_unique<LCDDisplayAdapter>(width_, height_);
+    if (fft_adapter_->initialize()) {
+        fft_display_ = new FFTDisplay(std::move(fft_adapter_));
+        ESP_LOGI(TAG, "FFT Display initialized successfully for LCD");
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize FFT Display adapter for LCD");
+    }
+#else
+    ESP_LOGW(TAG, "LVGL not enabled, FFT Display not available for LCD");
+#endif
     
     if (fft_display_) {
         fft_display_->start();
@@ -1248,6 +1249,8 @@ void LcdDisplay::stopFft() {
     
     if (fft_display_) {
         fft_display_->stop();
+        delete fft_display_;
+        fft_display_ = nullptr;
         ESP_LOGI(TAG, "FFT Display stopped successfully");
     }
     

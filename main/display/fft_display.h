@@ -18,27 +18,6 @@
 #define FFT_SIZE 512
 #define FFT_BARS_COUNT 40
 
-// Forward declaration
-class DisplayAdapter;
-
-// RAII-style lock guard for DisplayAdapter operations
-class DisplayAdapterLockGuard {
-public:
-    explicit DisplayAdapterLockGuard(DisplayAdapter* adapter);
-    ~DisplayAdapterLockGuard();
-    
-    // Non-copyable
-    DisplayAdapterLockGuard(const DisplayAdapterLockGuard&) = delete;
-    DisplayAdapterLockGuard& operator=(const DisplayAdapterLockGuard&) = delete;
-    
-    // Check if lock was successful
-    bool isLocked() const { return locked_; }
-
-private:
-    DisplayAdapter* adapter_;
-    bool locked_;
-};
-
 // FFT display effect types
 enum class FFTEffect {
     SPECTRUM_BARS,      // Traditional spectrum bars
@@ -74,6 +53,10 @@ public:
     virtual int getWidth() const = 0;
     virtual int getHeight() const = 0;
     virtual bool isColor() const = 0;  // true for color displays, false for monochrome
+
+    friend class DisplayAdapterLockGuard;
+    virtual bool Lock(int timeout_ms = 0) = 0;
+    virtual void Unlock() = 0;
 };
 
 class FFTDisplay {
@@ -165,6 +148,9 @@ private:
     uint16_t* canvas_buffer_;
     int width_;
     int height_;
+
+    virtual bool Lock(int timeout_ms = 0) override;
+    virtual void Unlock() override;
     
 public:
     LCDDisplayAdapter(int width, int height);
@@ -224,6 +210,22 @@ public:
     // OLED-specific methods
     uint8_t* getFramebuffer() const { return framebuffer_; }
     void sendFramebufferToDisplay();  // To be implemented by specific OLED driver
+};
+
+// RAII-style lock guard for DisplayAdapter operations
+class DisplayAdapterLockGuard {
+public:
+    DisplayAdapterLockGuard(DisplayAdapter *adapter) : adapter_(adapter) {
+        if (!adapter_->Lock(30000)) {
+            ESP_LOGE("Display", "Failed to lock display");
+        }
+    }
+    ~DisplayAdapterLockGuard() {
+        adapter_->Unlock();
+    }
+
+private:
+    DisplayAdapter *adapter_;
 };
 
 #endif // FFT_DISPLAY_H

@@ -31,7 +31,7 @@ private:
     // FFT Display integration
     std::unique_ptr<FFTDisplay> fft_display_;
 #if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
-    std::unique_ptr<OLEDDisplayAdapter> fft_adapter_;  // Using LCD adapter for LVGL-based OLED
+    std::unique_ptr<LCDDisplayAdapter> fft_adapter_;  // Using LCD adapter for LVGL-based OLED
 #endif
 
     virtual bool Lock(int timeout_ms = 0) override;

@@ -3,6 +3,7 @@
 
 #include "lvgl_display.h"
 #include "gif/lvgl_gif.h"
+#include "fft_display.h"
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -10,6 +11,12 @@
 
 #include <atomic>
 #include <memory>
+
+// Forward declarations
+class FFTDisplay;
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+class LCDDisplayAdapter;
+#endif
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
@@ -50,48 +57,14 @@ protected:
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
-    // FFT drawing methods
-    void readAudioData();
-
+    // FFT Display integration
+    std::unique_ptr<FFTDisplay> fft_display_;
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+    std::unique_ptr<LCDDisplayAdapter> fft_adapter_;
+#endif
+    
     virtual void clearScreen() override;
     virtual void stopFft() override;  // Stop FFT display
-    
-    // Periodic task methods
-    void periodicUpdateTask();
-    static void periodicUpdateTaskWrapper(void* arg);
-    
-    // LVGL variables
-    lv_obj_t* canvas_ = nullptr;
-    uint16_t* canvas_buffer_ = nullptr;
-    void create_canvas();
-    uint16_t get_bar_color(int x_pos);
-    void draw_spectrum(float *power_spectrum, int fft_size);
-    void draw_bar(int x, int y, int bar_width, int bar_height, uint16_t color, int bar_index);
-    void draw_block(int x, int y, int block_x_size, int block_y_size, uint16_t color, int bar_index);
-    
-    int canvas_width_;
-    int canvas_height_;
-   
-    int16_t* final_pcm_data_fft = nullptr;
-    int16_t* audio_data = nullptr;
-    int16_t* frame_audio_data = nullptr;
-    uint32_t last_fft_update = 0;
-    bool fft_data_ready = false;
-    float* spectrum_data = nullptr;
-
-    // FFT related variables
-    int audio_display_last_update = 0;
-    std::atomic<bool> fft_task_should_stop = false;  // FFT task stop flag
-    TaskHandle_t fft_task_handle = nullptr;          // FFT task handle
-
-    float* fft_real;
-    float* fft_imag;
-    float* hanning_window_float;
-    void compute(float* real, float* imag, int n, bool forward);
-    
-    // Add missing method declarations
-    void drawSpectrumIfReady();
-    void MyUI();
 
 protected:
     // Add protected constructor

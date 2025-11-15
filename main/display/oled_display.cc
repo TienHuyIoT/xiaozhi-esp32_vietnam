@@ -76,6 +76,19 @@ OledDisplay::OledDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handl
         return;
     }
 
+    // Initialize FFT Display with LCD adapter (LVGL-based OLED)
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+    fft_adapter_ = std::make_unique<LCDDisplayAdapter>(width_, height_);
+    if (fft_adapter_->initialize()) {
+        fft_display_ = std::make_unique<FFTDisplay>(std::move(fft_adapter_));
+        ESP_LOGI(TAG, "FFT Display initialized successfully for OLED");
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize FFT Display adapter for OLED");
+    }
+#else
+    ESP_LOGW(TAG, "LVGL not enabled, FFT Display not available for OLED");
+#endif
+
     if (height_ == 64) {
         SetupUI_128x64();
     } else {
@@ -372,5 +385,51 @@ void OledDisplay::SetMusicInfo(const char* song_name) {
         lv_label_set_text(chat_message_label_, music_text.c_str());
     } else {
         lv_label_set_text(chat_message_label_, "");
+    }
+}
+
+// FFT Display methods implementation
+void OledDisplay::start() {
+    ESP_LOGI(TAG, "Starting OLED Display with FFT visualization");
+    
+    if (fft_display_) {
+        fft_display_->start();
+        ESP_LOGI(TAG, "FFT Display started successfully for OLED");
+    } else {
+        ESP_LOGW(TAG, "FFT Display not available for OLED");
+    }
+}
+
+void OledDisplay::clearScreen() {
+    if (fft_display_) {
+        fft_display_->clearDisplay();
+    }
+}
+
+void OledDisplay::stopFft() {
+    ESP_LOGI(TAG, "Stopping FFT display for OLED");
+    
+    if (fft_display_) {
+        fft_display_->stop();
+        ESP_LOGI(TAG, "FFT Display stopped successfully for OLED");
+    }
+}
+
+int16_t* OledDisplay::createAudioDataBuffer(size_t sample_count) {
+    if (fft_display_) {
+        return fft_display_->createAudioDataBuffer(sample_count);
+    }
+    return nullptr;
+}
+
+void OledDisplay::updateAudioDataBuffer(int16_t* data, size_t sample_count) {
+    if (fft_display_) {
+        fft_display_->updateAudioDataBuffer(data, sample_count);
+    }
+}
+
+void OledDisplay::releaseAudioDataBuffer(int16_t* buffer) {
+    if (fft_display_) {
+        fft_display_->releaseAudioDataBuffer(buffer);
     }
 }

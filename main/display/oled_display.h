@@ -2,9 +2,16 @@
 #define OLED_DISPLAY_H
 
 #include "lvgl_display.h"
+#include "fft_display.h"
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
+
+// Forward declarations
+class FFTDisplay;
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+class OLEDDisplayAdapter;
+#endif
 
 
 class OledDisplay : public LvglDisplay {
@@ -21,6 +28,12 @@ private:
     lv_obj_t *emotion_label_ = nullptr;
     lv_obj_t* chat_message_label_ = nullptr;
 
+    // FFT Display integration
+    std::unique_ptr<FFTDisplay> fft_display_;
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+    std::unique_ptr<OLEDDisplayAdapter> fft_adapter_;  // Using LCD adapter for LVGL-based OLED
+#endif
+
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
@@ -35,6 +48,14 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetTheme(Theme* theme) override;
+    
+    // FFT Display methods
+    virtual void start() override;
+    virtual void clearScreen() override;
+    virtual void stopFft() override;
+    virtual void updateAudioDataBuffer(int16_t* data, size_t sample_count) override;
+    virtual int16_t* createAudioDataBuffer(size_t sample_count) override;
+    virtual void releaseAudioDataBuffer(int16_t* buffer = nullptr) override;
 };
 
 #endif // OLED_DISPLAY_H

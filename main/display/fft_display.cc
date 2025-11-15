@@ -9,54 +9,6 @@
 
 #define TAG "FFTDisplay"
 
-// DisplayAdapterLockGuard Implementation
-DisplayAdapterLockGuard::DisplayAdapterLockGuard(DisplayAdapter* adapter) 
-    : adapter_(adapter), locked_(false) {
-    
-    if (!adapter_) {
-        ESP_LOGE(TAG, "DisplayAdapter is null in DisplayAdapterLockGuard");
-        return;
-    }
-    
-    // Check adapter type and apply appropriate locking
-#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
-    auto lcd_adapter = dynamic_cast<LCDDisplayAdapter*>(adapter_);
-    if (lcd_adapter) {
-        // LCD adapter uses LVGL locking
-        locked_ = lvgl_port_lock(30000);
-        if (!locked_) {
-            ESP_LOGE(TAG, "Failed to lock LVGL port for LCD adapter");
-        }
-        return;
-    }
-#endif
-    
-    auto oled_adapter = dynamic_cast<OLEDDisplayAdapter*>(adapter_);
-    if (oled_adapter) {
-        // OLED adapter doesn't need locking (single-threaded framebuffer access)
-        locked_ = true;
-        return;
-    }
-    
-    // Unknown adapter type, assume no locking needed
-    locked_ = true;
-    ESP_LOGW(TAG, "Unknown adapter type, proceeding without locking");
-}
-
-DisplayAdapterLockGuard::~DisplayAdapterLockGuard() {
-    if (!locked_ || !adapter_) return;
-    
-#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
-    auto lcd_adapter = dynamic_cast<LCDDisplayAdapter*>(adapter_);
-    if (lcd_adapter) {
-        lvgl_port_unlock();
-        return;
-    }
-#endif
-    
-    // OLED and other adapters don't need unlock
-}
-
 FFTDisplay::FFTDisplay(std::unique_ptr<DisplayAdapter> adapter)
     : adapter_(std::move(adapter))
     , current_effect_(FFTEffect::SPECTRUM_BARS)
@@ -185,7 +137,7 @@ bool FFTDisplay::start() {
         "fft_display_task",
         8192,  // Stack size
         this,
-        5,     // Priority
+        1,     // Priority
         &fft_task_handle_
     );
     
@@ -217,6 +169,7 @@ void FFTDisplay::stop() {
     
     // Clear display
     if (adapter_) {
+        DisplayAdapterLockGuard lock(adapter_.get());
         adapter_->clearDisplay();
         adapter_->updateDisplay();
     }
@@ -281,9 +234,11 @@ void FFTDisplay::fftTask() {
     
     while (!fft_task_should_stop_.load()) {
         if (fft_data_ready_) {
+            fft_data_ready_ = false;
             processAudioData();
             updateSpectrum();
             
+            DisplayAdapterLockGuard lock(adapter_.get());
             // Render based on current effect
             switch (current_effect_) {
                 case FFTEffect::SPECTRUM_BARS:
@@ -299,7 +254,6 @@ void FFTDisplay::fftTask() {
                     renderWaterfall();
                     break;
             }
-            // DisplayLockGuard lock(this);
             adapter_->updateDisplay();
         }
         
@@ -571,6 +525,14 @@ LCDDisplayAdapter::~LCDDisplayAdapter() {
     }
 }
 
+bool LCDDisplayAdapter::Lock(int timeout_ms) {
+    return lvgl_port_lock(timeout_ms);
+}
+
+void LCDDisplayAdapter::Unlock() {
+    lvgl_port_unlock();
+}
+
 bool LCDDisplayAdapter::initialize() {
     size_t buffer_size = width_ * height_ * sizeof(uint16_t);
     canvas_buffer_ = (uint16_t*)heap_caps_malloc(buffer_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
@@ -590,9 +552,6 @@ bool LCDDisplayAdapter::initialize() {
 void LCDDisplayAdapter::drawPixel(int x, int y, uint16_t color) {
     if (!canvas_ || x < 0 || x >= width_ || y < 0 || y >= height_) return;
     
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
     lv_color_t lv_color = lv_color_make(
         (color >> 11) & 0x1F,
         (color >> 5) & 0x3F,  
@@ -604,9 +563,6 @@ void LCDDisplayAdapter::drawPixel(int x, int y, uint16_t color) {
 
 void LCDDisplayAdapter::drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
     if (!canvas_) return;
-    
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
     
     lv_color_t lv_color = lv_color_make(
         (color >> 11) & 0x1F,
@@ -632,9 +588,6 @@ void LCDDisplayAdapter::drawLine(int x0, int y0, int x1, int y1, uint16_t color)
 
 void LCDDisplayAdapter::drawRect(int x, int y, int width, int height, uint16_t color, bool filled) {
     if (!canvas_) return;
-    
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
     
     lv_color_t lv_color = lv_color_make(
         (color >> 11) & 0x1F,
@@ -671,9 +624,6 @@ void LCDDisplayAdapter::drawRect(int x, int y, int width, int height, uint16_t c
 void LCDDisplayAdapter::drawCircle(int x, int y, int radius, uint16_t color, bool filled) {
     if (!canvas_) return;
     
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
     lv_color_t lv_color = lv_color_make(
         (color >> 11) & 0x1F,
         (color >> 5) & 0x3F,
@@ -708,17 +658,11 @@ void LCDDisplayAdapter::drawCircle(int x, int y, int radius, uint16_t color, boo
 void LCDDisplayAdapter::clearDisplay() {
     if (!canvas_) return;
     
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
     lv_canvas_fill_bg(canvas_, lv_color_black(), LV_OPA_COVER);
 }
 
 void LCDDisplayAdapter::updateDisplay() {
     if (!canvas_) return;
-    
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
     
     // LVGL handles the display update automatically
     lv_area_t refresh_area;
@@ -732,10 +676,7 @@ void LCDDisplayAdapter::updateDisplay() {
 
 void LCDDisplayAdapter::drawBars(const int* x_positions, const int* heights, const uint16_t* colors, int count, int bar_width, int base_y) {
     if (!canvas_ || !x_positions || !heights || !colors || count <= 0) return;
-    
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
+  
     // Use single layer for all bars for better performance
     lv_layer_t layer;
     lv_canvas_init_layer(canvas_, &layer);
@@ -817,16 +758,12 @@ bool OLEDDisplayAdapter::getPixelFromFramebuffer(int x, int y) const {
 }
 
 void OLEDDisplayAdapter::drawPixel(int x, int y, uint16_t color) {
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
+
     setPixelInFramebuffer(x, y, color != 0);
 }
 
 void OLEDDisplayAdapter::drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
+
     // Bresenham's line algorithm
     bool steep = abs(y1 - y0) > abs(x1 - x0);
     
@@ -862,9 +799,7 @@ void OLEDDisplayAdapter::drawLine(int x0, int y0, int x1, int y1, uint16_t color
 }
 
 void OLEDDisplayAdapter::drawRect(int x, int y, int width, int height, uint16_t color, bool filled) {
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
+
     if (filled) {
         for (int i = 0; i < height; i++) {
             for (int j = 0; j < width; j++) {
@@ -880,9 +815,7 @@ void OLEDDisplayAdapter::drawRect(int x, int y, int width, int height, uint16_t 
 }
 
 void OLEDDisplayAdapter::drawCircle(int x, int y, int radius, uint16_t color, bool filled) {
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
+
     // Midpoint circle algorithm
     int f = 1 - radius;
     int ddf_x = 1;
@@ -929,18 +862,14 @@ void OLEDDisplayAdapter::drawCircle(int x, int y, int radius, uint16_t color, bo
 }
 
 void OLEDDisplayAdapter::clearDisplay() {
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
+
     if (framebuffer_) {
         memset(framebuffer_, 0, (width_ * height_) / 8);
     }
 }
 
 void OLEDDisplayAdapter::updateDisplay() {
-    DisplayAdapterLockGuard lock(this);
-    if (!lock.isLocked()) return;
-    
+
     sendFramebufferToDisplay();
 }
 

@@ -58,7 +58,7 @@ protected:
     virtual void Unlock() override;
 
     // FFT Display integration
-    std::unique_ptr<FFTDisplay> fft_display_;
+    FFTDisplay* fft_display_;
 #if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
     std::unique_ptr<LCDDisplayAdapter> fft_adapter_;
 #endif

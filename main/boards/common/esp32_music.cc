@@ -291,8 +291,7 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     current_song_name_ = song_name;
     
     // Step 1: Request the stream_pcm API to retrieve audio information
-    // std::string base_url = "http://www.xiaozhishop.xyz:5005";
-    std::string base_url = "http://103.143.207.89:5005";
+    std::string base_url = "http://www.xiaozhishop.xyz:5005";
     std::string full_url = base_url + "/stream_pcm?song=" + url_encode(song_name) + "&artist=" + url_encode(artist_name);
     
     ESP_LOGI(TAG, "Request URL: %s", full_url.c_str());

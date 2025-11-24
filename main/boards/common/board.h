@@ -31,6 +31,8 @@ protected:
     // Software-generated unique device identifier
     std::string uuid_;
 
+    Music* music_ = nullptr;
+
 public:
     static Board& GetInstance() {
         static Board* instance = static_cast<Board*>(create_board());

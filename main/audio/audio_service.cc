@@ -110,11 +110,11 @@ void AudioService::Start() {
 #endif
 
     /* Start the opus codec task */
-    xTaskCreate([](void* arg) {
-        AudioService* audio_service = (AudioService*)arg;
-        audio_service->OpusCodecTask();
-        vTaskDelete(NULL);
-    }, "opus_codec", 2048 * 13, this, 2, &opus_codec_task_handle_);
+    // xTaskCreate([](void* arg) {
+    //     AudioService* audio_service = (AudioService*)arg;
+    //     audio_service->OpusCodecTask();
+    //     vTaskDelete(NULL);
+    // }, "opus_codec", 2048 * 13, this, 2, &opus_codec_task_handle_);
 }
 
 void AudioService::Stop() {

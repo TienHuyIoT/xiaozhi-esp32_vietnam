@@ -28,6 +28,8 @@
 #define MEM_MALLOC_METHOD MALLOC_CAP_SPIRAM
 #endif
 
+#define AUDIO_STREAM_BUFFER_SIZE  (6 * 1024)  // 6KB audio stream buffer size
+
 #define TAG "Esp32Music"
 
 // std::string base_url = "http://www.xiaozhishop.xyz:5005";
@@ -177,12 +179,12 @@ static std::string buildUrlWithParams(const std::string& base_url, const std::st
 Esp32Music::Esp32Music() : last_downloaded_data_(), current_music_url_(), current_song_name_(),
                          song_name_displayed_(false), current_lyric_url_(), lyrics_(), 
                          current_lyric_index_(-1), lyric_thread_(), is_lyric_running_(false),
-                         display_mode_(DISPLAY_MODE_SPECTRUM), is_playing_(false), is_downloading_(false), 
+                         display_mode_(DISPLAY_MODE_LYRICS), is_playing_(false), is_downloading_(false), 
                          play_thread_(), download_thread_(), audio_buffer_(), buffer_mutex_(), 
                          buffer_cv_(), buffer_size_(0), mp3_decoder_(nullptr), mp3_frame_info_(), 
                          mp3_decoder_initialized_(false) {
     ESP_LOGI(TAG, "Music player initialized with default spectrum display mode");
-    InitializeMp3Decoder();
+    // InitializeMp3Decoder();
 }
 
 Esp32Music::~Esp32Music() {
@@ -482,7 +484,7 @@ bool Esp32Music::StartStreaming(const std::string& music_url) {
     
     // Configure thread stack size to avoid stack overflow
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
-    cfg.stack_size = 1024 * 4;  // 4KB stack size
+    cfg.stack_size = 1024 * 3;  // 3KB stack size
     cfg.prio = 5;           // Medium priority
     cfg.thread_name = "audio_stream";
     esp_pthread_set_cfg(&cfg);
@@ -780,7 +782,7 @@ void Esp32Music::PlayAudioStream() {
     uint8_t* read_ptr = nullptr;
     
     // Allocate MP3 input buffer
-    mp3_input_buffer = (uint8_t*)heap_caps_malloc(8192, MEM_MALLOC_METHOD);
+    mp3_input_buffer = (uint8_t*)heap_caps_malloc(AUDIO_STREAM_BUFFER_SIZE, MEM_MALLOC_METHOD);
     if (!mp3_input_buffer) {
         ESP_LOGE(TAG, "Failed to allocate MP3 input buffer");
         is_playing_ = false;
@@ -882,7 +884,7 @@ void Esp32Music::PlayAudioStream() {
                 }
                 
                 // Check buffer space
-                size_t space_available = 8192 - bytes_left;
+                size_t space_available = AUDIO_STREAM_BUFFER_SIZE - bytes_left;
                 size_t copy_size = std::min(chunk.size, space_available);
                 
                 // Copy new data

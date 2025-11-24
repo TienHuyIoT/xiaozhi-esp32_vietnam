@@ -9,6 +9,7 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
+#include "esp32_music.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -380,7 +381,7 @@ void Application::Start() {
     xTaskCreate([](void* arg) {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 2048 * 4, this, 3, &main_event_loop_task_handle_);
+    }, "main_event_loop", 1024 * 4, this, 3, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -390,6 +391,15 @@ void Application::Start() {
 
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);
+
+    auto music = static_cast<Esp32Music*>(board.GetMusic());
+    music->InitializeMp3Decoder();
+    if (!music->Download("Con Mua Bang Gia", "Bang Kieu")) {
+        ESP_LOGE(TAG, "Failed to download music: %s - %s", "Bang Kieu", "Con Mua Bang Gia");
+    }
+
+    SetDeviceState(kDeviceStateIdle);
+    return;
 
     // Check for new assets version
     CheckAssetsVersion();
@@ -692,12 +702,12 @@ void Application::SetDeviceState(DeviceState state) {
                     STATE_STRINGS[previous_state], STATE_STRINGS[state]);
             music->StopStreaming();
         }
-        auto radio = board.GetRadio();
-        if (radio) {
-            ESP_LOGI(TAG, "Stopping radio streaming due to state change: %s -> %s", 
-                    STATE_STRINGS[previous_state], STATE_STRINGS[state]);
-            radio->Stop();
-        }
+        // auto radio = board.GetRadio();
+        // if (radio) {
+        //     ESP_LOGI(TAG, "Stopping radio streaming due to state change: %s -> %s", 
+        //             STATE_STRINGS[previous_state], STATE_STRINGS[state]);
+        //     radio->Stop();
+        // }
         display->ClearQRCode();
 
     }																	   

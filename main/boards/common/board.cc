@@ -22,6 +22,7 @@ Board::Board() {
         settings.SetString("uuid", uuid_);
     }
     ESP_LOGI(TAG, "UUID=%s SKU=%s", uuid_.c_str(), BOARD_NAME);
+    music_ = nullptr;
 }
 
 Board::~Board() {
@@ -67,13 +68,17 @@ Camera* Board::GetCamera() {
 }
 
 Music* Board::GetMusic() {
-    static Esp32Music music;
-    return &music;
+    // return nullptr;
+    if (!music_) {
+        music_ = new Esp32Music();
+    }
+    return music_;
 }
 
 Radio* Board::GetRadio() {
-    static Esp32Radio radio;
-    return &radio;
+    return nullptr;
+    // static Esp32Radio radio;
+    // return &radio;
 }
 
 Led* Board::GetLed() {

@@ -19,6 +19,12 @@
 
 #include "board.h"
 
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+#define MEM_MALLOC_METHOD MALLOC_CAP_DEFAULT
+#else
+#define MEM_MALLOC_METHOD MALLOC_CAP_SPIRAM
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -244,20 +250,20 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
         lv_display_set_offset(display_, offset_x, offset_y);
     }
 	
-    fft_real = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
-    fft_imag = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
-    hanning_window_float = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    fft_real = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MEM_MALLOC_METHOD);
+    fft_imag = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MEM_MALLOC_METHOD);
+    hanning_window_float = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MEM_MALLOC_METHOD);
 
     for (int i = 0; i < LCD_FFT_SIZE; i++) {
         hanning_window_float[i] = 0.5 * (1.0 - cos(2.0 * M_PI * i / (LCD_FFT_SIZE - 1)));
     }
     
     if(audio_data_==nullptr){
-        audio_data_=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MALLOC_CAP_SPIRAM);
+        audio_data_=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MEM_MALLOC_METHOD);
         memset(audio_data_,0,sizeof(int16_t)*1152);
     }
     if(frame_audio_data==nullptr){
-        frame_audio_data=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MALLOC_CAP_SPIRAM);
+        frame_audio_data=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MEM_MALLOC_METHOD);
         memset(frame_audio_data,0,sizeof(int16_t)*1152);
     }
     
@@ -1403,7 +1409,7 @@ void LcdDisplay::create_canvas(int32_t status_bar_height) {
     canvas_height_=height_-status_bar_height;
     ESP_LOGI(TAG, "Creating canvas with width: %d, height: %d", canvas_width_, canvas_height_);
 
-    canvas_buffer_=(uint16_t*)heap_caps_malloc(canvas_width_ * canvas_height_ * sizeof(uint16_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+    canvas_buffer_=(uint16_t*)heap_caps_malloc(canvas_width_ * canvas_height_ * sizeof(uint16_t), MALLOC_CAP_8BIT | MEM_MALLOC_METHOD);
     if (canvas_buffer_ == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate canvas buffer");
         return;
@@ -1496,7 +1502,7 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
 
 int16_t* LcdDisplay::MakeAudioBuffFFT(size_t sample_count) {
     if (final_pcm_data_fft == nullptr) {
-        final_pcm_data_fft = (int16_t *)heap_caps_malloc( sample_count, MALLOC_CAP_SPIRAM);
+        final_pcm_data_fft = (int16_t *)heap_caps_malloc( sample_count, MEM_MALLOC_METHOD);
     }
     return final_pcm_data_fft;
 }

@@ -68,8 +68,13 @@ private:
     std::mutex buffer_mutex_;
     std::condition_variable buffer_cv_;
     size_t buffer_size_;
-    static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB buffer
-    static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB minimum playback buffer
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+static constexpr size_t MAX_BUFFER_SIZE = 16 * 1024;  // 256KB buffer (reduced to minimize brownout risk)
+static constexpr size_t MIN_BUFFER_SIZE = 4 * 1024;   // 32KB minimum playback buffer (reduced to minimize brownout risk)
+#else
+static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB buffer (reduced to minimize brownout risk)
+static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB minimum playback buffer (reduced to minimize brownout risk)
+#endif
     
     // AAC Simple Decoder for VOV radio streams
     esp_audio_simple_dec_handle_t aac_decoder_;

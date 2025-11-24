@@ -15,6 +15,12 @@
 #include <cstring>
 #include <math.h>
 
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+#define MEM_MALLOC_METHOD MALLOC_CAP_DEFAULT
+#else
+#define MEM_MALLOC_METHOD MALLOC_CAP_SPIRAM
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -144,22 +150,22 @@ OledDisplay::OledDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handl
         return;
     }
 
-    fft_real = (float*)heap_caps_malloc(OLED_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
-    fft_imag = (float*)heap_caps_malloc(OLED_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
-    hanning_window_float = (float*)heap_caps_malloc(OLED_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    fft_real = (float*)heap_caps_malloc(OLED_FFT_SIZE * sizeof(float), MEM_MALLOC_METHOD);
+    fft_imag = (float*)heap_caps_malloc(OLED_FFT_SIZE * sizeof(float), MEM_MALLOC_METHOD);
+    hanning_window_float = (float*)heap_caps_malloc(OLED_FFT_SIZE * sizeof(float), MEM_MALLOC_METHOD);
 
     for (int i = 0; i < OLED_FFT_SIZE; i++) {
         hanning_window_float[i] = 0.5 * (1.0 - cos(2.0 * M_PI * i / (OLED_FFT_SIZE - 1)));
     }
     
-    audio_data_=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MALLOC_CAP_SPIRAM);
+    audio_data_=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MEM_MALLOC_METHOD);
     if(audio_data_!=nullptr){
         ESP_LOGI(TAG, "audio_data_ allocated");
         memset(audio_data_,0,sizeof(int16_t)*1152);
     } else {
         ESP_LOGE(TAG, "Failed to allocate audio_data_");
     }
-    frame_audio_data=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MALLOC_CAP_SPIRAM);
+    frame_audio_data=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MEM_MALLOC_METHOD);
     if(frame_audio_data!=nullptr){
         ESP_LOGI(TAG, "frame_audio_data allocated");
         memset(frame_audio_data,0,sizeof(int16_t)*1152);
@@ -460,7 +466,7 @@ void OledDisplay::DrawOledSpectrum() {
 
 int16_t* OledDisplay::MakeAudioBuffFFT(size_t sample_count) {
     if (final_pcm_data_fft == nullptr) {
-        final_pcm_data_fft = (int16_t *)heap_caps_malloc(sample_count, MALLOC_CAP_SPIRAM);
+        final_pcm_data_fft = (int16_t *)heap_caps_malloc(sample_count, MEM_MALLOC_METHOD);
     }
     return final_pcm_data_fft;
 }
@@ -493,7 +499,7 @@ void OledDisplay::FeedAudioDataFFT(int16_t* data, size_t sample_count) {
 void OledDisplay::StartFFT() {
     if (fft_task_handle != nullptr) return;
     fft_task_should_stop = false;
-    xTaskCreate(periodicUpdateTaskWrapper, "oled_fft", 4096 * 2, this, 1, &fft_task_handle);
+    xTaskCreate(periodicUpdateTaskWrapper, "oled_fft", 4096, this, 1, &fft_task_handle);
 }
 
 void OledDisplay::StopFFT() {

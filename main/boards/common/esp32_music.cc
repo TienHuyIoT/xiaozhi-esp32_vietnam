@@ -22,6 +22,12 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+#define MEM_MALLOC_METHOD MALLOC_CAP_DEFAULT
+#else
+#define MEM_MALLOC_METHOD MALLOC_CAP_SPIRAM
+#endif
+
 #define TAG "Esp32Music"
 
 // std::string base_url = "http://www.xiaozhishop.xyz:5005";
@@ -476,7 +482,7 @@ bool Esp32Music::StartStreaming(const std::string& music_url) {
     
     // Configure thread stack size to avoid stack overflow
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
-    cfg.stack_size = 8192;  // 8KB stack size
+    cfg.stack_size = 1024 * 4;  // 4KB stack size
     cfg.prio = 5;           // Medium priority
     cfg.thread_name = "audio_stream";
     esp_pthread_set_cfg(&cfg);
@@ -678,7 +684,7 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
         }
         
         // Create audio data chunk
-        uint8_t* chunk_data = (uint8_t*)heap_caps_malloc(bytes_read, MALLOC_CAP_SPIRAM);
+        uint8_t* chunk_data = (uint8_t*)heap_caps_malloc(bytes_read, MEM_MALLOC_METHOD);
         if (!chunk_data) {
             ESP_LOGE(TAG, "Failed to allocate memory for audio chunk");
             break;
@@ -774,7 +780,7 @@ void Esp32Music::PlayAudioStream() {
     uint8_t* read_ptr = nullptr;
     
     // Allocate MP3 input buffer
-    mp3_input_buffer = (uint8_t*)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+    mp3_input_buffer = (uint8_t*)heap_caps_malloc(8192, MEM_MALLOC_METHOD);
     if (!mp3_input_buffer) {
         ESP_LOGE(TAG, "Failed to allocate MP3 input buffer");
         is_playing_ = false;

@@ -27,17 +27,17 @@
 #endif
 
 #define RADIO_STREAM_BUFFER_SIZE  (6 * 1024)  // 6KB audio stream buffer size
+#define RADIO_CHUNK_READ_SIZE       (2048)      // 2KB read size per chunk
 
 #define TAG "Esp32Radio"
 
 Esp32Radio::Esp32Radio() : current_station_name_(), current_station_url_(),
                          station_name_displayed_(false), current_station_volume_(4.5f), radio_stations_(),
-                         display_mode_(DISPLAY_MODE_SPECTRUM), is_playing_(false), is_downloading_(false), 
+                         display_mode_(DISPLAY_MODE_INFO), is_playing_(false), is_downloading_(false), 
                          play_thread_(), download_thread_(), audio_buffer_(), buffer_mutex_(), 
                          buffer_cv_(), buffer_size_(0), aac_decoder_(nullptr), aac_info_(),
                          aac_decoder_initialized_(false), aac_info_ready_(false), aac_out_buffer_() {
     ESP_LOGI(TAG, "VOV Radio player initialized with AAC decoder support");
-    // InitializeRadioStations();
     // AAC decoder will be initialized on-demand
 }
 
@@ -348,7 +348,7 @@ void Esp32Radio::DownloadRadioStream(const std::string& radio_url) {
     ESP_LOGI(TAG, "Started downloading radio stream, status: %d", status_code);
     
     // Read audio data in chunks
-    const size_t chunk_size = 2048;  // 2KB per chunk
+    const size_t chunk_size = RADIO_CHUNK_READ_SIZE;  // 2KB per chunk
     char* buffer = new char[chunk_size];
     size_t total_downloaded = 0;
     size_t total_print_bytes = 0;
@@ -452,6 +452,8 @@ void Esp32Radio::PlayRadioStream() {
         return;
     }
 
+    vTaskDelay(pdMS_TO_TICKS(500));
+
     // Ensure audio output is enabled
     if (!codec->output_enabled()) {
         codec->EnableOutput(true);
@@ -480,6 +482,7 @@ void Esp32Radio::PlayRadioStream() {
     int bytes_left = 0;
     uint8_t* read_ptr = nullptr;
     
+    SystemInfo::PrintHeapStats();
     // Allocate input buffer (for both MP3 and AAC)
     input_buffer = (uint8_t*)heap_caps_malloc(RADIO_STREAM_BUFFER_SIZE, MEM_MALLOC_METHOD);
     if (!input_buffer) {

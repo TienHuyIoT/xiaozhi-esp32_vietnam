@@ -69,8 +69,8 @@ private:
     std::condition_variable buffer_cv_;
     size_t buffer_size_;
 #ifdef CONFIG_IDF_TARGET_ESP32C3
-static constexpr size_t MAX_BUFFER_SIZE = 16 * 1024;  // 256KB buffer (reduced to minimize brownout risk)
-static constexpr size_t MIN_BUFFER_SIZE = 4 * 1024;   // 32KB minimum playback buffer (reduced to minimize brownout risk)
+static constexpr size_t MAX_BUFFER_SIZE = 6 * 1024;  // 6KB buffer (reduced to minimize brownout risk)
+static constexpr size_t MIN_BUFFER_SIZE = 2 * 1024;   // 2KB minimum playback buffer (reduced to minimize brownout risk)
 #else
 static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB buffer (reduced to minimize brownout risk)
 static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB minimum playback buffer (reduced to minimize brownout risk)

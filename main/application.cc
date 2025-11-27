@@ -693,9 +693,6 @@ void Application::SetDeviceState(DeviceState state) {
             ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s", 
                     STATE_STRINGS[previous_state], STATE_STRINGS[state]);
             music->StopStreaming();
-
-            auto& app = Application::GetInstance();
-            app.GetAudioService().Start();  // Restart audio service
         }
         // auto radio = board.GetRadio();
         // if (radio) {
@@ -703,8 +700,10 @@ void Application::SetDeviceState(DeviceState state) {
         //             STATE_STRINGS[previous_state], STATE_STRINGS[state]);
         //     radio->Stop();
         // }
-        display->ClearQRCode();
+        auto& app = Application::GetInstance();
+        app.GetAudioService().Start();  // Restart audio service
 
+        display->ClearQRCode();
     }																	   
     switch (state) {
         case kDeviceStateUnknown:

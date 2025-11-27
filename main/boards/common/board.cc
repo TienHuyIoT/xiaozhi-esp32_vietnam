@@ -23,6 +23,7 @@ Board::Board() {
     }
     ESP_LOGI(TAG, "UUID=%s SKU=%s", uuid_.c_str(), BOARD_NAME);
     music_ = nullptr;
+    radio_ = nullptr;
 }
 
 Board::~Board() {
@@ -68,7 +69,6 @@ Camera* Board::GetCamera() {
 }
 
 Music* Board::GetMusic() {
-    // return nullptr;
     if (!music_) {
         music_ = new Esp32Music();
     }
@@ -76,9 +76,10 @@ Music* Board::GetMusic() {
 }
 
 Radio* Board::GetRadio() {
-    return nullptr;
-    // static Esp32Radio radio;
-    // return &radio;
+    if (!radio_) {
+        radio_ = new Esp32Radio();
+    }
+    return radio_;
 }
 
 Led* Board::GetLed() {

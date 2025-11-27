@@ -29,7 +29,7 @@
 #endif
 
 #define AUDIO_STREAM_BUFFER_SIZE    (6 * 1024)  // 6KB audio stream buffer size
-#define AUDIO_CHUNK_READ_SIZE       (2048)      // 2KB read size per chunk
+#define AUDIO_CHUNK_READ_SIZE       (2 * 1024)      // 2KB read size per chunk
 
 #define TAG "Esp32Music"
 
@@ -185,7 +185,6 @@ Esp32Music::Esp32Music() : last_downloaded_data_(), current_music_url_(), curren
                          buffer_cv_(), buffer_size_(0), mp3_decoder_(nullptr), mp3_frame_info_(), 
                          mp3_decoder_initialized_(false) {
     ESP_LOGI(TAG, "Music player initialized with default spectrum display mode");
-    // InitializeMp3Decoder();
 }
 
 Esp32Music::~Esp32Music() {

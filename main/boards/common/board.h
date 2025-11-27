@@ -32,6 +32,7 @@ protected:
     std::string uuid_;
 
     Music* music_ = nullptr;
+    Radio* radio_ = nullptr;
 
 public:
     static Board& GetInstance() {

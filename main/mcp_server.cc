@@ -279,6 +279,9 @@ void McpServer::AddCommonTools() {
     //             [radio](const PropertyList &properties) -> ReturnValue {
     //                 auto station_name = properties["station_name"].value<std::string>();
 
+    //                 auto &app = Application::GetInstance();
+    //                 app.GetAudioService().Stop(); // Stop any existing audio service
+
     //                 if (!radio->PlayStation(station_name))
     //                 {
     //                     return "{\"success\": false, \"message\": \"Failed to find or play radio station: " + station_name + "\"}";

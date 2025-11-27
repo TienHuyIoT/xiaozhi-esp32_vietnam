@@ -141,7 +141,7 @@ void AudioService::Stop() {
     audio_playback_queue_.clear();
     audio_testing_queue_.clear();
     audio_queue_cv_.notify_all();
-    vTaskDelay(pdMS_TO_TICKS(100)); // Add a little bit delay to all tasks can be completed.
+    vTaskDelay(pdMS_TO_TICKS(200)); // Add a little bit delay to all tasks can be completed.
 }
 
 bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples) {

@@ -74,6 +74,10 @@ void AudioService::Initialize(AudioCodec* codec) {
 }
 
 void AudioService::Start() {
+    if (!service_stopped_) {
+        ESP_LOGW(TAG, "AudioService is already running");
+        return;
+    }
     service_stopped_ = false;
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
@@ -112,15 +116,19 @@ void AudioService::Start() {
 #endif
 
     /* Start the opus codec task */
-    // xTaskCreate([](void* arg) {
-    //     AudioService* audio_service = (AudioService*)arg;
-    //     audio_service->OpusCodecTask();
-    //     audio_service->opus_codec_task_handle_ = nullptr;
-    //     vTaskDelete(NULL);
-    // }, "opus_codec", 1024 * 25, this, 2, &opus_codec_task_handle_);
+    xTaskCreate([](void* arg) {
+        AudioService* audio_service = (AudioService*)arg;
+        audio_service->OpusCodecTask();
+        audio_service->opus_codec_task_handle_ = nullptr;
+        vTaskDelete(NULL);
+    }, "opus_codec", 1024 * 25, this, 2, &opus_codec_task_handle_);
 }
 
 void AudioService::Stop() {
+    if (service_stopped_) {
+        ESP_LOGW(TAG, "AudioService is already stopped");
+        return;
+    }
     esp_timer_stop(audio_power_timer_);
     service_stopped_ = true;
     xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
@@ -133,6 +141,7 @@ void AudioService::Stop() {
     audio_playback_queue_.clear();
     audio_testing_queue_.clear();
     audio_queue_cv_.notify_all();
+    vTaskDelay(pdMS_TO_TICKS(100)); // Add a little bit delay to all tasks can be completed.
 }
 
 bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples) {

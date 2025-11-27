@@ -363,7 +363,7 @@ void Application::Start() {
     /* Setup the audio service */
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
-    audio_service_.Start();
+    // audio_service_.Start();
     // codec->SetOutputVolume(50);  // Set initial volume to 50%
 
     AudioServiceCallbacks callbacks;

@@ -456,12 +456,6 @@ void OledDisplay::DrawOledSpectrum() {
             lv_bar_set_value(spectrum_bars_[i], bar_val, LV_ANIM_OFF);
         }
     }
-    
-    static int log_limit = 0;
-    if (log_limit++ > 20) {
-        ESP_LOGI("SpectrumDebug", "DB Val: %s", debug_vals.c_str());
-        log_limit = 0;
-    }
 }
 
 int16_t* OledDisplay::MakeAudioBuffFFT(size_t sample_count) {
@@ -470,32 +464,13 @@ int16_t* OledDisplay::MakeAudioBuffFFT(size_t sample_count) {
     }
     return final_pcm_data_fft;
 }
-/*
+
 void OledDisplay::FeedAudioDataFFT(int16_t* data, size_t sample_count) {
     if (final_pcm_data_fft != nullptr) {
         memcpy(final_pcm_data_fft, data, sample_count);
     }
 }
-*/
-void OledDisplay::FeedAudioDataFFT(int16_t* data, size_t sample_count) {
-    if (final_pcm_data_fft != nullptr) {
-        memcpy(final_pcm_data_fft, data, sample_count);
-        
-        // Thêm đoạn log debug này (nhớ xóa sau khi chạy được)
-        static int debug_count = 0;
-        if (debug_count++ > 100) {
-            ESP_LOGI(TAG, "Dang nhan du lieu audio: %d bytes", sample_count);
-            debug_count = 0;
-        }
-    } else {
-        // Nếu buffer chưa được tạo, báo lỗi
-        static int err_count = 0;
-        if (err_count++ > 100) {
-            ESP_LOGE(TAG, "Loi: final_pcm_data_fft la NULL!");
-            err_count = 0;
-        }
-    }
-}
+
 void OledDisplay::StartFFT() {
     if (fft_task_handle != nullptr) return;
     fft_task_should_stop = false;

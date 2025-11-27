@@ -28,7 +28,8 @@
 #define MEM_MALLOC_METHOD MALLOC_CAP_SPIRAM
 #endif
 
-#define AUDIO_STREAM_BUFFER_SIZE  (6 * 1024)  // 6KB audio stream buffer size
+#define AUDIO_STREAM_BUFFER_SIZE    (6 * 1024)  // 6KB audio stream buffer size
+#define AUDIO_CHUNK_READ_SIZE       (2048)      // 2KB read size per chunk
 
 #define TAG "Esp32Music"
 
@@ -356,7 +357,6 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
             cJSON* artist = cJSON_GetObjectItem(response_json, "artist");
             cJSON* title = cJSON_GetObjectItem(response_json, "title");
             cJSON* audio_url = cJSON_GetObjectItem(response_json, "audio_url");
-            cJSON* lyric_url = cJSON_GetObjectItem(response_json, "lyric_url");
             
             if (cJSON_IsString(artist)) {
                 ESP_LOGI(TAG, "Artist: %s", artist->valuestring);
@@ -386,8 +386,14 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
                 ESP_LOGI(TAG, "Starting streaming playback for: %s", song_name.c_str());
                 song_name_displayed_ = false;  // Reset the song name display flag
                 StartStreaming(current_music_url_);
-                
+
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+                SystemInfo::PrintHeapStats();
+                cJSON_Delete(response_json);
+                return true;
+#else     
                 // Handle lyric URL - only start lyrics in lyric display mode
+                cJSON* lyric_url = cJSON_GetObjectItem(response_json, "lyric_url");
                 if (cJSON_IsString(lyric_url) && lyric_url->valuestring && strlen(lyric_url->valuestring) > 0) {
                     // Construct the complete lyric download URL using the same URL building logic
                     std::string lyric_path = lyric_url->valuestring;
@@ -427,6 +433,7 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
                 
                 cJSON_Delete(response_json);
                 return true;
+#endif
             } else {
                 // audio_url is empty or invalid
                 ESP_LOGE(TAG, "Audio URL not found or empty for song: %s", song_name.c_str());
@@ -456,7 +463,7 @@ bool Esp32Music::StartStreaming(const std::string& music_url) {
         ESP_LOGE(TAG, "Music URL is empty");
         return false;
     }
-    
+
     ESP_LOGD(TAG, "Starting streaming for URL: %s", music_url.c_str());
     
     // Stop previous playback and download
@@ -636,7 +643,7 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
     ESP_LOGI(TAG, "Started downloading audio stream, status: %d", status_code);
     
     // Read audio data in chunks
-    const size_t chunk_size = 4096;  // 4KB per chunk
+    const size_t chunk_size = AUDIO_CHUNK_READ_SIZE;  // 2KB per chunk
     char* buffer = new char[chunk_size];
     size_t total_downloaded = 0;
     size_t total_print_bytes = 0;
@@ -710,6 +717,7 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
                 if (total_print_bytes >= (128 * 1024)) {  // Log progress every 128KB
                     total_print_bytes = 0;
                     ESP_LOGI(TAG, "Downloaded %d bytes, buffer size: %d", total_downloaded, buffer_size_);
+                    SystemInfo::PrintHeapStats();
                 }
             } else {
                 heap_caps_free(chunk_data);
@@ -758,8 +766,9 @@ void Esp32Music::PlayAudioStream() {
     if (!codec->output_enabled()) {
         codec->EnableOutput(true);
     }
-    
-    if (!mp3_decoder_initialized_) {
+
+    // Initialize MP3 decoder    
+    if (!InitializeMp3Decoder()) {
         ESP_LOGE(TAG, "MP3 decoder not initialized");
         is_playing_ = false;
         return;
@@ -786,6 +795,7 @@ void Esp32Music::PlayAudioStream() {
     if (!mp3_input_buffer) {
         ESP_LOGE(TAG, "Failed to allocate MP3 input buffer");
         is_playing_ = false;
+        CleanupMp3Decoder();
         return;
     }
     
@@ -799,6 +809,7 @@ void Esp32Music::PlayAudioStream() {
         ESP_LOGE(TAG, "Failed to allocate PCM buffer");
         heap_caps_free(mp3_input_buffer);
         is_playing_ = false;
+        CleanupMp3Decoder();
         return;
     }
     
@@ -1050,6 +1061,8 @@ void Esp32Music::PlayAudioStream() {
     if (mp3_input_buffer) {
         heap_caps_free(mp3_input_buffer);
     }
+
+    CleanupMp3Decoder();
     
     // Perform basic cleanup at the end of playback, but do not call StopStreaming to avoid thread self-waiting
     ESP_LOGI(TAG, "Audio stream playback finished, total played: %d bytes", total_played_bytes);

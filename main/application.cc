@@ -363,7 +363,7 @@ void Application::Start() {
     /* Setup the audio service */
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
-    // audio_service_.Start();
+    audio_service_.Start();
     // codec->SetOutputVolume(50);  // Set initial volume to 50%
 
     AudioServiceCallbacks callbacks;
@@ -392,15 +392,6 @@ void Application::Start() {
 
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);
-
-    auto music = static_cast<Esp32Music*>(board.GetMusic());
-    music->InitializeMp3Decoder();
-    if (!music->Download("Con Mua Bang Gia", "Bang Kieu")) {
-        ESP_LOGE(TAG, "Failed to download music: %s - %s", "Bang Kieu", "Con Mua Bang Gia");
-    }
-
-    SetDeviceState(kDeviceStateIdle);
-    return;
 
     // Check for new assets version
     CheckAssetsVersion();
@@ -702,6 +693,9 @@ void Application::SetDeviceState(DeviceState state) {
             ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s", 
                     STATE_STRINGS[previous_state], STATE_STRINGS[state]);
             music->StopStreaming();
+
+            auto& app = Application::GetInstance();
+            app.GetAudioService().Start();  // Restart audio service
         }
         // auto radio = board.GetRadio();
         // if (radio) {

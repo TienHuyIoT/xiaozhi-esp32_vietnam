@@ -214,6 +214,9 @@ void McpServer::AddCommonTools() {
                      auto song_name = properties["song_name"].value<std::string>();
                      auto artist_name = properties["artist_name"].value<std::string>();
 
+                     auto &app = Application::GetInstance();
+                     app.GetAudioService().Stop(); // Stop any existing audio service
+
                      if (!music->Download(song_name, artist_name))
                      {
                          return "{\"success\": false, \"message\": \"Failed to get music resource\"}";

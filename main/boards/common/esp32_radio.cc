@@ -26,6 +26,8 @@
 #define MEM_MALLOC_METHOD MALLOC_CAP_SPIRAM
 #endif
 
+#define RADIO_STREAM_BUFFER_SIZE  (6 * 1024)  // 6KB audio stream buffer size
+
 #define TAG "Esp32Radio"
 
 Esp32Radio::Esp32Radio() : current_station_name_(), current_station_url_(),
@@ -35,7 +37,7 @@ Esp32Radio::Esp32Radio() : current_station_name_(), current_station_url_(),
                          buffer_cv_(), buffer_size_(0), aac_decoder_(nullptr), aac_info_(),
                          aac_decoder_initialized_(false), aac_info_ready_(false), aac_out_buffer_() {
     ESP_LOGI(TAG, "VOV Radio player initialized with AAC decoder support");
-    InitializeRadioStations();
+    // InitializeRadioStations();
     // AAC decoder will be initialized on-demand
 }
 
@@ -95,6 +97,8 @@ void Esp32Radio::InitializeRadioStations() {
 
 bool Esp32Radio::PlayStation(const std::string& station_name) {
     ESP_LOGI(TAG, "Request to play radio station: %s", station_name.c_str());
+
+    InitializeRadioStations();
     
     // Convert input to lowercase for case-insensitive search
     std::string lower_input = station_name;
@@ -344,7 +348,7 @@ void Esp32Radio::DownloadRadioStream(const std::string& radio_url) {
     ESP_LOGI(TAG, "Started downloading radio stream, status: %d", status_code);
     
     // Read audio data in chunks
-    const size_t chunk_size = 4096;  // 4KB per chunk
+    const size_t chunk_size = 2048;  // 2KB per chunk
     char* buffer = new char[chunk_size];
     size_t total_downloaded = 0;
     size_t total_print_bytes = 0;
@@ -477,10 +481,11 @@ void Esp32Radio::PlayRadioStream() {
     uint8_t* read_ptr = nullptr;
     
     // Allocate input buffer (for both MP3 and AAC)
-    input_buffer = (uint8_t*)heap_caps_malloc(8192, MEM_MALLOC_METHOD);
+    input_buffer = (uint8_t*)heap_caps_malloc(RADIO_STREAM_BUFFER_SIZE, MEM_MALLOC_METHOD);
     if (!input_buffer) {
         ESP_LOGE(TAG, "Failed to allocate input buffer");
         is_playing_ = false;
+        CleanupAacDecoder();
         return;
     }
 
@@ -566,7 +571,7 @@ void Esp32Radio::PlayRadioStream() {
                 }
                 
                 // Check buffer space
-                size_t space_available = 8192 - bytes_left;
+                size_t space_available = RADIO_STREAM_BUFFER_SIZE - bytes_left;
                 size_t copy_size = std::min(chunk.size, space_available);
                 
                 // Copy new data

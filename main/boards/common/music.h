@@ -16,6 +16,8 @@ public:
     virtual size_t GetBufferSize() const = 0;
     virtual bool IsDownloading() const = 0;
     virtual int16_t* GetAudioData() = 0;
+    virtual bool InitializeMp3Decoder() = 0;
+    virtual void CleanupMp3Decoder() = 0;
 };
 
 #endif // MUSIC_H 

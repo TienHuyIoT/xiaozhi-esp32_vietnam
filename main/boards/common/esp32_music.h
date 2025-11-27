@@ -62,8 +62,8 @@ private:
     std::condition_variable buffer_cv_;
     size_t buffer_size_;
 #ifdef CONFIG_IDF_TARGET_ESP32C3
-static constexpr size_t MAX_BUFFER_SIZE = 8 * 1024;  // 256KB buffer (reduced to minimize brownout risk)
-static constexpr size_t MIN_BUFFER_SIZE = 2 * 1024;   // 32KB minimum playback buffer (reduced to minimize brownout risk)
+static constexpr size_t MAX_BUFFER_SIZE = 6 * 1024;  // 6KB buffer (reduced to minimize brownout risk)
+static constexpr size_t MIN_BUFFER_SIZE = 2 * 1024;   // 2KB minimum playback buffer (reduced to minimize brownout risk)
 #else
 static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB buffer (reduced to minimize brownout risk)
 static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB minimum playback buffer (reduced to minimize brownout risk)
@@ -106,13 +106,13 @@ public:
     virtual size_t GetBufferSize() const override { return buffer_size_; }
     virtual bool IsDownloading() const override { return is_downloading_; }
     virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }
+    bool InitializeMp3Decoder() override;
+    void CleanupMp3Decoder() override;
     
     // Display mode control methods
     void SetDisplayMode(DisplayMode mode);
     DisplayMode GetDisplayMode() const { return display_mode_.load(); }
     std::string GetCheckMusicServerUrl();
-    bool InitializeMp3Decoder();
-    void CleanupMp3Decoder();
 };
 
 #endif // ESP32_MUSIC_H

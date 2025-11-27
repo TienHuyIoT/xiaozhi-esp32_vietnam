@@ -104,5 +104,5 @@ extern "C" void app_main(void)
     auto& app = Application::GetInstance();
     app.Start();
 
-    xTaskCreatePinnedToCore(task_monitor, "TaskMonitor", 2048, NULL, 1, NULL, tskNO_AFFINITY);
+    // xTaskCreatePinnedToCore(task_monitor, "TaskMonitor", 2048, NULL, 1, NULL, tskNO_AFFINITY);
 }

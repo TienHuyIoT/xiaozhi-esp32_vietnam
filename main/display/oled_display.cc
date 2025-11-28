@@ -474,7 +474,7 @@ void OledDisplay::FeedAudioDataFFT(int16_t* data, size_t sample_count) {
 void OledDisplay::StartFFT() {
     if (fft_task_handle != nullptr) return;
     fft_task_should_stop = false;
-    xTaskCreate(periodicUpdateTaskWrapper, "oled_fft", 4096, this, 1, &fft_task_handle);
+    xTaskCreate(periodicUpdateTaskWrapper, "oled_fft", 1024 + 512, this, 1, &fft_task_handle);
 }
 
 void OledDisplay::StopFFT() {

@@ -31,6 +31,11 @@
 #define AUDIO_STREAM_BUFFER_SIZE    (6 * 1024)  // 6KB audio stream buffer size
 #define AUDIO_CHUNK_READ_SIZE       (2 * 1024)      // 2KB read size per chunk
 
+#define AUDIO_BUFFER_RTC_RAM_USED    1
+#ifdef AUDIO_BUFFER_RTC_RAM_USED 
+RTC_FAST_ATTR uint8_t audio_input_buffer[AUDIO_STREAM_BUFFER_SIZE];
+#endif
+
 #define TAG "Esp32Music"
 
 // std::string base_url = "http://www.xiaozhishop.xyz:5005";
@@ -785,19 +790,23 @@ void Esp32Music::PlayAudioStream() {
     
     size_t total_played_bytes = 0;
     size_t total_print_bytes = 0;
-    uint8_t* mp3_input_buffer = nullptr;
     int bytes_left = 0;
     uint8_t* read_ptr = nullptr;
     
+
+#ifdef AUDIO_BUFFER_RTC_RAM_USED
+    uint8_t* input_buffer = audio_input_buffer;
+#else
     // Allocate MP3 input buffer
-    mp3_input_buffer = (uint8_t*)heap_caps_malloc(AUDIO_STREAM_BUFFER_SIZE, MEM_MALLOC_METHOD);
-    if (!mp3_input_buffer) {
+    uint8_t* input_buffer = nullptr;
+    input_buffer = (uint8_t*)heap_caps_malloc(AUDIO_STREAM_BUFFER_SIZE, MEM_MALLOC_METHOD);
+    if (!input_buffer) {
         ESP_LOGE(TAG, "Failed to allocate MP3 input buffer");
         is_playing_ = false;
         CleanupMp3Decoder();
         return;
     }
-    
+#endif
     // Flag to indicate if ID3 tags have been processed
     bool id3_processed = false;
 
@@ -806,7 +815,9 @@ void Esp32Music::PlayAudioStream() {
     int16_t* pcm_buffer = new int16_t[2304];  // Max PCM samples per MP3 frame
     if (!pcm_buffer) {
         ESP_LOGE(TAG, "Failed to allocate PCM buffer");
-        heap_caps_free(mp3_input_buffer);
+#ifndef AUDIO_BUFFER_RTC_RAM_USED
+        heap_caps_free(input_buffer);
+#endif
         is_playing_ = false;
         CleanupMp3Decoder();
         return;
@@ -889,8 +900,8 @@ void Esp32Music::PlayAudioStream() {
             // Add new data to the MP3 input buffer
             if (chunk.data && chunk.size > 0) {
                 // Move remaining data to the beginning of the buffer
-                if (bytes_left > 0 && read_ptr != mp3_input_buffer) {
-                    memmove(mp3_input_buffer, read_ptr, bytes_left);
+                if (bytes_left > 0 && read_ptr != input_buffer) {
+                    memmove(input_buffer, read_ptr, bytes_left);
                 }
                 
                 // Check buffer space
@@ -898,9 +909,9 @@ void Esp32Music::PlayAudioStream() {
                 size_t copy_size = std::min(chunk.size, space_available);
                 
                 // Copy new data
-                memcpy(mp3_input_buffer + bytes_left, chunk.data, copy_size);
+                memcpy(input_buffer + bytes_left, chunk.data, copy_size);
                 bytes_left += copy_size;
-                read_ptr = mp3_input_buffer;
+                read_ptr = input_buffer;
                 
                 // Check and skip ID3 tags (process only once at the beginning)
                 if (!id3_processed && bytes_left >= 10) {
@@ -1057,9 +1068,12 @@ void Esp32Music::PlayAudioStream() {
     }
 
     // Cleanup
-    if (mp3_input_buffer) {
-        heap_caps_free(mp3_input_buffer);
+    
+#ifndef AUDIO_BUFFER_RTC_RAM_USED
+    if (input_buffer) {
+        heap_caps_free(input_buffer);
     }
+#endif
 
     CleanupMp3Decoder();
     

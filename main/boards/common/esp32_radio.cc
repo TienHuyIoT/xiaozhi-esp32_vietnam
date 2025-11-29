@@ -27,7 +27,8 @@
 #endif
 
 #define RADIO_STREAM_BUFFER_SIZE  (6 * 1024)  // 6KB audio stream buffer size
-#define RADIO_CHUNK_READ_SIZE       (2048)      // 2KB read size per chunk
+#define RADIO_CHUNK_READ_SIZE       (2 * 1024)      // 2KB read size per chunk
+extern RTC_FAST_ATTR uint8_t audio_input_buffer[RADIO_STREAM_BUFFER_SIZE];
 
 #define TAG "Esp32Radio"
 
@@ -459,12 +460,14 @@ void Esp32Radio::PlayRadioStream() {
         codec->EnableOutput(true);
     }
     
+    SystemInfo::PrintHeapStats();
     // Initialize AAC decoder
     if (!InitializeAacDecoder()) {
         ESP_LOGE(TAG, "Failed to initialize AAC decoder for VOV streams");
         is_playing_ = false;
         return;
     }
+    SystemInfo::PrintHeapStats();
     
     // Wait for the buffer to have enough data to start playback
     {
@@ -478,12 +481,15 @@ void Esp32Radio::PlayRadioStream() {
     
     size_t total_played_bytes = 0;
     size_t total_print_bytes = 0;
-    uint8_t* input_buffer = nullptr;
     int bytes_left = 0;
     uint8_t* read_ptr = nullptr;
     
     SystemInfo::PrintHeapStats();
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+    uint8_t* input_buffer = audio_input_buffer;
+#else
     // Allocate input buffer (for both MP3 and AAC)
+    uint8_t* input_buffer = nullptr;
     input_buffer = (uint8_t*)heap_caps_malloc(RADIO_STREAM_BUFFER_SIZE, MEM_MALLOC_METHOD);
     if (!input_buffer) {
         ESP_LOGE(TAG, "Failed to allocate input buffer");
@@ -491,7 +497,7 @@ void Esp32Radio::PlayRadioStream() {
         CleanupAacDecoder();
         return;
     }
-
+#endif
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     
@@ -721,10 +727,11 @@ void Esp32Radio::PlayRadioStream() {
     }
     
     // Cleanup
+#ifndef CONFIG_IDF_TARGET_ESP32C3
     if (input_buffer) {
         heap_caps_free(input_buffer);
     }
-    
+#endif
     if (is_downloading_) {
         ESP_LOGI(TAG, "Radio stream playback finished successfully");
         ClearAudioBuffer();  // Clear remaining buffer data

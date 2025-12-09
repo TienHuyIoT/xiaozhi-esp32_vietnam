@@ -41,7 +41,7 @@ class SdMMC : public SdCard {
     bool format_if_mount_failed = false;
     int max_files = kSdCardMaxFiles;
     size_t allocation_unit_size = kSdCardAllocationUnitSize;
-    int bus_width = 4;  // 1 or 4
+    int bus_width = 1;  // 1 or 4
     gpio_num_t clk_pin = DEFAULT_SDMMC_CLK_GPIO;
     gpio_num_t cmd_pin = DEFAULT_SDMMC_CMD_GPIO;
     gpio_num_t d0_pin = DEFAULT_SDMMC_D0_GPIO;

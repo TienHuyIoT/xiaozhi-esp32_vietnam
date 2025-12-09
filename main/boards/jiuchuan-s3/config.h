@@ -47,6 +47,24 @@
 
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_46
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
+#ifdef CONFIG_SD_CARD_MMC_INTERFACE
+
+// Define to use 4-bit SDMMC bus width; comment out to use 1-bit bus width
+//#define CARD_SDMMC_BUS_WIDTH_4BIT
+
+#ifdef CARD_SDMMC_BUS_WIDTH_4BIT
+#define CARD_SDMMC_CLK_GPIO GPIO_NUM_40 // CLK pin
+#define CARD_SDMMC_CMD_GPIO GPIO_NUM_39 // MISO pin
+#define CARD_SDMMC_D0_GPIO GPIO_NUM_41  // MOSI pin
+#define CARD_SDMMC_D1_GPIO GPIO_NUM_42
+#define CARD_SDMMC_D2_GPIO GPIO_NUM_45
+#define CARD_SDMMC_D3_GPIO GPIO_NUM_38  // CS pin
+#else // Chọn cấu hình SDCard 1 bit
+#define CARD_SDMMC_CLK_GPIO GPIO_NUM_47
+#define CARD_SDMMC_CMD_GPIO GPIO_NUM_48
+#define CARD_SDMMC_D0_GPIO GPIO_NUM_21
+#endif
+#endif // CONFIG_SD_CARD_MMC_INTERFACE
 
 
 #endif // _BOARD_CONFIG_H_

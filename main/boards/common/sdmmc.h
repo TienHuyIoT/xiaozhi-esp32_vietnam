@@ -9,25 +9,25 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 
-// Default GPIO pins for SD card interface
-// CLK=40, CMD=39, D0=41, D1=42, D2=45, D3=38
+// Default GPIO pins for SD card interface for Rabbit Pro
+// CLK=47, CMD=48, D0=21, D1=none, D2=none, D3=none, 1bit
 #ifndef DEFAULT_SDMMC_CLK_GPIO
-#define DEFAULT_SDMMC_CLK_GPIO GPIO_NUM_40
+#define DEFAULT_SDMMC_CLK_GPIO GPIO_NUM_47
 #endif
 #ifndef DEFAULT_SDMMC_CMD_GPIO
-#define DEFAULT_SDMMC_CMD_GPIO GPIO_NUM_39
+#define DEFAULT_SDMMC_CMD_GPIO GPIO_NUM_48
 #endif
 #ifndef DEFAULT_SDMMC_D0_GPIO
-#define DEFAULT_SDMMC_D0_GPIO GPIO_NUM_41
+#define DEFAULT_SDMMC_D0_GPIO GPIO_NUM_21
 #endif
 #ifndef DEFAULT_SDMMC_D1_GPIO
-#define DEFAULT_SDMMC_D1_GPIO GPIO_NUM_42
+#define DEFAULT_SDMMC_D1_GPIO GPIO_NUM_NC
 #endif
 #ifndef DEFAULT_SDMMC_D2_GPIO
-#define DEFAULT_SDMMC_D2_GPIO GPIO_NUM_45
+#define DEFAULT_SDMMC_D2_GPIO GPIO_NUM_NC
 #endif
 #ifndef DEFAULT_SDMMC_D3_GPIO
-#define DEFAULT_SDMMC_D3_GPIO GPIO_NUM_38
+#define DEFAULT_SDMMC_D3_GPIO GPIO_NUM_NC
 #endif
 
 constexpr const char* kSdCardMountPoint = "/sdcard";

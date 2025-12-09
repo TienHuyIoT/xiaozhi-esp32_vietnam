@@ -379,27 +379,13 @@ public:
         WifiBoard::SetPowerSaveMode(enabled);
     }
 
-#ifdef CONFIG_SD_CARD_DISABLED
-    virtual SdCard* GetSdCard() override {
-        return nullptr;
-    }
-#else
-    virtual SdCard* GetSdCard() override {
-#ifdef CARD_SDMMC_BUS_WIDTH_4BIT
-        static SdMMC sdmmc(CARD_SDMMC_CLK_GPIO,
-                           CARD_SDMMC_CMD_GPIO,
-                           CARD_SDMMC_D0_GPIO,
-                           CARD_SDMMC_D1_GPIO,
-                           CARD_SDMMC_D2_GPIO,
-                           CARD_SDMMC_D3_GPIO);
-#else
-        static SdMMC sdmmc(CARD_SDMMC_CLK_GPIO,
-                           CARD_SDMMC_CMD_GPIO,
-                           CARD_SDMMC_D0_GPIO);
-#endif
-        return &sdmmc;
-    }
-#endif
+virtual SdCard* GetSdCard() override {
+    static SdMMC sdmmc(CARD_SDMMC_CLK_GPIO,
+                       CARD_SDMMC_CMD_GPIO,
+                       CARD_SDMMC_D0_GPIO); 
+    return &sdmmc;
+}
+
 };
 
 DECLARE_BOARD(JiuchuanDevBoard);

@@ -1,0 +1,43 @@
+name: Build ESP32-S3 XiaoZhi Firmware
+
+on:
+  push:
+    branches:
+      - develop_vn
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up ESP-IDF
+        uses: espressif/setup-esp-idf@v1
+        with:
+          version: v5.5
+          target: esp32s3
+
+      - name: Build firmware
+        run: |
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Merge firmware to single BIN
+        run: |
+          esptool.py merge_bin \
+            --chip esp32s3 \
+            --output merged.bin \
+            --flash_mode dio \
+            --flash_size detect \
+            0x0 build/bootloader/bootloader.bin \
+            0x8000 build/partition_table/partition-table.bin \
+            0x100000 build/xiaozhi-esp32_vietnam.bin
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaozhi-esp32s3-merged-bin
+          path: merged.bin

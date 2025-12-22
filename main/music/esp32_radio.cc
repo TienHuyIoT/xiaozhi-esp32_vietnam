@@ -94,7 +94,10 @@ void Esp32Radio::InitializeRadioStations() {
     radio_stations_["VOV4_HCM"]         = RadioStation("VOV4 TP.HCM",                   "https://stream.vovmedia.vn/vov4hcm",     "Dân tộc - TP.HCM",                          "Regional",             4.5f);
 
     // === VOV – TIẾNG ANH ===
-    radio_stations_["VOV5_ENGLISH"]     = RadioStation("VOV 5 – English 24/7",          "https://stream.vovmedia.vn/vov247",      "Kênh tiếng Anh quốc tế",                   "International",        4.0f);
+    radio_stations_["VOV5_ENGLISH"]     = RadioStation("VOV 5 – English 24/7",          "https://stream.vovmedia.vn/vov247",      	"Kênh tiếng Anh quốc tế",                   "International",        4.0f);
+	radio_stations_["NPR_News"] 		= RadioStation("NPR English NEWS", 				"https://npr-ice.streamguys1.com/live.aac", "Kênh tiếng anh NPR - Ennglish study", 		"International", 		5.0f);
+    radio_stations_["ABC_NEWS"] 		= RadioStation("ABC English News", 				"https://abc.streamguys1.com/live/rnnsw/icecast.audio", "Kênh Tiếng anh ABC - English News", 			"International", 		5.0f);
+    radio_stations_["ABC_LEARNING"] 	= RadioStation("ABC Learning English", 			"https://abc.streamguys1.com/live/localsydney/icecast.audio", "Kênh Tiếng anh ABC- ABC Learn English", 		"International", 		5.0f);
 
     ESP_LOGI(TAG, "Initialized %d VN radio stations (AAC format only)", radio_stations_.size());
 }

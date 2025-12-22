@@ -5,7 +5,7 @@
 #include "button.h"
 #include "config.h"
 #include "i2c_device.h"
-
+#include "sdmmc.h" // thêm chân kết nối SDCard
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
 #include <driver/i2c_master.h>
@@ -378,6 +378,24 @@ public:
         }
         WifiBoard::SetPowerSaveMode(enabled);
     }
+
+#ifdef CONFIG_SD_CARD_MMC_INTERFACE
+    virtual SdCard* GetSdCard() override {
+#ifdef CARD_SDMMC_BUS_WIDTH_4BIT
+        static SdMMC sdmmc(CARD_SDMMC_CLK_GPIO,
+                           CARD_SDMMC_CMD_GPIO,
+                           CARD_SDMMC_D0_GPIO,
+                           CARD_SDMMC_D1_GPIO,
+                           CARD_SDMMC_D2_GPIO,
+                           CARD_SDMMC_D3_GPIO);
+#else
+        static SdMMC sdmmc(CARD_SDMMC_CLK_GPIO,
+                           CARD_SDMMC_CMD_GPIO,
+                           CARD_SDMMC_D0_GPIO);
+#endif
+        return &sdmmc;
+    }
+#endif
 };
 
 DECLARE_BOARD(JiuchuanDevBoard);

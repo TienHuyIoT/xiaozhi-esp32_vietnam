@@ -281,7 +281,7 @@ void McpServer::AddCommonTools() {
 				"Play a radio station by name. Use this tool when user requests to play radio or listen to a specific station."
 				"VOV mộc/mốc/mốt/mậu/máu/một/mút/mót/mục means VOV1 channel.\n"
 				"Args:\n"
-				"  `station_name`: The name of the radio station to play (e.g., 'VOV1', 'BBC', 'NPR').\n"
+				"  `station_name`: The name of the radio station to play (e.g., 'VOV1', 'ABC', 'NPR').\n"
 				"Return:\n"
 				"  Playback status information. Starts playing the radio station immediately.",
 				PropertyList({

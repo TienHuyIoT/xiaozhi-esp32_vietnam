@@ -18,6 +18,7 @@
 #include "esp32_sd_music.h"
 #include "esp32_music.h"
 #include "esp32_radio.h"
+#include "alarm_manager.h"
 
 // --- Display Weather ---
 #include "display.h"

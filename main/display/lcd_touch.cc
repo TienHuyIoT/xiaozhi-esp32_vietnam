@@ -5,6 +5,8 @@
 
 static const char* TAG = "LcdTouch";
 
+#define TOUCH_POLLING_DELAY_MS 10
+
 // ============================================================================
 // LcdTouch Base Class Implementation
 // ============================================================================
@@ -69,7 +71,8 @@ void LcdTouch::touch_event_task(void* arg)
 }
 
 void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
-    esp_lcd_touch_point_data_t point_data[1];
+    constexpr uint8_t TOUCH_MAX_POINT = 1;
+    esp_lcd_touch_point_data_t point_data[TOUCH_MAX_POINT];
     uint8_t touch_cnt = 0;
 
     if (interrupt_callback_) {
@@ -80,7 +83,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         }
     } else {
         // No interrupt callback, proceed with polling
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLLING_DELAY_MS));
     }
 
     esp_lcd_touch_handle_t touch_ctx = (esp_lcd_touch_handle_t)lv_indev_get_driver_data(drv);
@@ -90,7 +93,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         return;
     }
 
-    err = esp_lcd_touch_get_data(touch_ctx, point_data, &touch_cnt, 1);
+    err = esp_lcd_touch_get_data(touch_ctx, point_data, &touch_cnt, TOUCH_MAX_POINT);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get touch data: %s", esp_err_to_name(err));
         return;
@@ -98,13 +101,15 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
 
     ESP_LOGD(TAG, "Touch points detected: %d, at (%d, %d)", touch_cnt, point_data[0].x, point_data[0].y);
 
-    if (err == ESP_OK && touch_cnt > 0) {
+    if (err == ESP_OK && touch_cnt > 0 && touch_cnt <= TOUCH_MAX_POINT) {
         data->state = LV_INDEV_STATE_PRESSED;
         data->point.x = point_data[0].x;
         data->point.y = point_data[0].y;
         int64_t current_time = esp_timer_get_time();
-        if (current_time - touch_end_time_ > release_timeout_us_) {
+        if (current_time - touch_end_time_ > TOUCH_SWIPE_RELEASE_TIMEOUT) {
             release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;
+            was_touching_ = false;
+            ESP_LOGI(TAG, "Touch stable after release timeout");
         }
         touch_end_time_ = current_time;
         
@@ -113,6 +118,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         
         // Handle touch press (start of touch)
         if (!was_touching_) {
+            ESP_LOGI(TAG, "Touch press detected at (%d, %d)", current_x, current_y);
             HandleTouchPress(current_x, current_y);
         }
         
@@ -124,10 +130,9 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         if (was_touching_ && !is_swiping_) {
             TouchGesture gesture = DetectSwipeGesture();
             if (gesture != TOUCH_GESTURE_NONE) {
-                release_timeout_us_ = TOUCH_SWIPE_RELEASE_TIMEOUT; // Extend release timeout to avoid immediate release handling
-                HandleTouchPress(current_x, current_y);
                 gesture_detected_ = true;
-                ESP_LOGI(TAG, "Swipe gesture detected during touch");
+                release_timeout_us_ = TOUCH_SWIPE_RELEASE_TIMEOUT; // Extend release timeout to avoid immediate release handling
+                HandleTouchRefresh(current_x, current_y);
                 if (gesture_callback_) {
                     gesture_callback_(gesture, touch_current_x_, touch_current_y_);
                 }
@@ -135,11 +140,11 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         }
         
         // Detect long press
-        if (!gesture_detected_) {
+        if (!long_press_detected_ && !gesture_detected_) {
             int64_t touch_duration = esp_timer_get_time() - touch_start_time_;
             if (touch_duration > long_press_time_us_) {
-                gesture_detected_ = true;
-                ESP_LOGI(TAG, "Long press detected at (%d, %d)", touch_current_x_, touch_current_y_);
+                long_press_detected_ = true;
+                ESP_LOGI(TAG, "🖐️ Long press detected at (%d, %d) after %lld us", touch_current_x_, touch_current_y_, touch_duration);
                 if (gesture_callback_) {
                     gesture_callback_(TOUCH_GESTURE_LONG_PRESS, touch_current_x_, touch_current_y_);
                 }
@@ -149,12 +154,15 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         was_touching_ = true;
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
+        ESP_LOGI(TAG, "No touch detected");
         // Handle touch release (end of touch)
         if (was_touching_) { // Debounce release
             int64_t current_time = esp_timer_get_time();
             int32_t time_since_release = current_time - touch_end_time_;
-            if (current_time - touch_end_time_ > release_timeout_us_) {
-                if (!gesture_detected_) {
+            ESP_LOGI(TAG, "Time since last touch point: %d us, release timeout: %d us", time_since_release, release_timeout_us_);
+            if (time_since_release > release_timeout_us_) {
+                if (!gesture_detected_ && !long_press_detected_) {
+                    ESP_LOGI(TAG, "Touch release confirmed after %d us", time_since_release);
                     HandleTouchRelease();
                 }
                 was_touching_ = false;
@@ -166,8 +174,6 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
     data->continue_reading = true;
 }
 
-
-
 void LcdTouch::HandleTouchPress(int16_t x, int16_t y) {
     touch_start_x_ = x;
     touch_start_y_ = y;
@@ -175,9 +181,19 @@ void LcdTouch::HandleTouchPress(int16_t x, int16_t y) {
     touch_current_y_ = y;
     touch_start_time_ = esp_timer_get_time();
     gesture_detected_ = false;
+    long_press_detected_ = false;
     is_swiping_ = false;  // Reset swipe flag
     
-    ESP_LOGD(TAG, "Touch press at (%d, %d)", x, y);
+    ESP_LOGD(TAG, "Touch press at (%d, %d) at time %lld", x, y, touch_start_time_);
+}
+
+void LcdTouch::HandleTouchRefresh(int16_t x, int16_t y) {
+    touch_start_x_ = x;
+    touch_start_y_ = y;
+    touch_current_x_ = x;
+    touch_current_y_ = y;
+    is_swiping_ = false;  // Reset swipe flag
+    touch_start_time_ = esp_timer_get_time();
 }
 
 void LcdTouch::HandleTouchRelease() {
@@ -193,14 +209,14 @@ void LcdTouch::HandleTouchRelease() {
         // Check for double tap
         if (time_since_last_tap < double_tap_window_us_ && time_since_last_tap > tap_timeout_us_ && last_tap_time_ > 0) {
             // Double tap detected
-            ESP_LOGI(TAG, "Double tap at (%d, %d)", touch_start_x_, touch_start_y_);
+            ESP_LOGI(TAG, "👆👆 Double tap at (%d, %d)", touch_start_x_, touch_start_y_);
             if (gesture_callback_) {
                 gesture_callback_(TOUCH_GESTURE_DOUBLE_TAP, touch_start_x_, touch_start_y_);
             }
             last_tap_time_ = 0; // Reset to prevent triple tap
         } else {
             // Single tap detected
-            ESP_LOGI(TAG, "Single tap at (%d, %d)", touch_start_x_, touch_start_y_);
+            ESP_LOGI(TAG, "👆 Single tap at (%d, %d)", touch_start_x_, touch_start_y_);
             if (gesture_callback_) {
                 gesture_callback_(TOUCH_GESTURE_TAP, touch_start_x_, touch_start_y_);
             }
@@ -224,26 +240,26 @@ TouchGesture LcdTouch::DetectSwipeGesture() {
         return TOUCH_GESTURE_NONE;
     }
     
-    // Detect horizontal swipe (same logic as custom_touch_read_cb)
-    if (std::abs(dx) > swipe_threshold_) {
+    // Detect horizontal swipe
+    if (std::abs(dx) > swipe_threshold_ && abs(dx) > abs(dy) * 1.5) {
         is_swiping_ = true;  // Mark as swiping to prevent tap
         if (dx > 0) {
-            ESP_LOGI(TAG, "Swipe RIGHT detected (dx=%d)", dx);
+            ESP_LOGI(TAG, "👉 Swipe RIGHT detected (dx=%d)", dx);
             return TOUCH_GESTURE_SWIPE_RIGHT;
         } else {
-            ESP_LOGI(TAG, "Swipe LEFT detected (dx=%d)", dx);
+            ESP_LOGI(TAG, "👈 Swipe LEFT detected (dx=%d)", dx);
             return TOUCH_GESTURE_SWIPE_LEFT;
         }
     }
     
-    // Detect vertical swipe (same logic as custom_touch_read_cb)
-    if (std::abs(dy) > swipe_threshold_) {
+    // Detect vertical swipe
+    if (std::abs(dy) > swipe_threshold_ && abs(dy) > abs(dx) * 1.5) {
         is_swiping_ = true;  // Mark as swiping to prevent tap
         if (dy > 0) {
-            ESP_LOGI(TAG, "Swipe DOWN detected (dy=%d)", dy);
+            ESP_LOGI(TAG, "👇 Swipe DOWN detected (dy=%d)", dy);
             return TOUCH_GESTURE_SWIPE_DOWN;
         } else {
-            ESP_LOGI(TAG, "Swipe UP detected (dy=%d)", dy);
+            ESP_LOGI(TAG, "👆 Swipe UP detected (dy=%d)", dy);
             return TOUCH_GESTURE_SWIPE_UP;
         }
     }

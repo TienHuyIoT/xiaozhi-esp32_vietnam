@@ -15,7 +15,7 @@ LV_FONT_DECLARE(font_awesome_30_4);
 LV_FONT_DECLARE(lv_font_montserrat_20);
 LV_FONT_DECLARE(lv_font_montserrat_22);
 LV_FONT_DECLARE(lv_font_montserrat_28);
-LV_FONT_DECLARE(lv_font_montserrat_48);
+LV_FONT_DECLARE(lv_font_ds_digitb_48);
 
 WeatherUI::WeatherUI() 
     : idle_panel_(nullptr)
@@ -71,8 +71,9 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     // Time label
     if (!idle_time_label_) {
         idle_time_label_ = lv_label_create(idle_panel_);
-        lv_obj_set_style_text_font(idle_time_label_, &lv_font_montserrat_48, 0);
+        lv_obj_set_style_text_font(idle_time_label_, &lv_font_ds_digitb_48, LV_PART_MAIN);
         lv_obj_set_style_text_color(idle_time_label_, lv_color_hex(0xFFFF00), 0);
+        lv_obj_set_style_text_letter_space(idle_time_label_, 0, 0); // IMPORTANT: Disable letter spacing for digital font
     }
 
     // Date label

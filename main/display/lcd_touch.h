@@ -7,7 +7,14 @@
 #include <esp_lcd_touch.h>
 #include <functional>
 
-#define TOUCH_RELEASE_TIMEOUT 10000 // 10ms
+/** Touch release debounce timeout
+ * If touch using interrupt, after the interrupt is triggered, wait for this time
+ * to confirm that the touch is really released. Time has been turned down to 5ms
+ * 
+ * If touch using polling, this depends on the polling interval.
+*/
+
+#define TOUCH_RELEASE_TIMEOUT 5000 // 5ms
 #define TOUCH_SWIPE_RELEASE_TIMEOUT 500000 // 500ms
 
 // Touch gesture types
@@ -37,12 +44,12 @@ protected:
     TouchEventCallback gesture_callback_ = nullptr;
     
     // Gesture detection parameters
-    int16_t swipe_threshold_ = 20;          // Minimum pixels for swipe (reduced for better sensitivity)
+    int16_t swipe_threshold_ = 40;          // Minimum pixels for swipe (reduced for better sensitivity)
     int32_t swipe_timeout_us_ = 2000000;    // Maximum time for swipe (2 seconds)
     int32_t tap_timeout_us_ = 170000;       // Maximum time for tap (170ms)
     int32_t double_tap_window_us_ = 500000; // Window for double tap (500ms)
     int32_t long_press_time_us_ = 800000;   // Time for long press (800ms)
-    int32_t release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;    // Time to confirm release (50ms)
+    int32_t release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;    // Time to confirm release (10ms)
     
     // Touch state tracking
     bool is_touching_ = false;
@@ -55,6 +62,7 @@ protected:
     int64_t touch_end_time_ = 0;
     int64_t last_tap_time_ = 0;
     bool gesture_detected_ = false;
+    bool long_press_detected_ = false;
     bool is_swiping_ = false;  // Flag to prevent tap when swiping
     
     // Display transformation settings
@@ -93,6 +101,7 @@ protected:
     // Internal gesture detection methods
     virtual TouchGesture DetectSwipeGesture();
     virtual void HandleTouchPress(int16_t x, int16_t y);
+    virtual void HandleTouchRefresh(int16_t x, int16_t y);
     virtual void HandleTouchRelease();
 };
 

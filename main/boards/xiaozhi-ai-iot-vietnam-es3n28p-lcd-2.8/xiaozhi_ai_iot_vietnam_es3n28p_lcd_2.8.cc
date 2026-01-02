@@ -7,6 +7,7 @@
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
 #include <esp_lcd_touch.h>
 #include <esp_lcd_touch_ft6x36.h>
+#include <esp_lcd_touch_ft5x06.h>
 #include "display/lcd_touch.h"
 #endif
 #include <lvgl.h>
@@ -32,6 +33,33 @@
 #endif
 
 #define TAG "XiaozhiAIIoTEs3n28p"
+
+#define TOUCH_FT62XX_G_FT5201ID 0xA8     // FocalTech's panel ID
+#define TOUCH_FT62XX_REG_NUMTOUCHES 0x02 // Number of touch points
+
+#define TOUCH_FT62XX_NUM_X 0x33 // Touch X position
+#define TOUCH_FT62XX_NUM_Y 0x34 // Touch Y position
+
+#define TOUCH_FT62XX_REG_MODE 0x00        // Device mode, either WORKING or FACTORY
+#define TOUCH_FT62XX_REG_READDATA 0x00    // Read data from register
+#define TOUCH_FT62XX_REG_CALIBRATE 0x02   // Calibrate mode
+#define TOUCH_FT62XX_REG_WORKMODE 0x00    // Work mode
+#define TOUCH_FT62XX_REG_FACTORYMODE 0x40 // Factory mode
+#define TOUCH_FT62XX_REG_THRESHHOLD 0x80  // Threshold for touch detection
+#define TOUCH_FT62XX_REG_POINTRATE 0x88   // Point rate
+#define TOUCH_FT62XX_REG_FIRMVERS 0xA6    // Firmware version
+#define TOUCH_FT62XX_REG_CHIPID 0xA3      // Chip selecting
+#define TOUCH_FT62XX_REG_INTMODE 0xA4     // Interrupt mode
+#define TOUCH_FT62XX_REG_VENDID 0xA8      // FocalTech's panel ID
+
+#define TOUCH_FT62XX_VENDID 0x11  // FocalTech's panel ID
+#define TOUCH_FT6206_CHIPID 0x06  // Chip selecting
+#define TOUCH_FT3236_CHIPID 0x33  // Chip selecting
+#define TOUCH_FT6236_CHIPID 0x36  // Chip selecting
+#define TOUCH_FT6236U_CHIPID 0x64 // Chip selecting
+#define TOUCH_FT6336U_CHIPID 0x64 // Chip selecting
+
+#define TOUCH_FT62XX_DEFAULT_THRESHOLD 64 // Default threshold for touch detection
 
 // Global variables for touch callback
 
@@ -204,7 +232,7 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
       .y_max = DISPLAY_HEIGHT - 1,
       // TOUCH_RST_PIN already handled above, should not handle reset here by driver 
       // due to timing delay 10ms is very short and causes issues inside driver
-      .rst_gpio_num = GPIO_NUM_NC,   // TOUCH_RST_PIN
+      .rst_gpio_num = GPIO_NUM_NC, // TOUCH_RST_PIN
       .int_gpio_num = GPIO_NUM_NC, // TOUCH_INT_PIN
       .levels = {
         .reset = 0,
@@ -231,7 +259,7 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     
     ESP_LOGI(TAG, "Creating touch I2C panel IO...");
     esp_err_t ret;
-    ret = esp_lcd_new_panel_io_i2c_v2(codec_i2c_bus_, &tp_io_config, &tp_io_handle);
+    ret = esp_lcd_new_panel_io_i2c(codec_i2c_bus_, &tp_io_config, &tp_io_handle);
     if (ret != ESP_OK) {
       ESP_LOGE(TAG, "Failed to create touch I2C panel IO: %s", esp_err_to_name(ret));
       return;
@@ -246,6 +274,27 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     }
     ESP_LOGI(TAG, "✅ Touch panel FT6236G initialized successfully with custom driver!");
 
+    // Set touch threshold
+    uint8_t threshold_reg[1] = {TOUCH_FT62XX_DEFAULT_THRESHOLD};
+    ret = esp_lcd_panel_io_tx_param(tp_io_handle, TOUCH_FT62XX_REG_THRESHHOLD, threshold_reg, 1);
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "Failed to enable touch panel threshold: %s", esp_err_to_name(ret));
+    }
+
+    // Set point rate
+    uint8_t rate_reg[1] = {0x0A}; // 100ms
+    ret = esp_lcd_panel_io_tx_param(tp_io_handle, TOUCH_FT62XX_REG_POINTRATE, rate_reg, 1);
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "Failed to enable touch panel point rate: %s", esp_err_to_name(ret));
+    }
+
+    // Set interrupt mode
+    uint8_t int_mode_reg[1] = {0x01}; // 1 = interrupt output, 0 = polling
+    ret = esp_lcd_panel_io_tx_param(tp_io_handle, TOUCH_FT62XX_REG_INTMODE, int_mode_reg, 1);
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "Failed to enable touch panel interrupt output: %s", esp_err_to_name(ret));
+    }
+
     touch_ = new I2cLcdTouch(tp_, tp_io_handle, 
                           DISPLAY_WIDTH, DISPLAY_HEIGHT, 
                           DISPLAY_SWAP_XY, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
@@ -259,7 +308,6 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
       switch (gesture) {
         case TOUCH_GESTURE_SWIPE_RIGHT:
           {
-            ESP_LOGI(TAG, "👉 Swipe RIGHT");
             Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
             ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
             if (source == Display::DisplaySourceType::SD_CARD) {
@@ -289,7 +337,6 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
           break;
         case TOUCH_GESTURE_SWIPE_LEFT:
           {
-            ESP_LOGI(TAG, "👈 Swipe LEFT");
             Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
             ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
             if (source == Display::DisplaySourceType::SD_CARD) {
@@ -318,7 +365,6 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
           }
           break;
         case TOUCH_GESTURE_SWIPE_DOWN:
-          ESP_LOGI(TAG, "👇 Swipe DOWN");
           {
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() - 5;
@@ -330,7 +376,6 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
           }
           break;
         case TOUCH_GESTURE_SWIPE_UP:
-          ESP_LOGI(TAG, "👆 Swipe UP");
           {
             auto codec = GetAudioCodec();
             auto volume = codec->output_volume() + 5;
@@ -342,10 +387,8 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
           }
           break;
         case TOUCH_GESTURE_TAP:
-          ESP_LOGI(TAG, "🖐️ Tap at (%d, %d)", x, y);
           break;
         case TOUCH_GESTURE_DOUBLE_TAP:
-          ESP_LOGI(TAG, "👆👆 Double Tap at (%d, %d)", x, y);
           {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {

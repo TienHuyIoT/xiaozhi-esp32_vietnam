@@ -7,10 +7,9 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
-#include <unordered_map>
 
 extern "C" {
 #include "mp3dec.h"
@@ -22,62 +21,51 @@ public:
     // 1) ENUM — State Machine
     // ============================================================
     enum class PlayerState {
-        Stopped = 0,   // Không phát
-        Preparing,     // Đang chuẩn bị phát
-        Playing,       // Đang phát
-        Paused,        // Tạm dừng
-        Error          // Lỗi
+        Stopped = 0,
+        Preparing,
+        Playing,
+        Paused,
+        Error
     };
 
     // ============================================================
     // 2) ENUM — Repeat modes
     // ============================================================
     enum class RepeatMode {
-        None = 0,      // Không lặp
-        RepeatOne,     // Lặp 1 bài
-        RepeatAll      // Lặp toàn playlist
+        None = 0,
+        RepeatOne,
+        RepeatAll
     };
 
     // ============================================================
-    // 3) Struct TrackInfo — dữ liệu một bài
+    // 3) Struct TrackInfo — dữ liệu một bài (đã tối giản ID3)
+    //  - Chỉ còn ID3v1 (title/artist/album/genre/comment/year/track)
+    //  - KHÔNG còn mtime, cover_offset, ID3v2 text
+    //  - Duration/bitrate tính từ MP3 frame + file_size
     // ============================================================
     struct TrackInfo {
-		// ============================================
-		// Hiển thị
-		// ============================================
-		std::string name;   // Tên hiển thị ưu tiên ID3
-		std::string path;   // Đường dẫn tuyệt đối
+        // Hiển thị
+        std::string name;   // Tên hiển thị (ưu tiên ID3v1 title, fallback tên file)
+        std::string path;   // Đường dẫn tuyệt đối
 
-		// ============================================
-		// ID3 TEXT TAGS (ID3v1 + ID3v2)
-		// ============================================
-		std::string title;   
-		std::string artist;
-		std::string album;
-		std::string genre;
-		std::string comment;
-		std::string year;
-		int         track_number = 0;
+        // Metadata cơ bản (từ ID3v1 — rất nhẹ)
+        std::string title;
+        std::string artist;
+        std::string album;
+        std::string genre;
+        std::string comment;
+        std::string year;
+        int         track_number = 0;
 
-		// ============================================
-		// AUDIO INFO (tự cập nhật khi decode)
-		// ============================================
-		int duration_ms  = 0;
-		int bitrate_kbps = 0;
+        // Audio info (cập nhật khi decode)
+        int   duration_ms  = 0;
+        int   bitrate_kbps = 0;
+        size_t file_size   = 0;  // dùng cho info/debug, không cache theo mtime
 
-		// ============================================
-		// METADATA CACHE (dùng để xác định file thay đổi)
-		// ============================================
-		size_t file_size = 0;
-		time_t mtime     = 0;
-
-		// ============================================
-		// COVER ART (metadata offset, không load ảnh)
-		// ============================================
-		uint32_t cover_offset = 0;
-		uint32_t cover_size   = 0;
-		std::string cover_mime;
-	};
+        // Cover art (không parse nữa nhưng giữ field để không phá tool MCP)
+        uint32_t    cover_size = 0;   // luôn 0 vì không parse APIC
+        std::string cover_mime;       // luôn rỗng
+    };
 
     // ============================================================
     // 4) Struct Progress — dành cho UI
@@ -99,53 +87,55 @@ public:
     // ============================================================
     // 6) Playlist API cơ bản
     // ============================================================
-    bool loadTrackList();                          // Quét SD / thư mục hiện tại
-    size_t getTotalTracks() const;                 // Tổng số bài trong playlist hiện tại
-    std::vector<TrackInfo> listTracks() const;     // Toàn bộ playlist
+    // Đọc playlist từ playlist.json, nếu không có/hỏng sẽ quét SD và ghi lại
+    bool loadTrackList();
+    size_t getTotalTracks() const;
+    std::vector<TrackInfo> listTracks() const;
 
-    bool setDirectory(const std::string& relative_dir);  // Chọn thư mục làm root
-    bool playDirectory(const std::string& relative_dir); // Chọn + phát từ thư mục
+    // Chọn thư mục gốc phát nhạc (sẽ dùng playlist.json trong thư mục đó)
+    bool setDirectory(const std::string& relative_dir);
+    bool playDirectory(const std::string& relative_dir);
 
-    bool playByName(const std::string& keyword);   // Phát bài theo tên / từ khóa
-    TrackInfo getTrackInfo(int index) const;       // Lấy thông tin bài theo index
-    bool setTrack(int index);                      // Chọn bài theo index rồi play
+    // Phát theo tên / keyword
+    bool playByName(const std::string& keyword);
+    TrackInfo getTrackInfo(int index) const;
+    bool setTrack(int index);
 
-    std::string getCurrentTrack() const;           // Tên bài hiện tại
-    std::string getCurrentTrackPath() const;       // Đường dẫn tuyệt đối
+    std::string getCurrentTrack() const;
+    std::string getCurrentTrackPath() const;
 
-    std::vector<std::string> listDirectories() const;         // Liệt kê thư mục con
-    std::vector<TrackInfo> searchTracks(const std::string& keyword) const; // Tìm kiếm trong playlist
+    std::vector<std::string> listDirectories() const;
+    std::vector<TrackInfo> searchTracks(const std::string& keyword) const;
 
-    // FAT short-name + case-insensitive dir resolver
     std::string resolveLongName(const std::string& path);
     std::string resolveCaseInsensitiveDir(const std::string& path);
 
-    // Đếm số bài .mp3 trong thư mục bất kỳ (tên tương đối từ mount point)
+    // Đếm số bài trong 1 thư mục (dùng playlist hiện tại, không quét lại SD)
     size_t countTracksInDirectory(const std::string& relative_dir);
-
-    // Đếm số bài trong playlist hiện tại (thư mục hiện tại)
     size_t countTracksInCurrentDirectory() const;
 
-    // Liệt kê theo trang: page_index = 0 → trang 1, mỗi trang mặc định 10 bài
     std::vector<TrackInfo> listTracksPage(size_t page_index,
                                           size_t page_size = 10) const;
+
+    // Quét lại toàn bộ SD (từ root_directory_) và ghi đè playlist.json + RAM
+    bool rebuildPlaylistFromSd();
 
     // ============================================================
     // 7) Playback API
     // ============================================================
-    bool play();       // Nếu đang Paused → resume, nếu không → start thread mới
-    void pause();      // Tạm dừng nhưng không reset
-    void stop();       // Dừng hoàn toàn, reset progress
+    bool play();
+    void pause();
+    void stop();
 
-    bool next();       // Bài kế tiếp (hỗ trợ shuffle/repeat)
-    bool prev();       // Bài trước đó
-    bool IsPlaying() const; // Đang phát hay không
+    bool next();
+    bool prev();
+    bool IsPlaying() const;
 
     // ============================================================
     // 8) Playback Settings
     // ============================================================
-    void shuffle(bool enabled);         // Bật/tắt shuffle
-    void repeat(RepeatMode mode);       // Repeat none/one/all
+    void shuffle(bool enabled);
+    void repeat(RepeatMode mode);
 
     // ============================================================
     // 9) Query state / FFT
@@ -154,85 +144,73 @@ public:
     TrackProgress updateProgress() const;
     int16_t* getFFTData() const;
 
-    // --- Helper cho UI: bitrate + thời gian ---
-    // Dùng cho LcdDisplay (music UI) để vẽ thanh tiến trình + text
-    int getBitrate() const;                // kbps (0 nếu chưa đọc được)
-    int64_t getDurationMs() const;         // tổng thời lượng hiện tại (ms)
-    int64_t getCurrentPositionMs() const;  // vị trí đang phát (ms)
-    std::string getDurationString() const; // "mm:ss" hoặc "hh:mm:ss"
+    int64_t getDurationMs() const;
+    int64_t getCurrentPositionMs() const;
+    int getBitrate() const;
+    std::string getDurationString() const;
     std::string getCurrentTimeString() const;
 
     // ============================================================
-    // 10) Chế độ gợi ý bài hát
+    // 10) Gợi ý bài hát
     // ============================================================
-    // Gợi ý vài bài kế tiếp dựa trên lịch sử phát + thư mục + tần suất
     std::vector<TrackInfo> suggestNextTracks(size_t max_results = 5);
-
-    // Gợi ý bài giống bài X (theo tên hoặc path keyword)
     std::vector<TrackInfo> suggestSimilarTo(const std::string& name_or_path,
                                             size_t max_results = 5);
 
-	// ============================================================
-    // 11) Playlist theo THỂ LOẠI
     // ============================================================
-    bool buildGenrePlaylist(const std::string& genre); // tạo danh sách các bài theo thể loại
-    bool playGenreIndex(int pos);                      // phát bài thứ pos trong danh sách thể loại
-    bool playNextGenre();                              // tự chuyển sang bài kế tiếp trong thể loại
-	
-	// Liệt kê tất cả thể loại hiện có trong playlist
+    // 11) Playlist theo THỂ LOẠI (dựa trên ID3v1 genre index)
+    // ============================================================
+    bool buildGenrePlaylist(const std::string& genre);
+    bool playGenreIndex(int pos);
+    bool playNextGenre();
     std::vector<std::string> listGenres() const;
-	
+
 private:
     // ============================================================
     // Playlist helpers
     // ============================================================
     void scanDirectoryRecursive(const std::string& dir,
-                            std::vector<TrackInfo>& out,
-                            std::unordered_map<std::string, TrackInfo>& cache);
+                                std::vector<TrackInfo>& out);
 
     int findNextTrackIndex(int start, int direction);
-
-    // Chuẩn hóa đường dẫn thư mục tương đối → tuyệt đối UTF-8 hợp lệ
     bool resolveDirectoryRelative(const std::string& relative_dir,
                                   std::string& out_full);
-
-    // Tìm index theo keyword (tên hoặc đường dẫn), so khớp UTF-8, case-insensitive ASCII
     int findTrackIndexByKeyword(const std::string& keyword) const;
+
+    // Playlist file (playlist.json)
+    bool loadPlaylistFromFile(const std::string& playlist_path,
+                              std::vector<TrackInfo>& out) const;
+    bool savePlaylistToFile(const std::string& playlist_path,
+                            const std::vector<TrackInfo>& list) const;
 
     // ============================================================
     // Playback Thread
     // ============================================================
-    void playbackThreadFunc();              // Thread main loop
+    void playbackThreadFunc();
     bool decodeAndPlayFile(const TrackInfo& track);
-
-    void joinPlaybackThreadWithTimeout();   // Gom code join/detach thread
+    void joinPlaybackThreadWithTimeout();
 
     // ============================================================
     // MP3 Decoder Utilities
     // ============================================================
-    bool InitializeMp3Decoder();            // Init mini-mp3
-    void cleanupMp3Decoder();               // Free decoder
+    bool initializeMp3Decoder();
+    void cleanupMp3Decoder();
     size_t SkipId3Tag(uint8_t* data, size_t size);
-    void resetSampleRate();                 // Restore sample-rate codec
+    void resetSampleRate();
 
     // ============================================================
     // Lịch sử phát & gợi ý
     // ============================================================
-    void recordPlayHistory(int index);      // Cập nhật history + play_count
+    void recordPlayHistory(int index);
 
 private:
-    // ============================================================
-    // DATA MEMBERS
-    // ============================================================
-    SdCard* sd_card_;                       // Thẻ SD được gắn kết
+    SdCard* sd_card_;
     // Playlist / thư mục
     std::string root_directory_;
     std::vector<TrackInfo> playlist_;
     mutable std::mutex playlist_mutex_;
-    int current_index_;
-    std::vector<uint32_t> play_count_;      // Đếm số lần phát từng bài
-	// Cache ID3 toàn bộ file đã từng thấy trong session (RAM only)
-    std::unordered_map<std::string, TrackInfo> id3_cache_;
+    int current_index_ = -1;
+    std::vector<uint32_t> play_count_;
 
     // Playback state / thread
     std::thread playback_thread_;
@@ -257,17 +235,16 @@ private:
     // mini-mp3 decoder
     void* mp3_decoder_;
     bool mp3_decoder_initialized_;
-    MP3FrameInfo mp3_frame_info_;
-	
-    // PLAYLIST THEO THỂ LOẠI (genre playlist)
-    std::vector<int> genre_playlist_;     // danh sách index các bài trùng thể loại
-    int genre_current_pos_ = -1;          // đang ở bài thứ mấy trong genre_playlist
-    std::string genre_current_key_;       // thể loại hiện tại (vd: "rock")
+    MP3FrameInfo mp3_frame_info_{};
+
+    // Playlist theo thể loại
+    std::vector<int> genre_playlist_;
+    int genre_current_pos_ = -1;
+    std::string genre_current_key_;
 
     // History / gợi ý
     mutable std::mutex history_mutex_;
-    std::vector<int> play_history_indices_; // FIFO index đã phát (giới hạn kích thước)
-
+    std::vector<int> play_history_indices_;
 };
 
 #endif // ESP32_SD_MUSIC_H

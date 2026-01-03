@@ -55,7 +55,7 @@ private:
     void GetBezelXY(int minute_idx, int w, int h, int margin, int& out_x, int& out_y);
     void CreateBezelTicksAndNumbers(lv_obj_t* parent, int w, int h);
     
-    void CreateCenterClock(lv_obj_t* parent, int w, int h); 
+    void CreateCenterClock(lv_obj_t* parent, int w, int h, float ratio);
     
     // Layout sections
     void CreateTopSection(lv_obj_t* parent);    

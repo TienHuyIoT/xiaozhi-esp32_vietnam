@@ -43,6 +43,7 @@ set(SOURCES "audio/audio_codec.cc"
             "device_state_event.cc"
             "assets.cc"
             "alarm_manager.cc"
+            "features/weather/bg_weather.c"
             "main.cc"
             )
 

@@ -1,3 +1,4 @@
+// --- [DIENBIEN MOD] ---
 #ifndef WEATHER_MODEL_H
 #define WEATHER_MODEL_H
 
@@ -29,6 +30,7 @@ struct IdleCardInfo {
     std::string wind_text;
     std::string pressure_text;
     const char* icon = nullptr;
+    int battery_level = 100; // [NEW] Thêm biến pin
 };
 
 #endif // WEATHER_MODEL_H

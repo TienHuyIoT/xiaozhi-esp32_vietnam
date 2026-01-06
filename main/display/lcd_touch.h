@@ -29,6 +29,27 @@ enum TouchGesture {
     TOUCH_GESTURE_LONG_PRESS
 };
 
+typedef struct {
+    float   ratio_xy;                 // Ratio of X to Y movement
+    int16_t swipe_threshold;          // Minimum pixels for swipe (reduced for better sensitivity)
+    int32_t swipe_timeout_us;         // Maximum time for swipe
+    int32_t tap_timeout_us;           // Maximum time for tap
+    int32_t double_tap_window_us;     // Window for double tap
+    int32_t long_press_time_us;       // Time for long press
+    int32_t release_timeout_us;       // Time to confirm release
+} touch_gesture_t;
+
+#define LCD_TOUCH_GESTURE_CONFIG()                      \
+    {                                                   \
+        .ratio_xy = 1.5f,                               \
+        .swipe_threshold = 50,                          \
+        .swipe_timeout_us = 2000000,                    \
+        .tap_timeout_us = 170000,                       \
+        .double_tap_window_us = 500000,                 \
+        .long_press_time_us = 800000,                   \
+        .release_timeout_us = TOUCH_RELEASE_TIMEOUT     \
+    }
+
 // Touch event callback type
 using TouchEventCallback = std::function<void(TouchGesture gesture, int16_t x, int16_t y)>;
 using TouchInterruptCallback = std::function<bool()>;
@@ -42,15 +63,9 @@ protected:
     
     // Touch event callback
     TouchEventCallback gesture_callback_ = nullptr;
-    
-    // Gesture detection parameters
-    int16_t swipe_threshold_ = 40;          // Minimum pixels for swipe (reduced for better sensitivity)
-    int32_t swipe_timeout_us_ = 2000000;    // Maximum time for swipe (2 seconds)
-    int32_t tap_timeout_us_ = 170000;       // Maximum time for tap (170ms)
-    int32_t double_tap_window_us_ = 500000; // Window for double tap (500ms)
-    int32_t long_press_time_us_ = 800000;   // Time for long press (800ms)
-    int32_t release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;    // Time to confirm release (10ms)
-    
+    touch_gesture_t gesture_config_ = LCD_TOUCH_GESTURE_CONFIG();
+    int32_t release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;
+
     // Touch state tracking
     bool is_touching_ = false;
     bool was_touching_ = false;
@@ -83,11 +98,13 @@ public:
     virtual void SetInterruptCallback(TouchInterruptCallback callback);
     
     // Configure gesture detection parameters
+    virtual void SetRatioXY(float ratio);
     virtual void SetSwipeThreshold(int16_t threshold);
-    virtual void SetSwipeTimeout(int64_t timeout_us);
-    virtual void SetTapTimeout(int64_t timeout_us);
-    virtual void SetDoubleTapWindow(int64_t window_us);
-    virtual void SetLongPressTime(int64_t time_us);
+    virtual void SetSwipeTimeout(int32_t timeout_us);
+    virtual void SetTapTimeout(int32_t timeout_us);
+    virtual void SetDoubleTapWindow(int32_t window_us);
+    virtual void SetLongPressTime(int32_t time_us);
+    virtual void SetReleaseTimeout(int32_t time_us);
     
     // Get touch handle
     virtual esp_lcd_touch_handle_t GetTouchHandle() const;
@@ -111,6 +128,14 @@ public:
     I2cLcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_t panel_io,
                 uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y, TouchInterruptCallback callback = nullptr);
     virtual ~I2cLcdTouch();
+};
+
+// SPI LCD Touch (XPT2046, etc.)
+class SpiLcdTouch : public LcdTouch {
+public:
+    SpiLcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_t panel_io,
+                uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y, TouchInterruptCallback callback = nullptr);
+    virtual ~SpiLcdTouch();
 };
 
 #endif // LCD_TOUCH_H

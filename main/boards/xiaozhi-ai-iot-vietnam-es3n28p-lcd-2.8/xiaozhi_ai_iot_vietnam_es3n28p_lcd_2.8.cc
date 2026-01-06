@@ -185,7 +185,7 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     // Create touch interrupt semaphore
     touch_isr_mux_ = xSemaphoreCreateBinary();
     if (touch_isr_mux_ == NULL) {
-        ESP_LOGE("EchoEar", "Failed to create touch semaphore");
+        ESP_LOGE(TAG, "Failed to create touch semaphore");
     }
     
     // Manual reset of touch controller
@@ -244,8 +244,6 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
         .mirror_y = DISPLAY_MIRROR_Y ? 1U : 0U,
       },
     };
-    
-    ESP_LOGI(TAG, "Using polling mode (interrupt disabled) for touch detection");
     
     ESP_LOGI(TAG, "Touch config: x_max=%d, y_max=%d, swap_xy=%d, mirror_x=%d, mirror_y=%d",
              tp_cfg.x_max, tp_cfg.y_max, tp_cfg.flags.swap_xy, 

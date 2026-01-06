@@ -2,7 +2,7 @@
     "target": "esp32s3",
     "builds": [
         {
-            "name": "xiaozhi-ai-iot-vietnam-lcd-sdcard",
+            "name": "xiaozhi-ai-iot-vietnam-dtd",
             "sdkconfig_append": [
                 "CONFIG_LCD_ILI9341_240X320_NO_IPS=y",
                 "CONFIG_SD_CARD_MMC_INTERFACE=y",

@@ -43,7 +43,7 @@ LcdTouch::LcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_
         instance->touch_driver_read(drv, data);
     });
 #else
-    xTaskCreatePinnedToCore(touch_event_task, "touch_task", 3 * 1024, this, 5, NULL, 1);
+    xTaskCreatePinnedToCore(touch_event_task, "touch_task", 3 * 1024, this, 5, NULL, 0);
 #endif
 #endif
 }
@@ -107,7 +107,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         data->point.y = point_data[0].y;
         int64_t current_time = esp_timer_get_time();
         if (current_time - touch_end_time_ > TOUCH_SWIPE_RELEASE_TIMEOUT) {
-            release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;
+            release_timeout_us_ = gesture_config_.release_timeout_us;
             was_touching_ = false;
             ESP_LOGI(TAG, "Touch stable after release timeout");
         }
@@ -142,7 +142,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         // Detect long press
         if (!long_press_detected_ && !gesture_detected_) {
             int64_t touch_duration = esp_timer_get_time() - touch_start_time_;
-            if (touch_duration > long_press_time_us_) {
+            if (touch_duration > gesture_config_.long_press_time_us) {
                 long_press_detected_ = true;
                 ESP_LOGI(TAG, "🖐️ Long press detected at (%d, %d) after %lld us", touch_current_x_, touch_current_y_, touch_duration);
                 if (gesture_callback_) {
@@ -154,7 +154,6 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         was_touching_ = true;
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
-        ESP_LOGI(TAG, "No touch detected");
         // Handle touch release (end of touch)
         if (was_touching_) { // Debounce release
             int64_t current_time = esp_timer_get_time();
@@ -166,7 +165,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
                     HandleTouchRelease();
                 }
                 was_touching_ = false;
-                release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;
+                release_timeout_us_ = gesture_config_.release_timeout_us; // Reset to default
             }
         }
     }
@@ -207,7 +206,7 @@ void LcdTouch::HandleTouchRelease() {
         int64_t time_since_last_tap = current_time - last_tap_time_;
         
         // Check for double tap
-        if (time_since_last_tap < double_tap_window_us_ && time_since_last_tap > tap_timeout_us_ && last_tap_time_ > 0) {
+        if (time_since_last_tap < gesture_config_.double_tap_window_us && time_since_last_tap > gesture_config_.tap_timeout_us && last_tap_time_ > 0) {
             // Double tap detected
             ESP_LOGI(TAG, "👆👆 Double tap at (%d, %d)", touch_start_x_, touch_start_y_);
             if (gesture_callback_) {
@@ -236,12 +235,12 @@ TouchGesture LcdTouch::DetectSwipeGesture() {
     int64_t touch_duration = esp_timer_get_time() - touch_start_time_;
     
     // Check if swipe timeout has been exceeded
-    if (touch_duration > swipe_timeout_us_) {
+    if (touch_duration > gesture_config_.swipe_timeout_us) {
         return TOUCH_GESTURE_NONE;
     }
     
     // Detect horizontal swipe
-    if (std::abs(dx) > swipe_threshold_ && abs(dx) > abs(dy) * 1.5) {
+    if (std::abs(dx) > gesture_config_.swipe_threshold && abs(dx) > abs(dy) * gesture_config_.ratio_xy) {
         is_swiping_ = true;  // Mark as swiping to prevent tap
         if (dx > 0) {
             ESP_LOGI(TAG, "👉 Swipe RIGHT detected (dx=%d)", dx);
@@ -253,7 +252,7 @@ TouchGesture LcdTouch::DetectSwipeGesture() {
     }
     
     // Detect vertical swipe
-    if (std::abs(dy) > swipe_threshold_ && abs(dy) > abs(dx) * 1.5) {
+    if (std::abs(dy) > gesture_config_.swipe_threshold && abs(dy) > abs(dx) * gesture_config_.ratio_xy) {
         is_swiping_ = true;  // Mark as swiping to prevent tap
         if (dy > 0) {
             ESP_LOGI(TAG, "👇 Swipe DOWN detected (dy=%d)", dy);
@@ -275,29 +274,40 @@ void LcdTouch::SetInterruptCallback(TouchInterruptCallback callback) {
     interrupt_callback_ = callback;
 }
 
+void LcdTouch::SetRatioXY(float ratio) {
+    gesture_config_.ratio_xy = ratio;
+    ESP_LOGI(TAG, "Ratio XY set to %.2f", ratio);
+}
+
 void LcdTouch::SetSwipeThreshold(int16_t threshold) {
-    swipe_threshold_ = threshold;
+    gesture_config_.swipe_threshold = threshold;
     ESP_LOGI(TAG, "Swipe threshold set to %d pixels", threshold);
 }
 
-void LcdTouch::SetSwipeTimeout(int64_t timeout_us) {
-    swipe_timeout_us_ = timeout_us;
+void LcdTouch::SetSwipeTimeout(int32_t timeout_us) {
+    gesture_config_.swipe_timeout_us = timeout_us;
     ESP_LOGI(TAG, "Swipe timeout set to %lld us", timeout_us);
 }
 
-void LcdTouch::SetTapTimeout(int64_t timeout_us) {
-    tap_timeout_us_ = timeout_us;
+void LcdTouch::SetTapTimeout(int32_t timeout_us) {
+    gesture_config_.tap_timeout_us = timeout_us;
     ESP_LOGI(TAG, "Tap timeout set to %lld us", timeout_us);
 }
 
-void LcdTouch::SetDoubleTapWindow(int64_t window_us) {
-    double_tap_window_us_ = window_us;
+void LcdTouch::SetDoubleTapWindow(int32_t window_us) {
+    gesture_config_.double_tap_window_us = window_us;
     ESP_LOGI(TAG, "Double tap window set to %lld us", window_us);
 }
 
-void LcdTouch::SetLongPressTime(int64_t time_us) {
-    long_press_time_us_ = time_us;
+void LcdTouch::SetLongPressTime(int32_t time_us) {
+    gesture_config_.long_press_time_us = time_us;
     ESP_LOGI(TAG, "Long press time set to %lld us", time_us);
+}
+
+void LcdTouch::SetReleaseTimeout(int32_t time_us) {
+    gesture_config_.release_timeout_us = time_us;
+    release_timeout_us_ = time_us;
+    ESP_LOGI(TAG, "Release timeout set to %lld us", time_us);
 }
 
 esp_lcd_touch_handle_t LcdTouch::GetTouchHandle() const {
@@ -316,4 +326,18 @@ I2cLcdTouch::I2cLcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_h
 
 I2cLcdTouch::~I2cLcdTouch() {
     ESP_LOGI(TAG, "I2cLcdTouch destroyed");
+}
+
+// ============================================================================
+// SpiLcdTouch Implementation
+// ============================================================================
+
+SpiLcdTouch::SpiLcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_t panel_io,
+                         uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y, TouchInterruptCallback callback)
+    : LcdTouch(touch_handle, panel_io, width, height, swap_xy, mirror_x, mirror_y, callback)
+{
+}
+
+SpiLcdTouch::~SpiLcdTouch() {
+    ESP_LOGI(TAG, "SpiLcdTouch destroyed");
 }

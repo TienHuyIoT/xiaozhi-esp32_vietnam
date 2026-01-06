@@ -59,12 +59,34 @@
 #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_1
 
 
+#define DISPLAY_SPI_HOST      SPI3_HOST
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_10
 #define DISPLAY_MOSI_PIN      GPIO_NUM_12
+#define DISPLAY_MISO_PIN      GPIO_NUM_18
 #define DISPLAY_CLK_PIN       GPIO_NUM_11
 #define DISPLAY_DC_PIN        GPIO_NUM_13
 #define DISPLAY_RST_PIN       GPIO_NUM_14
 #define DISPLAY_CS_PIN        GPIO_NUM_21
+
+// Touchscreen section (XPT2046)
+// Use same SPI bus as LCD for touch controller, comment out to use different SPI bus
+// #define CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
+
+#ifdef CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
+#define TOUCH_SPI_HOST        DISPLAY_SPI_HOST
+#define TOUCH_MOSI_PIN        DISPLAY_MOSI_PIN
+#define TOUCH_MISO_PIN        DISPLAY_MISO_PIN
+#define TOUCH_CLK_PIN         DISPLAY_CLK_PIN
+#define TOUCH_CS_PIN          GPIO_NUM_3
+#define TOUCH_INT_PIN         GPIO_NUM_17
+#else
+#define TOUCH_SPI_HOST        SPI2_HOST
+#define TOUCH_MOSI_PIN        GPIO_NUM_46
+#define TOUCH_MISO_PIN        GPIO_NUM_18
+#define TOUCH_CLK_PIN         GPIO_NUM_9
+#define TOUCH_CS_PIN          GPIO_NUM_3
+#define TOUCH_INT_PIN         GPIO_NUM_17
+#endif
 
 
 #ifdef CONFIG_LCD_ST7789_240X320
@@ -277,6 +299,36 @@
 #define DISPLAY_SPI_MODE 0
 #endif
 
+#ifdef CONFIG_LCD_ILI9341_320X480
+#define LCD_TYPE_ILI9341_SERIAL
+#define DISPLAY_WIDTH   320
+#define DISPLAY_HEIGHT  480
+#define DISPLAY_MIRROR_X true
+#define DISPLAY_MIRROR_Y false
+#define DISPLAY_SWAP_XY false
+#define DISPLAY_INVERT_COLOR    true
+#define DISPLAY_RGB_ORDER  LCD_RGB_ELEMENT_ORDER_BGR
+#define DISPLAY_OFFSET_X  0
+#define DISPLAY_OFFSET_Y  0
+#define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
+#define DISPLAY_SPI_MODE 0
+#endif
+
+#ifdef CONFIG_LCD_ILI9488_320X480
+#define LCD_TYPE_ILI9488_SERIAL
+#define DISPLAY_WIDTH   320
+#define DISPLAY_HEIGHT  480
+#define DISPLAY_MIRROR_X false
+#define DISPLAY_MIRROR_Y false
+#define DISPLAY_SWAP_XY false
+#define DISPLAY_INVERT_COLOR    false
+#define DISPLAY_RGB_ORDER  LCD_RGB_ELEMENT_ORDER_BGR
+#define DISPLAY_OFFSET_X  0
+#define DISPLAY_OFFSET_Y  0
+#define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
+#define DISPLAY_SPI_MODE 0
+#endif
+
 #ifdef CONFIG_LCD_GC9A01_240X240
 #define LCD_TYPE_GC9A01_SERIAL
 #define DISPLAY_WIDTH   240
@@ -308,6 +360,6 @@
 
 
 // A MCP Test: Control a lamp
-#define LAMP_GPIO GPIO_NUM_18
+#define LAMP_GPIO GPIO_NUM_8
 
 #endif // _BOARD_CONFIG_H_

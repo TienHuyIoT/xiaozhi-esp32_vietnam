@@ -3,10 +3,35 @@
 
 #include <driver/gpio.h>
 
+#ifdef CONFIG_SD_CARD_MMC_INTERFACE
+// Define to use 4-bit SDMMC bus width; comment out to use 1-bit bus width
+#define CARD_SDMMC_BUS_WIDTH_4BIT
+
+#ifdef CARD_SDMMC_BUS_WIDTH_4BIT
+#define CARD_SDMMC_CLK_GPIO GPIO_NUM_9  // CLK pin
+#define CARD_SDMMC_CMD_GPIO GPIO_NUM_10  // MOSI pin or DI
+#define CARD_SDMMC_D0_GPIO  GPIO_NUM_11  // MISO pin or DO
+#define CARD_SDMMC_D1_GPIO  GPIO_NUM_12
+#define CARD_SDMMC_D2_GPIO  GPIO_NUM_13
+#define CARD_SDMMC_D3_GPIO  GPIO_NUM_14  // CS pin
+#else
+#define CARD_SDMMC_CLK_GPIO GPIO_NUM_9
+#define CARD_SDMMC_CMD_GPIO GPIO_NUM_10
+#define CARD_SDMMC_D0_GPIO  GPIO_NUM_11
+#endif
+#endif // CONFIG_SD_CARD_MMC_INTERFACE
+
+#ifdef CONFIG_SD_CARD_SPI_INTERFACE
+#define CARD_SPI_MOSI_GPIO GPIO_NUM_10   // DI
+#define CARD_SPI_MISO_GPIO GPIO_NUM_11   // DO
+#define CARD_SPI_SCLK_GPIO GPIO_NUM_9   // CLK
+#define CARD_SPI_CS_GPIO   GPIO_NUM_14   // CS
+#endif // CONFIG_SD_CARD_SPI_INTERFACE
+
 #define AUDIO_INPUT_SAMPLE_RATE  16000
 #define AUDIO_OUTPUT_SAMPLE_RATE 24000
 
-// 如果使用 Duplex I2S 模式，请注释下面一行
+// If using Duplex I2S mode, please comment out the following line.
 #define AUDIO_I2S_METHOD_SIMPLEX
 
 #ifdef AUDIO_I2S_METHOD_SIMPLEX
@@ -41,6 +66,26 @@
 #define DISPLAY_DC_PIN        GPIO_NUM_43   //40
 #define DISPLAY_RST_PIN       GPIO_NUM_44   //45   
 #define DISPLAY_CS_PIN        GPIO_NUM_NC   //41
+
+// Touchscreen section (XPT2046)
+// Use same SPI bus as LCD for touch controller, comment out to use different SPI bus
+// #define CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
+
+#ifdef CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
+#define TOUCH_SPI_HOST        DISPLAY_SPI_HOST
+#define TOUCH_MOSI_PIN        DISPLAY_MOSI_PIN
+#define TOUCH_MISO_PIN        DISPLAY_MISO_PIN
+#define TOUCH_CLK_PIN         DISPLAY_CLK_PIN
+#define TOUCH_CS_PIN          GPIO_NUM_3
+#define TOUCH_INT_PIN         GPIO_NUM_8
+#else
+#define TOUCH_SPI_HOST        SPI2_HOST
+#define TOUCH_MOSI_PIN        GPIO_NUM_46
+#define TOUCH_MISO_PIN        GPIO_NUM_17
+#define TOUCH_CLK_PIN         GPIO_NUM_2
+#define TOUCH_CS_PIN          GPIO_NUM_3
+#define TOUCH_INT_PIN         GPIO_NUM_8
+#endif
 
 
 #ifdef CONFIG_LCD_ST7789_240X320
@@ -251,6 +296,36 @@
 #define DISPLAY_OFFSET_Y  0
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 #define DISPLAY_SPI_MODE 3    //0
+#endif
+
+#ifdef CONFIG_LCD_ILI9341_320X480
+#define LCD_TYPE_ILI9341_SERIAL
+#define DISPLAY_WIDTH   320
+#define DISPLAY_HEIGHT  480
+#define DISPLAY_MIRROR_X true
+#define DISPLAY_MIRROR_Y false
+#define DISPLAY_SWAP_XY false
+#define DISPLAY_INVERT_COLOR    true
+#define DISPLAY_RGB_ORDER  LCD_RGB_ELEMENT_ORDER_BGR
+#define DISPLAY_OFFSET_X  0
+#define DISPLAY_OFFSET_Y  0
+#define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
+#define DISPLAY_SPI_MODE 0
+#endif
+
+#ifdef CONFIG_LCD_ILI9488_320X480
+#define LCD_TYPE_ILI9488_SERIAL
+#define DISPLAY_WIDTH   320
+#define DISPLAY_HEIGHT  480
+#define DISPLAY_MIRROR_X false
+#define DISPLAY_MIRROR_Y false
+#define DISPLAY_SWAP_XY false
+#define DISPLAY_INVERT_COLOR    false
+#define DISPLAY_RGB_ORDER  LCD_RGB_ELEMENT_ORDER_BGR
+#define DISPLAY_OFFSET_X  0
+#define DISPLAY_OFFSET_Y  0
+#define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
+#define DISPLAY_SPI_MODE 0
 #endif
 
 #ifdef CONFIG_LCD_GC9A01_240X240

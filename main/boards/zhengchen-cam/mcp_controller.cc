@@ -42,7 +42,6 @@ public:
                 app.SetAecMode(kAecOff);
                 return "{\"success\": true, \"message\": \"AEC对话打断模式已关闭\"}";
             }else {
-                auto& board = Board::GetInstance();
                 app.SetAecMode(kAecOnDeviceSide);
                 
                 return "{\"success\": true, \"message\": \"AEC对话打断模式已开启\"}";

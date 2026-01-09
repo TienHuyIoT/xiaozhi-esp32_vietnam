@@ -92,7 +92,7 @@ private:
     void InitializeI2c() {
         // Initialize I2C peripheral
         i2c_master_bus_config_t i2c_bus_cfg = {
-            .i2c_port = (i2c_port_t)1,
+            .i2c_port   = AUDIO_CODEC_I2C_NUM,
             .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
             .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
             .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -257,12 +257,17 @@ private:
         };
 
         esp_video_init_sccb_config_t sccb_config = {
+#if (CAMERA_I2C_NUM != AUDIO_CODEC_I2C_NUM)
             .init_sccb = true,
             .i2c_config = {
-                .port = 0,
+                .port = CAMERA_I2C_NUM,
                 .scl_pin = CAMERA_PIN_SIOC,
                 .sda_pin = CAMERA_PIN_SIOD,
             },
+#else
+            .init_sccb = false, // Use existing I2C bus with audio codec
+            .i2c_handle = i2c_bus_,
+#endif
             .freq = 100000,
         };
 
@@ -293,7 +298,7 @@ public:
         InitializeSpi();
         InitializeSt7789Display();
         InitializeButtons();
-        // InitializeCamera();
+        InitializeCamera();
 		InitializeController();
         GetBacklight()->RestoreBrightness();
     }

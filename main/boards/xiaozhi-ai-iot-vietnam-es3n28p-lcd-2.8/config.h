@@ -70,7 +70,7 @@
 
 #define LCD_SPI_HOST          SPI3_HOST
 
-#define LCD_ROTATION_DEGREE   90  // Set to 0, 90, 180, or 270
+#define LCD_ROTATION_DEGREE   0  // Set to 0, 90, 180, or 270
 #if LCD_ROTATION_DEGREE == 0
 #define LCD_TYPE_ILI9341_SERIAL
 #define DISPLAY_WIDTH         240

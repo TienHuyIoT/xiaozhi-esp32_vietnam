@@ -1114,7 +1114,7 @@ void Application::UpdateIdleDisplay() {
     
     IdleCardInfo card;
     
-    // Get system time
+    // 1. THỜI GIAN
     time_t now = time(nullptr);
     struct tm tm_buf;
     if (localtime_r(&now, &tm_buf) != nullptr) {
@@ -1122,14 +1122,44 @@ void Application::UpdateIdleDisplay() {
         strftime(buffer, sizeof(buffer), "%H:%M:%S", &tm_buf);
         card.time_text = buffer;
         
-        strftime(buffer, sizeof(buffer), "%d-%m-%Y", &tm_buf);
+        strftime(buffer, sizeof(buffer), "%d/%m/%Y", &tm_buf);
         card.date_text = buffer;
         
-        strftime(buffer, sizeof(buffer), "%A", &tm_buf);
-        card.day_text = buffer;
+        const char* wdays[] = {"Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"};
+        card.day_text = wdays[tm_buf.tm_wday];
     }
 
-    // Weather data
+    // 2. THÔNG TIN HỆ THỐNG
+    auto& board = Board::GetInstance();
+    card.network_icon = board.GetNetworkStateIcon();
+
+    int battery_level;
+    bool charging, discharging;
+    const char* icon = nullptr;
+    if (board.GetBatteryLevel(battery_level, charging, discharging)) {
+        if (charging) {
+            icon = FONT_AWESOME_BATTERY_BOLT;
+        } else {
+            const char* const levels[] = {
+                FONT_AWESOME_BATTERY_EMPTY,            // 0-19%
+                FONT_AWESOME_BATTERY_QUARTER,          // 20-39%
+                FONT_AWESOME_BATTERY_HALF,             // 40-59%
+                FONT_AWESOME_BATTERY_THREE_QUARTERS,   // 60-79%
+                FONT_AWESOME_BATTERY_FULL,             // 80-99%
+                FONT_AWESOME_BATTERY_FULL              // 100%
+            };
+            icon = levels[battery_level / 20];
+        }
+        card.battery_level = battery_level;
+        card.battery_icon = icon;
+        card.is_charging = charging;
+    } else {
+        card.battery_icon = FONT_AWESOME_BATTERY_BOLT;
+        card.battery_level = -1; // Không biết mức pin
+        card.is_charging = false;
+    }
+
+    // 3. THÔNG TIN THỜI TIẾT
     if (weather_info.valid) {
         card.city = weather_info.city;
         
@@ -1141,20 +1171,17 @@ void Application::UpdateIdleDisplay() {
         card.humidity_text = std::to_string(weather_info.humidity) + "%";
 
         char extra_buf[32];
-        snprintf(extra_buf, sizeof(extra_buf), "Cảm giác như: %d°C", (int)round(weather_info.feels_like));
-        card.feels_like_text = extra_buf;
-        
-        snprintf(extra_buf, sizeof(extra_buf), "Gió: %.1f m/s", weather_info.wind_speed);
+        snprintf(extra_buf, sizeof(extra_buf), "%.1f m/s", weather_info.wind_speed);
         card.wind_text = extra_buf;
-        
-        snprintf(extra_buf, sizeof(extra_buf), "Áp suất: %d hPa", weather_info.pressure);
-        card.pressure_text = extra_buf;
+
+        // Cập nhật Forecast vào Card
+        card.forecast = weather_info.forecast; // COPY DỮ LIỆU DỰ BÁO SANG UI
 
         card.icon = WeatherUI::GetWeatherIcon(weather_info.icon_code);
     } else {
-        card.city = "Connecting...";
+        card.city = "Dang cap nhat...";
         card.temperature_text = "--";
-        card.icon = FONT_AWESOME_WIFI;
+        card.icon = "\uf128"; 
     }
 
     auto display = Board::GetInstance().GetDisplay();

@@ -5,6 +5,7 @@
 #include "weather_config.h"
 #include <string>
 #include <memory>
+#include <ctime>
 
 class WeatherService {
 public:
@@ -18,6 +19,12 @@ public:
 
     // Fetch weather data from API
     bool FetchWeatherData();
+
+    // Fetch current weather data from API
+    bool FetchCurrentWeatherData(const std::string& city, const std::string& api_key);
+
+    // Fetch 5-day forecast data from API
+    bool FetchForecastData(const std::string& city, const std::string& api_key);
 
     // Get current weather info
     const WeatherInfo& GetWeatherInfo() const { return weather_info_; }
@@ -48,6 +55,8 @@ private:
 
     // Helper function to capitalize words
     static std::string CapitalizeWords(std::string str);
+
+    static std::string GetDayNameFromTime(time_t timestamp);
 };
 
 #endif // WEATHER_SERVICE_H

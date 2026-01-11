@@ -89,14 +89,14 @@ private:
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
         buscfg.mosi_io_num = DISPLAY_MOSI_PIN;
-        buscfg.miso_io_num = GPIO_NUM_NC;
+        buscfg.miso_io_num = DISPLAY_MISO_PIN;
         buscfg.sclk_io_num = DISPLAY_CLK_PIN;
         buscfg.quadwp_io_num = GPIO_NUM_NC;
         buscfg.quadhd_io_num = GPIO_NUM_NC;
         buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(DISPLAY_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
-#ifndef CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
+#if defined(CONFIG_TOUCH_PANEL_ENABLE) && !defined(CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD)
         spi_bus_config_t touch_buscfg = {};
         touch_buscfg.mosi_io_num = TOUCH_MOSI_PIN;
         touch_buscfg.miso_io_num = TOUCH_MISO_PIN;
@@ -111,7 +111,7 @@ private:
     void InitializeLcdDisplay() {
         esp_lcd_panel_io_handle_t panel_io = nullptr;
         esp_lcd_panel_handle_t panel = nullptr;
-        // 液晶屏控制IO初始化
+        // LCD screen control IO initialization
         ESP_LOGD(TAG, "Install panel IO");
         esp_lcd_panel_io_spi_config_t io_config = {};
         io_config.cs_gpio_num = DISPLAY_CS_PIN;
@@ -123,7 +123,7 @@ private:
         io_config.lcd_param_bits = 8;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(DISPLAY_SPI_HOST, &io_config, &panel_io));
 
-        // 初始化液晶屏驱动芯片
+        // Initialize LCD driver chip
         ESP_LOGD(TAG, "Install LCD driver");
         esp_lcd_panel_dev_config_t panel_config = {};
         panel_config.reset_gpio_num = DISPLAY_RST_PIN;
@@ -403,7 +403,7 @@ private:
         });
     }
 
-    // 物联网初始化，添加对 AI 可见设备
+    // IoT initialization, adding support for AI visible devices
     void InitializeTools() {
         static LampController lamp(LAMP_GPIO);
     }

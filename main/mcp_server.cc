@@ -133,6 +133,25 @@ void McpServer::AddCommonTools() {
             codec->SetOutputVolume(properties["volume"].value<int>());
             return true;
         });
+
+    // Tool to set speaker mode: disable/enable external amplifier (NS4150 PA control)
+    AddTool("self.audio_speaker.set_mode",
+        "Set the speaker mode. Use 'loa_ngoai' or 'external' to disable the external amplifier, or 'loa_trong' or 'internal' to enable it.",
+        PropertyList({
+            Property("mode", kPropertyTypeString)
+        }),
+        [&board](const PropertyList& properties) -> ReturnValue {
+            auto mode = properties["mode"].value<std::string>();
+            std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
+            if (mode.find("ngoai") != std::string::npos || mode.find("external") != std::string::npos) {
+                board.SetPaEnabled(false);
+                return "{\"success\": true, \"message\": \"External speaker mode: amplifier disabled\"}";
+            } else if (mode.find("trong") != std::string::npos || mode.find("internal") != std::string::npos) {
+                board.SetPaEnabled(true);
+                return "{\"success\": true, \"message\": \"Internal speaker mode: amplifier enabled\"}";
+            }
+            return "{\"success\": false, \"message\": \"Unknown mode\"}";
+        });
     
     auto backlight = board.GetBacklight();
     if (backlight) {

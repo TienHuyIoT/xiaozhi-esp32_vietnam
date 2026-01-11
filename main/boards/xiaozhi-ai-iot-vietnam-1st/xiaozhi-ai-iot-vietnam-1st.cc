@@ -125,6 +125,8 @@ private:
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
 
+    bool pa_enabled_ = true;
+
     i2c_master_bus_handle_t i2c_bus_;
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -275,6 +277,8 @@ public:
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {     
         InitializeI2c();
+        // Ensure PA GPIO is configured and enabled by default
+        SetPaEnabled(true);
         InitializePowerManager();
         InitializePowerSaveTimer();
         InitializeSpi();
@@ -283,6 +287,14 @@ public:
         GetBacklight()->RestoreBrightness();
 
         display_->Logo();
+    }
+
+    virtual void SetPaEnabled(bool enable) override {
+        pa_enabled_ = enable;
+        if (AUDIO_CODEC_PA_PIN != GPIO_NUM_NC) {
+            gpio_set_direction(AUDIO_CODEC_PA_PIN, GPIO_MODE_OUTPUT);
+            gpio_set_level(AUDIO_CODEC_PA_PIN, enable ? 1 : 0);
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override { 

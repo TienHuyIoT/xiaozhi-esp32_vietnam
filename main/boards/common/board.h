@@ -54,6 +54,11 @@ public:
     virtual void SetPowerSaveMode(bool enabled) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
+    // Control the external amplifier PA pin if available.
+    // `SetPaEnabled(false)` should disable external amp; `true` enables it.
+    virtual void SetPaEnabled(bool enable) { (void)enable; }
+    // Returns true if PA is considered enabled (default true).
+    virtual bool IsPaEnabled() { return true; }
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

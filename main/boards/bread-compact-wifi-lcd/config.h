@@ -59,23 +59,28 @@
 #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_NC
 #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_NC
 
-
+#define DISPLAY_SPI_HOST      SPI3_HOST
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_NC   //42
 #define DISPLAY_MOSI_PIN      GPIO_NUM_41   //47
+#define DISPLAY_MISO_PIN      GPIO_NUM_NC   //NC
 #define DISPLAY_CLK_PIN       GPIO_NUM_42   //21
 #define DISPLAY_DC_PIN        GPIO_NUM_43   //40
-#define DISPLAY_RST_PIN       GPIO_NUM_44   //45   
+#define DISPLAY_RST_PIN       GPIO_NUM_44   //45
 #define DISPLAY_CS_PIN        GPIO_NUM_NC   //41
+
 
 // Touchscreen section (XPT2046)
 // Use same SPI bus as LCD for touch controller, comment out to use different SPI bus
 // #define CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
 
 #ifdef CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
-#define TOUCH_SPI_HOST        DISPLAY_SPI_HOST
-#define TOUCH_MOSI_PIN        DISPLAY_MOSI_PIN
-#define TOUCH_MISO_PIN        DISPLAY_MISO_PIN
-#define TOUCH_CLK_PIN         DISPLAY_CLK_PIN
+#undef DISPLAY_MISO_PIN
+#define DISPLAY_MISO_PIN      GPIO_NUM_39
+
+#define TOUCH_SPI_HOST        SPI3_HOST
+#define TOUCH_MOSI_PIN        GPIO_NUM_47
+#define TOUCH_MISO_PIN        GPIO_NUM_39
+#define TOUCH_CLK_PIN         GPIO_NUM_21
 #define TOUCH_CS_PIN          GPIO_NUM_3
 #define TOUCH_INT_PIN         GPIO_NUM_8
 #else

@@ -3,8 +3,16 @@
 #define WEATHER_MODEL_H
 
 #include <string>
+#include <vector>
 
-// Weather information structure
+// Cấu trúc lưu trữ 1 mốc dự báo
+struct ForecastItem {
+    std::string day_name; // Ví dụ: "T2", "T3"
+    std::string icon_code; // Mã icon
+    float temp;           // Nhiệt độ dự báo
+};
+
+// Cấu trúc thông tin thời tiết (Lấy từ API về)
 struct WeatherInfo {
     std::string city;
     std::string description;
@@ -15,9 +23,11 @@ struct WeatherInfo {
     int pressure = 0;
     float wind_speed = 0.0f;
     bool valid = false;
+
+    std::vector<ForecastItem> forecast; 
 };
 
-// Idle card display information
+// Cấu trúc hiển thị ra màn hình
 struct IdleCardInfo {
     std::string city;
     std::string time_text;
@@ -29,8 +39,16 @@ struct IdleCardInfo {
     std::string feels_like_text;
     std::string wind_text;
     std::string pressure_text;
+    std::string battery_icon;
+    std::string network_icon;
     const char* icon = nullptr;
-    int battery_level = 100; // [NEW] Thêm biến pin
+    
+    // System Info
+    int battery_level = 100;
+    bool is_charging = false;
+    int wifi_rssi = 0;
+    
+    std::vector<ForecastItem> forecast;
 };
 
 #endif // WEATHER_MODEL_H

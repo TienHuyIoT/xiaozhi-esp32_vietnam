@@ -98,7 +98,7 @@ private:
         buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(DISPLAY_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
-#ifndef CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
+#if defined(CONFIG_TOUCH_PANEL_ENABLE) && !defined(CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD)
         spi_bus_config_t touch_buscfg = {};
         touch_buscfg.mosi_io_num = TOUCH_MOSI_PIN;
         touch_buscfg.miso_io_num = TOUCH_MISO_PIN;

@@ -261,12 +261,11 @@ bool WeatherService::FetchCurrentWeatherData(const std::string& city, const std:
     return success;
 }
 
-bool WeatherService::FetchForecastData(const std::string& city, const std::string& api_key) {
-    ESP_LOGI(TAG, "Fetching Forecast...");
-    
+bool WeatherService::FetchForecastData(const std::string& city, const std::string& api_key) {    
     std::string url_forecast = "https://api.openweathermap.org/data/2.5/forecast?q=" + UrlEncode(city) +
                                 "&appid=" + api_key + "&units=metric&cnt=40";
-    
+    ESP_LOGI(TAG, "Fetching forecast from: %s", url_forecast.c_str());
+
     auto& board = Board::GetInstance();
     auto network = board.GetNetwork();
     auto http = network->CreateHttp(WEATHER_HTTP_TIMEOUT_MS);
@@ -285,8 +284,38 @@ bool WeatherService::FetchForecastData(const std::string& city, const std::strin
         return false;
     }
 
-    std::string body = http->ReadAll();
+    size_t length = http->GetBodyLength();
+    ESP_LOGI(TAG, "Forecast Content Length: %zu", length);
+    if (length == 0 || length > (20 * 1024)) {
+        http->Close();
+        ESP_LOGE(TAG, "Forecast response body is empty");
+        return false;
+    }
+
+    std::string body;
+    body.reserve(length);
+    if (body.capacity() < length) {
+        ESP_LOGE(TAG, "Failed to reserve memory for forecast body");
+        http->Close();
+        return false;
+    }
+
+    constexpr size_t CHUNK_BUFFER_SIZE = 1024;
+    char *buffer = (char*)malloc(CHUNK_BUFFER_SIZE);
+    if (buffer == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate memory for forecast buffer");
+        http->Close();
+        return false;
+    }
+
+    int read_len;
+    while ((read_len = http->Read(buffer, CHUNK_BUFFER_SIZE)) > 0) {
+        body.append(buffer, read_len);
+        ESP_LOGI(TAG, "Forecast Read %d bytes", read_len);
+    }
+    free(buffer);
     http->Close();
+    ESP_LOGI(TAG, "Forecast Response %zu: %.512s", body.size(), body.c_str());
 
     cJSON* root = cJSON_Parse(body.c_str());
     if (root == nullptr) {

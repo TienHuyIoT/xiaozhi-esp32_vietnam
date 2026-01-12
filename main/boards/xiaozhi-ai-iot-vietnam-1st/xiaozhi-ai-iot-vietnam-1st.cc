@@ -30,9 +30,7 @@
 #include "settings.h"
 #include "pm.h"
 
-#define TAG "XINGZHI_CUBE_1_83TFT_WIFI_2ST_2MIC"
-#define TAG2 "LedStripControl"
-
+#define TAG "XINGZHI_CUBE_1_83TFT_WIFI_1ST"
 static const nv3023_lcd_init_cmd_t lcd_init_cmds[] = {
     {0xfd,(const uint8_t[]){0x06,0x08},2,0},
 	{0x61,(const uint8_t[]){0x07,0x04},2,0},
@@ -114,7 +112,7 @@ public:
     }
 };
 
-class XINGZHI_CUBE_1_83TFT_WIFI_2ST_2MIC : public WifiBoard {
+class XINGZHI_CUBE_1_83TFT_WIFI_1ST : public WifiBoard {
 private:
     Button boot_button_;
     Button volume_up_button_;
@@ -270,7 +268,7 @@ private:
     }
 
 public:
-    XINGZHI_CUBE_1_83TFT_WIFI_2ST_2MIC():
+    XINGZHI_CUBE_1_83TFT_WIFI_1ST():
         boot_button_(BOOT_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {     
@@ -355,4 +353,4 @@ public:
 #endif
 };
 
-DECLARE_BOARD(XINGZHI_CUBE_1_83TFT_WIFI_2ST_2MIC);
+DECLARE_BOARD(XINGZHI_CUBE_1_83TFT_WIFI_1ST);

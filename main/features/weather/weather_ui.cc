@@ -172,6 +172,7 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     lv_obj_set_style_border_width(container_, 0, 0);
     lv_obj_set_style_radius(container_, 0, 0); 
     lv_obj_set_style_pad_all(container_, 0, 0); 
+    lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(container_, LV_OBJ_FLAG_SCROLLABLE);
 
     CreateGradientBars(container_);
@@ -194,7 +195,7 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     lv_obj_set_style_pad_row(main_col, 0, 0);
 
     // --- HÀNG 0: CHẤM BI TRÊN ---
-    lv_obj_t* dots_top = CreateDotsRow(main_col, screen_width, w_ratio);
+    CreateDotsRow(main_col, screen_width, w_ratio);
 
     // --- HÀNG 1: HEADER (FIXED: ABSOLUTE CENTER) ---
     lv_obj_t* row_header = lv_obj_create(main_col);
@@ -390,7 +391,7 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     }
 
     // --- HÀNG 7: CHẤM BI DƯỚI ---
-    lv_obj_t* dots_bottom = CreateDotsRow(main_col, screen_width, w_ratio);
+    CreateDotsRow(main_col, screen_width, w_ratio);
 }
 
 void WeatherUI::ShowIdleCard(const IdleCardInfo& info) {

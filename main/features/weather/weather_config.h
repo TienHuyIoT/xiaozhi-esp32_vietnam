@@ -10,7 +10,7 @@
 // Get a free API key from https://openweathermap.org/api
 #ifndef OPEN_WEATHERMAP_API_KEY_DEFAULT
 // This is a demo API key with limited usage and may be revoked at any time.
-#define OPEN_WEATHERMAP_API_KEY_DEFAULT "ae8d3c2fda691593ce3e84472ef25784"
+#define OPEN_WEATHERMAP_API_KEY_DEFAULT "d46468e533aaa30faa74332f22070a07"
 #endif
 
 // Weather API endpoints

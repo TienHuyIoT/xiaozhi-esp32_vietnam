@@ -27,6 +27,23 @@ LV_FONT_DECLARE(lv_font_ds_digitb_48); // Font đồng hồ
 #define GRAD_START          COLOR_CYAN
 #define GRAD_END            COLOR_MAGENTA
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 WeatherUI::WeatherUI() 
     : container_(nullptr), 
       screen_width_(0), 
@@ -154,6 +171,8 @@ void WeatherUI::CreateDetailArc(lv_obj_t* parent, lv_obj_t** arc_out, lv_obj_t**
 void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_height) {
     screen_width_ = screen_width;
     screen_height_ = screen_height;
+    if (!parent) return;
+    if (container_) return;
 
     // Tỷ lệ hệ số
     float h_ratio = (float)screen_height / 280.0f;

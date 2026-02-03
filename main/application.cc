@@ -411,7 +411,7 @@ void Application::Start() {
     xTaskCreate([](void* arg) {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 1024 * 3 + 512, this, 3, &main_event_loop_task_handle_);
+    }, "main_event_loop", 1024 * 4, this, 3, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -419,14 +419,35 @@ void Application::Start() {
     /* Wait for the network to be ready */
     board.StartNetwork();
 
-    music_ = new Esp32Music();
-    if (music_ != nullptr) {
-        music_->Initialize();
+    // Update the status bar immediately to show the network state
+    display->UpdateStatusBar(true);
+
+    // Check for new assets version
+    CheckAssetsVersion();
+
+    // Check for new firmware version or get the MQTT broker address
+    // Ota ota;
+    ota_ = new Ota();
+    CheckNewVersion(*ota_);
+
+    if (ota_->IsMusicEnabled()) {
+        ESP_LOGI(TAG, "Music feature is enabled");
+        music_ = new Esp32Music();
+        if (music_ != nullptr) {
+            music_->Initialize();
+        }
+    } else {
+        ESP_LOGW(TAG, "Music feature is disabled");
     }
 
-    radio_ = new Esp32Radio();
-    if (radio_ != nullptr) {
-        radio_->Initialize();
+    if (ota_->IsRadioEnabled()) {
+        ESP_LOGI(TAG, "Radio feature is enabled");
+        radio_ = new Esp32Radio();
+        if (radio_ != nullptr) {
+            radio_->Initialize();
+        }
+    } else {
+        ESP_LOGW(TAG, "Radio feature is disabled");
     }
 
 #ifdef CONFIG_SD_CARD_ENABLE
@@ -443,16 +464,6 @@ void Application::Start() {
     }
 #endif
 
-    // Update the status bar immediately to show the network state
-    display->UpdateStatusBar(true);
-
-    // Check for new assets version
-    CheckAssetsVersion();
-
-    // Check for new firmware version or get the MQTT broker address
-    Ota ota;
-    CheckNewVersion(ota);
-
     // Start the OTA server
     auto& ota_server = ota::OtaServer::GetInstance();
     if (ota_server.Start() == ESP_OK) {
@@ -465,20 +476,22 @@ void Application::Start() {
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
     auto& wifi_station = WifiStation::GetInstance();
-    std::string ssid = "SSID: " + wifi_station.GetSsid();
+    // std::string ssid = "SSID: " + wifi_station.GetSsid();
+    // display->SetChatMessage("assistant", ssid.c_str());
     std::string ip_address = "IP: " + wifi_station.GetIpAddress();
-    display->SetChatMessage("assistant", ssid.c_str());
-    display->SetChatMessage("assistant", ip_address.c_str());
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    std::string device_id = "Device ID: " + SystemInfo::GetMacAddress();
+    std::string message_info = device_id + "\n" + ip_address;
+    display->SetChatMessage("assistant", message_info.c_str());
+    vTaskDelay(pdMS_TO_TICKS(3000));
 
     // Add MCP common tools before initializing the protocol
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
 
-    if (ota.HasMqttConfig()) {
+    if (ota_->HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota.HasWebsocketConfig()) {
+    } else if (ota_->HasWebsocketConfig()) {
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
@@ -607,9 +620,9 @@ void Application::Start() {
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);
 
-    has_server_time_ = ota.HasServerTime();
+    has_server_time_ = ota_->HasServerTime();
     if (protocol_started) {
-        std::string message = std::string(Lang::Strings::VERSION) + ota.GetCurrentVersion();
+        std::string message = std::string(Lang::Strings::VERSION) + ota_->GetCurrentVersion();
         display->ShowNotification(message.c_str());
         display->SetChatMessage("system", "");
         // Play the success sound to indicate the device is ready

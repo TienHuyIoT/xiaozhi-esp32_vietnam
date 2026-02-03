@@ -206,14 +206,6 @@ private:
             app.ToggleChatState();
         });
 
-        boot_button_.OnDoubleClick([this]() {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateIdle) {
-                app.SetAecMode(app.GetAecMode() == kAecOff ? kAecOnDeviceSide : kAecOff);
-                ESP_LOGI(TAG, "Toggled AEC mode via double-tap button %s", app.GetAecMode() == kAecOff ? "OFF" : "ON");
-            }
-        });
-
         volume_up_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto codec = GetAudioCodec();

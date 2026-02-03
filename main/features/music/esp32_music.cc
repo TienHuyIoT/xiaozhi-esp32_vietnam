@@ -301,6 +301,9 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     
     // Step 1: Request the stream_pcm API to retrieve audio information
     std::string base_url = GetCheckMusicServerUrl();
+    if(base_url.ends_with("/")) {
+        base_url.pop_back(); // Remove trailing slash if present
+    }
     std::string full_url = base_url + "/stream_pcm?song=" + url_encode(song_name) + "&artist=" + url_encode(artist_name);
     
     ESP_LOGI(TAG, "Request URL: %s", full_url.c_str());
@@ -1612,10 +1615,11 @@ void Esp32Music::SetDisplayMode(DisplayMode mode) {
 }
 
 std::string Esp32Music::GetCheckMusicServerUrl() {
-    Settings settings("wifi", false);
+    Settings settings("wifi", true);
     std::string url = settings.GetString("music_url");
     if (url.empty()) {
         url = DEFAULT_MUSIC_URL;
+        settings.SetString("music_url", url);
     }
     return url;
 }

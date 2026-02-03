@@ -95,6 +95,7 @@ private:
     Esp32Music* music_ = nullptr;
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
+    Ota* ota_ = nullptr;
 
     bool has_server_time_ = false;
     bool aborted_ = false;

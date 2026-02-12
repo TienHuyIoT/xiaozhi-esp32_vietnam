@@ -174,7 +174,7 @@ Esp32Music::Esp32Music() : last_downloaded_data_(), current_music_url_(), curren
                          display_mode_(DISPLAY_MODE_SPECTRUM), is_playing_(false), is_downloading_(false), 
                          play_thread_(), download_thread_(), audio_buffer_(), buffer_mutex_(), 
                          buffer_cv_(), buffer_size_(0), mp3_decoder_(nullptr), mp3_frame_info_(), 
-                         mp3_decoder_initialized_(false) {
+                         mp3_decoder_initialized_(false), pcm_out_buffer_(nullptr), pcm_out_buffer_size_(0) {
 }
 
 Esp32Music::~Esp32Music() {
@@ -806,7 +806,11 @@ void Esp32Music::PlayAudioStream() {
     
     if (!mp3_decoder_initialized_) {
         ESP_LOGI(TAG, "MP3 decoder not initialized, initializing now");
-        InitializeMp3Decoder();
+        if (!InitializeMp3Decoder()) {
+            ESP_LOGE(TAG, "Failed to initialize MP3 decoder, aborting playback");
+            is_playing_ = false;
+            return;
+        }
     }
     
     // Wait for the buffer to have enough data to start playback
@@ -823,7 +827,6 @@ void Esp32Music::PlayAudioStream() {
     size_t total_print_bytes = 0;
     uint8_t* mp3_input_buffer = nullptr;
     int bytes_left = 0;
-    uint8_t* read_ptr = nullptr;
     
     constexpr int INPUT_BUF = 8192;
     // Allocate MP3 input buffer
@@ -833,19 +836,9 @@ void Esp32Music::PlayAudioStream() {
         is_playing_ = false;
         return;
     }
-    
-    // Flag to indicate if ID3 tags have been processed
-    bool id3_processed = false;
 
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
-    int16_t* pcm_buffer = new int16_t[2304];  // Max PCM samples per MP3 frame
-    if (!pcm_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate PCM buffer");
-        heap_caps_free(mp3_input_buffer);
-        is_playing_ = false;
-        return;
-    }
     
     while (is_playing_) {
         // Check device state, only play music in idle state
@@ -899,7 +892,7 @@ void Esp32Music::PlayAudioStream() {
         }
         
         // If more MP3 data is needed, read from the buffer
-        if (bytes_left < (INPUT_BUF / 2)) {  // Maintain at least 8KB of data for decoding
+        if (bytes_left < (INPUT_BUF / 2)) {  // Maintain at least half buffer of data for decoding
             AudioChunk chunk;
             
             // Retrieve audio data from the buffer
@@ -930,220 +923,208 @@ void Esp32Music::PlayAudioStream() {
             
             // Add new data to the MP3 input buffer
             if (chunk.data && chunk.size > 0) {
-                // Move remaining data to the beginning of the buffer
-                if (bytes_left > 0 && read_ptr != mp3_input_buffer) {
-                    memmove(mp3_input_buffer, read_ptr, bytes_left);
-                }
+                // Move remaining data to the beginning of the buffer if needed
+                // (data may not be at the start after previous consume operations,
+                //  but we always memmove after consume, so it's already at start)
                 
                 // Check buffer space
                 size_t space_available = INPUT_BUF - bytes_left;
                 size_t copy_size = std::min(chunk.size, space_available);
                 
-                // Copy new data
+                // Copy new data after existing data
                 memcpy(mp3_input_buffer + bytes_left, chunk.data, copy_size);
                 bytes_left += copy_size;
-                read_ptr = mp3_input_buffer;
-                memset(mp3_input_buffer + bytes_left, 0, INPUT_BUF - bytes_left);
-                
-                // Check and skip ID3 tags (allow multi-chunk ID3 skipping)
-                if (!id3_processed && bytes_left >= 10)
-                {
-                    size_t id3_skip = SkipId3Tag(read_ptr, bytes_left);
-                    if (id3_skip > 0) {
-
-                        // skip ID3 part in current buffer
-                        read_ptr += id3_skip;
-                        bytes_left -= id3_skip;
-
-                        ESP_LOGI(TAG, "Skipped ID3 tag: %u bytes", (unsigned int)id3_skip);
-
-                        // If ID3 header is larger than buffer, wait for next chunk
-                        if (bytes_left < 256) {
-                            ESP_LOGW(TAG, "Remaining buffer too small after ID3 skip, waiting for next chunk");
-                            bytes_left = 0;
-                            heap_caps_free(chunk.data);
-                            continue;   // pump next incoming data
-                        }
-                    }
-
-                    // Mark as processed ONLY when buffer seems OK (≥ sync possible)
-                    if (bytes_left >= 256) {
-                        id3_processed = true;
-                    }
-                }
                                 
                 // Free chunk memory
                 heap_caps_free(chunk.data);
             }
         }
         
-        // Attempt to find MP3 frame sync
-        int sync_offset = MP3FindSyncWord(read_ptr, bytes_left);
-        if (sync_offset < 0) {
-            ESP_LOGW(TAG, "No MP3 sync word found, skipping %d bytes", bytes_left);
-            vTaskDelay(pdMS_TO_TICKS(2));
-            bytes_left = 0;
-            continue;
-        }
-        
-        if (bytes_left < 128) {            
+        if (bytes_left <= 0) {
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
 
-        // Skip to sync position
-        if (sync_offset > 0) {
-            ESP_LOGW(TAG, "MP3 sync word found at offset %d, skipping bytes", sync_offset);
-            read_ptr += sync_offset;
-            bytes_left -= sync_offset;
+        // ========== Decode using esp_audio_codec simple decoder ==========
+        esp_audio_simple_dec_raw_t raw = {};
+        raw.buffer = mp3_input_buffer;
+        raw.len = (uint32_t)bytes_left;
+        raw.eos = (!is_downloading_ && audio_buffer_.empty());  // End of stream
+        raw.consumed = 0;
+        raw.frame_recover = ESP_AUDIO_SIMPLE_DEC_RECOVERY_NONE;
+        
+        esp_audio_simple_dec_out_t out = {};
+        out.buffer = pcm_out_buffer_;
+        out.len = (uint32_t)pcm_out_buffer_size_;
+        out.decoded_size = 0;
+        out.needed_size = 0;
+        
+        esp_audio_err_t dec_ret = esp_audio_simple_dec_process(mp3_decoder_, &raw, &out);
+        
+        if (dec_ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+            // Need larger output buffer — reallocate
+            ESP_LOGI(TAG, "PCM output buffer too small, need %u bytes, reallocating", out.needed_size);
+            heap_caps_free(pcm_out_buffer_);
+            pcm_out_buffer_size_ = out.needed_size;
+            pcm_out_buffer_ = (uint8_t*)heap_caps_malloc(pcm_out_buffer_size_, MALLOC_CAP_SPIRAM);
+            if (!pcm_out_buffer_) {
+                ESP_LOGE(TAG, "Failed to reallocate PCM output buffer (%u bytes)", out.needed_size);
+                break;
+            }
+            // Retry with enlarged buffer (don't consume input yet)
+            continue;
         }
         
-        // Decode MP3 frame
-        int bytes_left_before = bytes_left;
-        int decode_result = MP3Decode(mp3_decoder_, &read_ptr, &bytes_left, pcm_buffer, 0);
+        // Advance input buffer past consumed data
+        if (raw.consumed > 0) {
+            bytes_left -= raw.consumed;
+            if (bytes_left > 0) {
+                memmove(mp3_input_buffer, mp3_input_buffer + raw.consumed, bytes_left);
+            }
+        }
         
-        if (decode_result == 0) {
-            // Decode successful, get frame info
-            MP3GetLastFrameInfo(mp3_decoder_, &mp3_frame_info_);
-            
-            // ---- SONG INFO DISPLAY ----
-            if (!full_info_displayed_) { 
-                if (display) {
-
-                    char buf[256];
-
-                    int br = (mp3_frame_info_.bitrate > 0)
-                                ? mp3_frame_info_.bitrate / 1000
-                                : 0;
-
-                    int hz = (mp3_frame_info_.samprate > 0)
-                                ? mp3_frame_info_.samprate
-                                : 44100;
-
-                    const char* ch = (mp3_frame_info_.nChans == 2) ? "Stereo" : "Mono";
-
-                    snprintf(buf, sizeof(buf),
-                            "ONLINE 《%s》\n%s • %d kbps | %d Hz | %s",
-                            title_name_.empty() ? current_song_name_.c_str() : title_name_.c_str(),
-                            artist_name_.empty() ? "Unknown Artist" : artist_name_.c_str(),
-                            br, hz, ch);
-
-                    display->SetMusicInfo(buf);
-                }
-
-                full_info_displayed_ = true;
-            }
-
-            total_frames_decoded_++;
-            
-            // Basic frame info validity check to prevent division by zero
-            if (mp3_frame_info_.samprate == 0 || mp3_frame_info_.nChans == 0) {
-                ESP_LOGW(TAG, "Invalid frame info: rate=%d, channels=%d, skipping", 
-                        mp3_frame_info_.samprate, mp3_frame_info_.nChans);
-                continue;
-            }
-            
-            // Calculate the duration of the current frame (in milliseconds)
-            int frame_duration_ms = (mp3_frame_info_.outputSamps * 1000) / 
-                                  (mp3_frame_info_.samprate * mp3_frame_info_.nChans);
-            
-            // Update current playback time
-            current_play_time_ms_ += frame_duration_ms;
-            
-            ESP_LOGD(TAG, "Frame %d: time=%lldms, duration=%dms, rate=%d, ch=%d", 
-                    total_frames_decoded_, current_play_time_ms_, frame_duration_ms,
-                    mp3_frame_info_.samprate, mp3_frame_info_.nChans);
-            
-            // Update lyric display
-            int buffer_latency_ms = 600; // Adjusted based on testing
-            UpdateLyricDisplay(current_play_time_ms_ + buffer_latency_ms);
-            
-            // Send PCM data to the Application's audio decoding queue
-            if (mp3_frame_info_.outputSamps > 0) {
-                int16_t* final_pcm_data = pcm_buffer;
-                int final_sample_count = mp3_frame_info_.outputSamps;
-                std::vector<int16_t> mono_buffer;
-                
-                // If stereo, convert to mono
-                if (mp3_frame_info_.nChans == 2) {
-                    // Convert stereo to mono: mix left and right channels
-                    int stereo_samples = mp3_frame_info_.outputSamps;  // Total samples including both channels
-                    int mono_samples = stereo_samples / 2;  // Actual mono sample count
-                    
-                    mono_buffer.resize(mono_samples);
-                    
-                    for (int i = 0; i < mono_samples; ++i) {
-                        // Mix left and right channels (L + R) / 2
-                        int left = pcm_buffer[i * 2];      // Left channel
-                        int right = pcm_buffer[i * 2 + 1]; // Right channel
-                        mono_buffer[i] = (int16_t)((left + right) / 2);
-                    }
-                    
-                    final_pcm_data = mono_buffer.data();
-                    final_sample_count = mono_samples;
-
-                    ESP_LOGD(TAG, "Converted stereo to mono: %d -> %d samples", 
-                            stereo_samples, mono_samples);
-                } else if (mp3_frame_info_.nChans == 1) {
-                    // Already mono, no conversion needed
-                    ESP_LOGD(TAG, "Already mono audio: %d samples", final_sample_count);
-                } else {
-                    ESP_LOGW(TAG, "Unsupported channel count: %d, treating as mono", 
-                            mp3_frame_info_.nChans);
-                }
-                
-                // Create AudioStreamPacket
-                AudioStreamPacket packet;
-                packet.sample_rate = mp3_frame_info_.samprate;
-                packet.frame_duration = 60;  // Use Application's default frame duration
-                packet.timestamp = 0;
-                
-                // Convert int16_t PCM data to uint8_t byte array
-                size_t pcm_size_bytes = final_sample_count * sizeof(int16_t);
-                packet.payload.resize(pcm_size_bytes);
-                memcpy(packet.payload.data(), final_pcm_data, pcm_size_bytes);
-
-                if (display) {
-                    if (display_mode_ == DISPLAY_MODE_SPECTRUM) {
-                        // Create or update FFT audio data buffer
-                        final_pcm_data_fft = display->MakeAudioBuffFFT(pcm_size_bytes);
-
-                        // Push PCM data to FFT buffer
-                        display->FeedAudioDataFFT(final_pcm_data, pcm_size_bytes);
-                    }
-                }
-
-                ESP_LOGD(TAG, "Sending %d PCM samples (%d bytes, rate=%d, channels=%d->1) to Application", 
-                        final_sample_count, pcm_size_bytes, mp3_frame_info_.samprate, mp3_frame_info_.nChans);
-                
-                // Send to Application's audio decoding queue
-                app.AddAudioData(std::move(packet));
-                
-                // Log playback progress
-                if (total_print_bytes >= (128 * 1024)) {
-                    total_print_bytes = 0;
-                    ESP_LOGI(TAG, "Played %d bytes, buffer size: %d", total_played_bytes, buffer_size_);
-                }
-            }
-            
-        } else {
-            // Decode failed
-            ESP_LOGW(TAG, "MP3 decode failed with error: %d, bytes_left_before: %d, bytes_left: %d", decode_result, bytes_left_before, bytes_left);
-            if (bytes_left > 0 && bytes_left < bytes_left_before) {
-                // Skip one byte and try again
-                read_ptr++;
+        if (dec_ret == ESP_AUDIO_ERR_DATA_LACK) {
+            // Need more input data — continue reading
+            ESP_LOGD(TAG, "Decoder needs more data, bytes_left=%d", bytes_left);
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        
+        if (dec_ret == ESP_AUDIO_ERR_CONTINUE) {
+            // Parser skipped data (e.g., ID3 tags), continue
+            ESP_LOGD(TAG, "Decoder skipped data (ID3/padding), consumed=%u", raw.consumed);
+            continue;
+        }
+        
+        if (dec_ret != ESP_AUDIO_ERR_OK) {
+            // Decode error — skip some bytes and retry
+            ESP_LOGW(TAG, "MP3 decode error: %d, bytes_left=%d, skipping", dec_ret, bytes_left);
+            if (bytes_left > 0) {
+                // Skip 1 byte to try to re-sync
                 bytes_left--;
-            } else {
-                bytes_left = 0;
+                memmove(mp3_input_buffer, mp3_input_buffer + 1, bytes_left);
             }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+        
+        // ========== Decode successful ==========
+        // Get frame info
+        esp_audio_simple_dec_get_info(mp3_decoder_, &mp3_frame_info_);
+        
+        // ---- SONG INFO DISPLAY ----
+        if (!full_info_displayed_ && mp3_frame_info_.sample_rate > 0) { 
+            if (display) {
+                char buf[256];
+
+                int br = (mp3_frame_info_.bitrate > 0)
+                            ? mp3_frame_info_.bitrate / 1000
+                            : 0;
+
+                int hz = mp3_frame_info_.sample_rate;
+                const char* ch = (mp3_frame_info_.channel == 2) ? "Stereo" : "Mono";
+
+                snprintf(buf, sizeof(buf),
+                        "ONLINE 《%s》\n%s • %d kbps | %d Hz | %s",
+                        title_name_.empty() ? current_song_name_.c_str() : title_name_.c_str(),
+                        artist_name_.empty() ? "Unknown Artist" : artist_name_.c_str(),
+                        br, hz, ch);
+
+                display->SetMusicInfo(buf);
+            }
+            full_info_displayed_ = true;
+        }
+
+        total_frames_decoded_++;
+        
+        // Basic frame info validity check
+        if (mp3_frame_info_.sample_rate == 0 || mp3_frame_info_.channel == 0) {
+            // ESP_LOGW(TAG, "Invalid frame info: rate=%u, channels=%u, skipping", 
+            //         mp3_frame_info_.sample_rate, mp3_frame_info_.channel);
+            continue;
+        }
+        
+        // Calculate the duration of the current frame (in milliseconds)
+        int pcm_samples = out.decoded_size / (mp3_frame_info_.bits_per_sample / 8) / mp3_frame_info_.channel;
+        int frame_duration_ms = (pcm_samples * 1000) / mp3_frame_info_.sample_rate;
+        
+        // Update current playback time
+        current_play_time_ms_ += frame_duration_ms;
+        
+        ESP_LOGD(TAG, "Frame %d: time=%lldms, duration=%dms, rate=%u, ch=%u", 
+                total_frames_decoded_, current_play_time_ms_, frame_duration_ms,
+                mp3_frame_info_.sample_rate, mp3_frame_info_.channel);
+        
+        // Update lyric display
+        int buffer_latency_ms = 600; // Adjusted based on testing
+        UpdateLyricDisplay(current_play_time_ms_ + buffer_latency_ms);
+        
+        // Send PCM data to the Application's audio decoding queue
+        if (out.decoded_size > 0) {
+            int16_t* pcm_data = (int16_t*)out.buffer;
+            int total_samples = out.decoded_size / sizeof(int16_t);
+            int16_t* final_pcm_data = pcm_data;
+            int final_sample_count = total_samples;
+            std::vector<int16_t> mono_buffer;
+            
+            // If stereo, convert to mono
+            if (mp3_frame_info_.channel == 2) {
+                int mono_samples = total_samples / 2;
+                mono_buffer.resize(mono_samples);
+                
+                for (int i = 0; i < mono_samples; ++i) {
+                    int left = pcm_data[i * 2];
+                    int right = pcm_data[i * 2 + 1];
+                    mono_buffer[i] = (int16_t)((left + right) / 2);
+                }
+                
+                final_pcm_data = mono_buffer.data();
+                final_sample_count = mono_samples;
+
+                ESP_LOGD(TAG, "Converted stereo to mono: %d -> %d samples", 
+                        total_samples, mono_samples);
+            } else if (mp3_frame_info_.channel == 1) {
+                ESP_LOGD(TAG, "Already mono audio: %d samples", final_sample_count);
+            } else {
+                ESP_LOGW(TAG, "Unsupported channel count: %u, treating as mono", 
+                        mp3_frame_info_.channel);
+            }
+            
+            // Create AudioStreamPacket
+            AudioStreamPacket packet;
+            packet.sample_rate = mp3_frame_info_.sample_rate;
+            packet.frame_duration = 60;
+            packet.timestamp = 0;
+            
+            // Convert int16_t PCM data to uint8_t byte array
+            size_t pcm_size_bytes = final_sample_count * sizeof(int16_t);
+            packet.payload.resize(pcm_size_bytes);
+            memcpy(packet.payload.data(), final_pcm_data, pcm_size_bytes);
+
+            if (display) {
+                if (display_mode_ == DISPLAY_MODE_SPECTRUM) {
+                    // Create or update FFT audio data buffer
+                    final_pcm_data_fft = display->MakeAudioBuffFFT(pcm_size_bytes);
+
+                    // Push PCM data to FFT buffer
+                    display->FeedAudioDataFFT(final_pcm_data, pcm_size_bytes);
+                }
+            }
+
+            ESP_LOGD(TAG, "Sending %d PCM samples (%d bytes, rate=%u, channels=%u->1) to Application", 
+                    final_sample_count, pcm_size_bytes, mp3_frame_info_.sample_rate, mp3_frame_info_.channel);
+            
+            // Send to Application's audio decoding queue
+            app.AddAudioData(std::move(packet));
+            
+            // Log playback progress
+            if (total_print_bytes >= (128 * 1024)) {
+                total_print_bytes = 0;
+                ESP_LOGI(TAG, "Played %d bytes, buffer size: %d", total_played_bytes, buffer_size_);
+            }
+        }
     }
     
-    // Free PCM buffer
-    delete[] pcm_buffer;
-
     if (is_playing_) {
         ESP_LOGI(TAG, "Audio stream playback finished successfully, total played: %d bytes", total_played_bytes);
         ClearAudioBuffer();
@@ -1154,7 +1135,7 @@ void Esp32Music::PlayAudioStream() {
     }
 
     // Cleanup
-        if (mp3_input_buffer) {
+    if (mp3_input_buffer) {
         heap_caps_free(mp3_input_buffer);
     }
     
@@ -1207,28 +1188,74 @@ void Esp32Music::ClearAudioBuffer() {
     ESP_LOGI(TAG, "Audio buffer cleared");
 }
 
-// Initialize MP3 decoder
+// Initialize MP3 decoder using esp_audio_codec simple decoder
 bool Esp32Music::InitializeMp3Decoder() {
-    mp3_decoder_ = MP3InitDecoder();
-    if (mp3_decoder_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to initialize MP3 decoder");
+    // Register default decoders (includes MP3)
+    esp_audio_dec_register_default();
+    esp_audio_err_t ret = esp_audio_simple_dec_register_default();
+    if (ret != ESP_AUDIO_ERR_OK && ret != ESP_AUDIO_ERR_ALREADY_EXIST) {
+        ESP_LOGE(TAG, "Failed to register audio decoders: %d", ret);
         mp3_decoder_initialized_ = false;
         return false;
     }
-    
+
+    // Configure simple decoder for MP3
+    esp_audio_simple_dec_cfg_t dec_cfg = {};
+    dec_cfg.dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
+    dec_cfg.dec_cfg = NULL;       // MP3 needs no special config
+    dec_cfg.cfg_size = 0;
+    dec_cfg.use_frame_dec = false; // Let parser auto-detect frames from raw stream
+
+    ret = esp_audio_simple_dec_open(&dec_cfg, &mp3_decoder_);
+    if (ret != ESP_AUDIO_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to open MP3 simple decoder: %d", ret);
+        mp3_decoder_ = nullptr;
+        mp3_decoder_initialized_ = false;
+        esp_audio_simple_dec_unregister_default();
+        esp_audio_dec_unregister_default();
+        return false;
+    }
+
+    // Allocate PCM output buffer (enough for one MP3 frame: 1152 samples * 2ch * 2 bytes = 4608)
+    pcm_out_buffer_size_ = 4608;
+    pcm_out_buffer_ = (uint8_t*)heap_caps_malloc(pcm_out_buffer_size_, MALLOC_CAP_SPIRAM);
+    if (!pcm_out_buffer_) {
+        ESP_LOGE(TAG, "Failed to allocate PCM output buffer");
+        esp_audio_simple_dec_close(mp3_decoder_);
+        mp3_decoder_ = nullptr;
+        mp3_decoder_initialized_ = false;
+        return false;
+    }
+
+    memset(&mp3_frame_info_, 0, sizeof(mp3_frame_info_));
     mp3_decoder_initialized_ = true;
-    ESP_LOGI(TAG, "MP3 decoder initialized successfully");
+    ESP_LOGI(TAG, "MP3 decoder (esp_audio_codec) initialized successfully");
     return true;
 }
 
-// 清理MP3解码器
+// Cleanup MP3 decoder (esp_audio_codec)
 void Esp32Music::CleanupMp3Decoder() {
     if (mp3_decoder_ != nullptr) {
-        MP3FreeDecoder(mp3_decoder_);
+        esp_audio_simple_dec_close(mp3_decoder_);
         mp3_decoder_ = nullptr;
     }
+    if (pcm_out_buffer_ != nullptr) {
+        heap_caps_free(pcm_out_buffer_);
+        pcm_out_buffer_ = nullptr;
+        pcm_out_buffer_size_ = 0;
+    }
     mp3_decoder_initialized_ = false;
-    ESP_LOGI(TAG, "MP3 decoder cleaned up");
+    ESP_LOGI(TAG, "MP3 decoder (esp_audio_codec) cleaned up");
+}
+
+// Find MP3 sync word in buffer (utility, simple decoder handles this internally)
+size_t Esp32Music::FindMp3SyncWord(uint8_t* data, size_t size) {
+    for (size_t i = 0; i + 1 < size; i++) {
+        if (data[i] == 0xFF && (data[i + 1] & 0xE0) == 0xE0) {
+            return i;
+        }
+    }
+    return (size_t)-1;  // Not found
 }
 
 // Reset the sample rate to the original value

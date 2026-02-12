@@ -1,6 +1,8 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
+#include <driver/rtc_io.h>
+#include <esp_sleep.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -25,6 +27,9 @@
 #include "mcp_server.h"
 #include "lamp_controller.h"
 #include "config.h"
+#include "power_save_timer.h"
+#include "assets/lang_config.h"
+#include "power_manager.h"
 #include "esp_lcd_ili9341.h"
 #ifdef CONFIG_SD_CARD_MMC_INTERFACE
 #include "sdmmc.h"
@@ -67,12 +72,46 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
  private:
   Button boot_button_;
   LcdDisplay *display_;
+  PowerSaveTimer* power_save_timer_;
+  PowerManager* power_manager_;
   i2c_master_bus_handle_t codec_i2c_bus_;
+  esp_lcd_panel_handle_t panel_ = nullptr;
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
   LcdTouch *touch_;
   // Touch interrupt semaphore
   SemaphoreHandle_t touch_isr_mux_ = nullptr;
 #endif
+
+  void InitializePowerManager() {
+    power_manager_ = new PowerManager(CHARGING_DETECTION_GPIO);
+    power_manager_->OnChargingStatusChanged([this](bool is_charging) {
+      if (is_charging) {
+        power_save_timer_->SetEnabled(false);
+      } else {
+        power_save_timer_->SetEnabled(true);
+      }
+    });
+  }
+
+  void InitializePowerSaveTimer() {
+    power_save_timer_ = new PowerSaveTimer(-1, SECONDS_TO_SLEEP_MODE, SECONDS_TO_SHUTDOWN);
+    power_save_timer_->OnEnterSleepMode([this]() {
+        GetDisplay()->SetPowerSaveMode(true);
+        GetBacklight()->SetBrightness(1);
+    });
+    power_save_timer_->OnExitSleepMode([this]() {
+        GetDisplay()->SetPowerSaveMode(false);
+        GetBacklight()->RestoreBrightness();
+    });
+    power_save_timer_->OnShutdownRequest([this]() {
+        ESP_LOGI(TAG, "Shutting down");
+        gpio_set_level(DISPLAY_RST_PIN, 0);
+        gpio_set_level(TOUCH_RST_PIN, 0);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_deep_sleep_start();
+    });
+    power_save_timer_->SetEnabled(true);
+  }
 
   void InitializeSpi() {
     spi_bus_config_t buscfg = {};
@@ -87,7 +126,6 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
 
   void InitializeLcdDisplay() {
     esp_lcd_panel_io_handle_t panel_io = nullptr;
-    esp_lcd_panel_handle_t panel = nullptr;
     // Initialize LCD control IO
     ESP_LOGD(TAG, "Install panel IO");
     esp_lcd_panel_io_spi_config_t io_config = {};
@@ -106,15 +144,15 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     panel_config.reset_gpio_num = DISPLAY_RST_PIN;
     panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
     panel_config.bits_per_pixel = 16;
-    ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel_));
     ESP_LOGI(TAG, "Install LCD driver ILI9341");
-    esp_lcd_panel_reset(panel);
+    esp_lcd_panel_reset(panel_);
 
-    esp_lcd_panel_init(panel);
-    esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
-    esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
-    esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
-    display_ = new SpiLcdDisplay(panel_io, panel, 
+    esp_lcd_panel_init(panel_);
+    esp_lcd_panel_invert_color(panel_, DISPLAY_INVERT_COLOR);
+    esp_lcd_panel_swap_xy(panel_, DISPLAY_SWAP_XY);
+    esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+    display_ = new SpiLcdDisplay(panel_io, panel_, 
         DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
         DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
   }
@@ -442,6 +480,8 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
  public:
   XiaozhiAIIoTEs3n28p(): boot_button_(BOOT_BUTTON_GPIO)
   {
+    InitializePowerManager();
+    InitializePowerSaveTimer();
     InitializeI2c();
     InitializeSpi();
     InitializeLcdDisplay();
@@ -478,6 +518,30 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN,
                                   DISPLAY_BACKLIGHT_OUTPUT_INVERT);
     return &backlight;
+  }
+
+  virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
+    static bool last_discharging = false;
+    charging = power_manager_->IsCharging();
+    discharging = power_manager_->IsDischarging();
+    if (discharging != last_discharging) {
+      power_save_timer_->SetEnabled(discharging);
+      last_discharging = discharging;
+    }
+    level = power_manager_->GetBatteryLevel();
+    return true;
+  }
+
+  virtual bool GetTemperature(float& esp32temp)  override {
+    esp32temp = power_manager_->GetTemperature();
+    return true;
+  }
+
+  virtual void SetPowerSaveMode(bool enabled) override {
+    if (!enabled) {
+        power_save_timer_->WakeUp();
+    }
+    WifiBoard::SetPowerSaveMode(enabled);
   }
 
 #ifdef CONFIG_SD_CARD_MMC_INTERFACE

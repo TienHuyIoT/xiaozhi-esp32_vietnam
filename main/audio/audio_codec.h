@@ -12,7 +12,7 @@
 #include "board.h"
 
 #define AUDIO_CODEC_DMA_DESC_NUM 6
-#define AUDIO_CODEC_DMA_FRAME_NUM 240
+#define AUDIO_CODEC_DMA_FRAME_NUM 255
 
 class AudioCodec {
 public:

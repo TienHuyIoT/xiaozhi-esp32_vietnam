@@ -54,8 +54,12 @@
 #define TOUCH_I2C_ADDR           0x38         // Default address of FT6236G
 
 // Boot pin
-#define BOOT_BUTTON_GPIO GPIO_NUM_0
-#define BUILTIN_LED_GPIO GPIO_NUM_42
+#define BOOT_BUTTON_GPIO        GPIO_NUM_0
+#define BUILTIN_LED_GPIO        GPIO_NUM_42
+#define CHARGING_DETECTION_GPIO GPIO_NUM_NC
+
+#define SECONDS_TO_SLEEP_MODE   (60U * 5U)  // 5 minutes
+#define SECONDS_TO_SHUTDOWN     (60U * 60U * 2U) // 2 hours
 
 // Screen display section
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_45

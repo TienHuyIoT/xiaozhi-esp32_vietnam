@@ -11,9 +11,10 @@
 
 #include "music.h"
 
-// MP3 decoder support
+// MP3 decoder support - using esp_audio_codec (simple decoder)
 extern "C" {
-#include "mp3dec.h"
+#include "esp_audio_simple_dec.h"
+#include "esp_audio_simple_dec_default.h"
 }
 
 // Audio data chunk structure
@@ -68,10 +69,12 @@ private:
     static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB buffer (reduced to minimize brownout risk)
     static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB minimum playback buffer (reduced to minimize brownout risk)
     
-    // MP3 decoder-related
-    HMP3Decoder mp3_decoder_;
-    MP3FrameInfo mp3_frame_info_;
+    // MP3 decoder-related (esp_audio_codec simple decoder)
+    esp_audio_simple_dec_handle_t mp3_decoder_;
+    esp_audio_simple_dec_info_t mp3_frame_info_;
     bool mp3_decoder_initialized_;
+    uint8_t* pcm_out_buffer_;       // Reusable PCM output buffer for decoder
+    size_t pcm_out_buffer_size_;    // Size of PCM output buffer
     
     // Private methods
     void DownloadAudioStream(const std::string& music_url);
@@ -80,6 +83,7 @@ private:
     bool InitializeMp3Decoder();
     void CleanupMp3Decoder();
     void ResetSampleRate();  // Reset sample rate to the original value
+    size_t FindMp3SyncWord(uint8_t* data, size_t size);  // Find MP3 sync word in buffer
     
     // Lyrics-related private methods
     bool DownloadLyrics(const std::string& lyric_url);

@@ -5,54 +5,68 @@
 #include <esp_timer.h>
 #include <driver/gpio.h>
 #include <esp_adc/adc_oneshot.h>
+#include <driver/temperature_sensor.h> 
 
+// GPIO09 (ADC1_CH8) is used for battery voltage measurement
+#define ADC_CHANNEL_BATTERY ADC_CHANNEL_8
+#define ADC_CHANNEL_UNIT    ADC_UNIT_1
 
 class PowerManager {
 private:
     esp_timer_handle_t timer_handle_;
     std::function<void(bool)> on_charging_status_changed_;
     std::function<void(bool)> on_low_battery_status_changed_;
+    std::function<void(float)> on_temperature_changed_; 
 
     gpio_num_t charging_pin_ = GPIO_NUM_NC;
     std::vector<uint16_t> adc_values_;
     uint32_t battery_level_ = 0;
     bool is_charging_ = false;
     bool is_low_battery_ = false;
+    float current_temperature_ = 0.0f;
     int ticks_ = 0;
     const int kBatteryAdcInterval = 60;
     const int kBatteryAdcDataCount = 3;
     const int kLowBatteryLevel = 20;
+    const int kTemperatureReadInterval = 60; // Temperature is read every 10 seconds.
 
     adc_oneshot_unit_handle_t adc_handle_;
+    temperature_sensor_handle_t temp_sensor_ = NULL;
 
     void CheckBatteryStatus() {
-        // Get charging status
-        bool new_charging_status = gpio_get_level(charging_pin_) == 1;
-        if (new_charging_status != is_charging_) {
-            is_charging_ = new_charging_status;
-            if (on_charging_status_changed_) {
-                on_charging_status_changed_(is_charging_);
+        if (charging_pin_ != GPIO_NUM_NC) {
+            // Get charging status
+            bool new_charging_status = gpio_get_level(charging_pin_) == 1;
+            if (new_charging_status != is_charging_) {
+                is_charging_ = new_charging_status;
+                if (on_charging_status_changed_) {
+                    on_charging_status_changed_(is_charging_);
+                }
+                ReadBatteryAdcData();
+                return;
             }
-            ReadBatteryAdcData();
-            return;
         }
 
-        // If there is not enough battery ADC data, read battery ADC data
+        // If battery ADC data is insufficient, read battery ADC data
         if (adc_values_.size() < kBatteryAdcDataCount) {
             ReadBatteryAdcData();
             return;
         }
 
-        // If there is enough battery ADC data, read battery ADC data every kBatteryAdcInterval ticks
+        // If battery ADC data is sufficient, read battery ADC data every kBatteryAdcInterval ticks
         ticks_++;
         if (ticks_ % kBatteryAdcInterval == 0) {
             ReadBatteryAdcData();
+        }
+
+        if (ticks_ % kTemperatureReadInterval == 0) {
+            ReadTemperature();
         }
     }
 
     void ReadBatteryAdcData() {
         int adc_value;
-        ESP_ERROR_CHECK(adc_oneshot_read(adc_handle_, ADC_CHANNEL_6, &adc_value));
+        ESP_ERROR_CHECK(adc_oneshot_read(adc_handle_, ADC_CHANNEL_BATTERY, &adc_value));
         
         // Add ADC value to the queue
         adc_values_.push_back(adc_value);
@@ -78,11 +92,11 @@ private:
             {2430, 100}
         };
 
-        // Lower than the lowest value
+        // Below the lowest value
         if (average_adc < levels[0].adc) {
             battery_level_ = 0;
         }
-        // Higher than the highest value
+        // Above the highest value
         else if (average_adc >= levels[5].adc) {
             battery_level_ = 100;
         } else {
@@ -110,18 +124,33 @@ private:
         ESP_LOGI("PowerManager", "ADC value: %d average: %ld level: %ld", adc_value, average_adc, battery_level_);
     }
 
+    void ReadTemperature() {
+        float temperature = 0.0f;
+        ESP_ERROR_CHECK(temperature_sensor_get_celsius(temp_sensor_, &temperature));
+        
+        if (abs(temperature - current_temperature_) >= 3.5f) {  // The callback is only triggered when the temperature change exceeds 3.5°C.
+            current_temperature_ = temperature;
+            if (on_temperature_changed_) {
+                on_temperature_changed_(current_temperature_);
+            }
+        }      
+        ESP_LOGI("PowerManager", "Temperature updated: %.1f°C", current_temperature_);
+    }
+
 public:
     PowerManager(gpio_num_t pin) : charging_pin_(pin) {
         // Initialize charging pin
-        gpio_config_t io_conf = {};
-        io_conf.intr_type = GPIO_INTR_DISABLE;
-        io_conf.mode = GPIO_MODE_INPUT;
-        io_conf.pin_bit_mask = (1ULL << charging_pin_);
-        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE; 
-        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;     
-        gpio_config(&io_conf);
+        if (charging_pin_ != GPIO_NUM_NC) {
+            gpio_config_t io_conf = {};
+            io_conf.intr_type = GPIO_INTR_DISABLE;
+            io_conf.mode = GPIO_MODE_INPUT;
+            io_conf.pin_bit_mask = (1ULL << charging_pin_);
+            io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE; 
+            io_conf.pull_up_en = GPIO_PULLUP_DISABLE;     
+            gpio_config(&io_conf);
+        }
 
-        // Create battery level check timer
+        // Create battery check timer
         esp_timer_create_args_t timer_args = {
             .callback = [](void* arg) {
                 PowerManager* self = static_cast<PowerManager*>(arg);
@@ -137,7 +166,7 @@ public:
 
         // Initialize ADC
         adc_oneshot_unit_init_cfg_t init_config = {
-            .unit_id = ADC_UNIT_2,
+            .unit_id = ADC_CHANNEL_UNIT,
             .ulp_mode = ADC_ULP_MODE_DISABLE,
         };
         ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config, &adc_handle_));
@@ -146,7 +175,17 @@ public:
             .atten = ADC_ATTEN_DB_12,
             .bitwidth = ADC_BITWIDTH_12,
         };
-        ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle_, ADC_CHANNEL_6, &chan_config));
+        ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle_, ADC_CHANNEL_BATTERY, &chan_config));
+
+        // Initialize the temperature sensor
+        temperature_sensor_config_t temp_config = {
+            .range_min = 10,
+            .range_max = 80,
+            .clk_src = TEMPERATURE_SENSOR_CLK_SRC_DEFAULT
+        };
+        ESP_ERROR_CHECK(temperature_sensor_install(&temp_config, &temp_sensor_));
+        ESP_ERROR_CHECK(temperature_sensor_enable(temp_sensor_));
+        ESP_LOGI("PowerManager", "Temperature sensor initialized (new driver)");
     }
 
     ~PowerManager() {
@@ -160,7 +199,7 @@ public:
     }
 
     bool IsCharging() {
-        // If the battery is already fully charged, it will no longer display "charging".
+        // If the battery is already full, do not show charging
         if (battery_level_ == 100) {
             return false;
         }
@@ -168,12 +207,18 @@ public:
     }
 
     bool IsDischarging() {
-        // No distinction between charging and discharging, so directly return the opposite state
+        // No distinction between charging and discharging, so return the opposite state
         return !is_charging_;
     }
 
     uint8_t GetBatteryLevel() {
         return battery_level_;
+    }
+
+    float GetTemperature() const { return current_temperature_; }  // Get the current temperature
+
+    void OnTemperatureChanged(std::function<void(float)> callback) { 
+        on_temperature_changed_ = callback; 
     }
 
     void OnLowBatteryStatusChanged(std::function<void(bool)> callback) {

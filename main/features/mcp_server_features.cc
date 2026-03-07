@@ -753,8 +753,8 @@ void McpFeatureTools::RegisterMediaPlayerTools() {
     auto& mcp = McpServer::GetInstance();
 
     /* --- 1) Play a media file or URL --- */
-    mcp.AddTool("self.media.play",
-        "Phát file media (MP4, MP3, AAC, v.v.) từ SD card hoặc HTTP URL.\n"
+    mcp.AddTool("self.mediaPlayer.play",
+        "Phát file video/audio (MP4, MP3, AAC, v.v.) từ SD card hoặc HTTP URL.\n"
         "Dùng khi người dùng yêu cầu phát video/audio từ URL hoặc đường dẫn file.\n"
         "\n"
         "Args:\n"
@@ -784,7 +784,7 @@ void McpFeatureTools::RegisterMediaPlayerTools() {
         });
 
     /* --- 2) Playback control (pause / resume / stop / set_speed) --- */
-    mcp.AddTool("self.media.control",
+    mcp.AddTool("self.mediaPlayer.control",
         "Điều khiển phát lại: tạm dừng, tiếp tục, dừng, hoặc đổi tốc độ.\n"
         "\n"
         "action:\n"

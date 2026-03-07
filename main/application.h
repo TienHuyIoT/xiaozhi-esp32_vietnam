@@ -203,6 +203,7 @@ private:
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
     VideoPlayer* sd_video_ = nullptr;
+    MediaPlayerService* media_ = nullptr;
 
     // Music spectrum visualizer (owned by Application, not Display)
     std::unique_ptr<music::MusicVisualizer> music_visualizer_;

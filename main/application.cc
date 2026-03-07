@@ -421,7 +421,6 @@ void Application::Start() {
     // Initialize media components and register their MCP tools
     InitMusic();
     InitRadio();
-    InitMedia();
 
 #ifdef CONFIG_SD_CARD_ENABLE
     auto sd_card = board.GetSdCard();
@@ -430,6 +429,7 @@ void Application::Start() {
             ESP_LOGI(TAG, "SD card mounted successfully");
             InitSdMusic();
             // InitVideo();
+            InitMedia();
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
@@ -607,6 +607,12 @@ void Application::Start() {
         display->SetChatMessage("system", "");
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+    }
+
+    if (media_) {
+        ESP_LOGW(TAG, "Start playing media from SD card");
+        media_->SetSource(MediaSourceType::kFile, "/sdcard/videos/demo.mp4");
+        media_->Play();
     }
 }
 
@@ -1592,21 +1598,17 @@ bool Application::InitMedia() {
     MediaPlayerConfig config;
     config.enable_audio = true;
     config.enable_video = (panel != nullptr);
-    /* Use LVGL canvas for video when LCD display is available
-     * (mirrors VideoPlayer's LvglCanvas mode for UI overlay support).
-     * Switch to kDirectLcd for maximum FPS without LVGL overhead. */
-    config.render_mode = panel ? MediaRenderMode::kLvglCanvas
-                               : MediaRenderMode::kDirectLcd;
+    config.render_mode = MediaRenderMode::kDirectLcd;
 
-    auto& player = MediaPlayerService::GetInstance();
-    bool ok = player.Init(codec, panel, lcd_width, lcd_height, display, config);
+    media_ = &MediaPlayerService::GetInstance();
+    bool ok = media_->Init(codec, panel, lcd_width, lcd_height, display, config);
     if (!ok) {
         ESP_LOGE(TAG, "InitMedia: MediaPlayerService init failed");
         return false;
     }
 
     /* Manage UI overlay during media playback */
-    player.SetEventCallback([](MediaPlayerEvent event, MediaPlayerState state) {
+    media_->SetEventCallback([](MediaPlayerEvent event, MediaPlayerState state) {
         auto* disp = Board::GetInstance().GetDisplay();
         if (!disp) return;
         if (state == MediaPlayerState::kPlaying) {

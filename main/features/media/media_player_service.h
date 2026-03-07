@@ -175,11 +175,11 @@ typedef void (*media_play_end_cb_t)(void* user_data);
 
 /** FIFO tuning preset for memory/latency tradeoff. */
 struct MediaFifoConfig {
-    uint32_t adec_fifo_size     = 8192;    ///< Audio decoder buffer
-    uint32_t vdec_fifo_size     = 16384;   ///< Video decoder buffer
-    uint32_t arender_fifo_size  = 4096;    ///< Audio render buffer
-    uint32_t vrender_fifo_size  = 8192;    ///< Video render buffer
-    uint32_t extractor_pool_size = 10;     ///< Frame pool size
+    uint32_t adec_fifo_size      = 8192;        ///< Audio decoder buffer (0 = library default)
+    uint32_t vdec_fifo_size      = 16384;       ///< Video decoder buffer (0 = library default)
+    uint32_t arender_fifo_size   = 4096;        ///< Audio render buffer (0 = library default)
+    uint32_t vrender_fifo_size   = 8192;        ///< Video render buffer (0 = library default)
+    uint32_t extractor_pool_size = 2 * 1024 * 1024;  ///< Extractor output pool (bytes, default 2MB)
 };
 
 /**

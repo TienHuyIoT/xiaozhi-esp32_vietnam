@@ -219,14 +219,12 @@ bool MediaPlayerService::InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t 
         return 0;
     }, this);
 
-    /* Apply FIFO configuration */
-    player_fifo_cfg_t fifo_cfg = {};
-    fifo_cfg.adec_fifo_size     = config_.fifo.adec_fifo_size;
-    fifo_cfg.vdec_fifo_size     = config_.fifo.vdec_fifo_size;
-    fifo_cfg.arender_fifo_size  = config_.fifo.arender_fifo_size;
-    fifo_cfg.vrender_fifo_size  = config_.fifo.vrender_fifo_size;
-    fifo_cfg.extractor_pool_size = config_.fifo.extractor_pool_size;
-    media_player_set_fifo_size(player_, &fifo_cfg);
+    /* FIFO configuration: let the library auto-calculate render FIFO sizes
+     * based on actual audio format and video resolution. With REUSE_EXTRACTOR_DATA
+     * the defaults are: extractor pool 2MB, raw FIFOs 1024 (metadata-only with pool),
+     * render FIFOs auto-sized from stream info. Calling media_player_set_fifo_size()
+     * would override ALL sizes (fifo_by_user=true) including render FIFOs, causing
+     * undersized buffers for PCM audio and high-resolution video. */
 
     /* Start worker task */
     BaseType_t ret = xTaskCreatePinnedToCore(

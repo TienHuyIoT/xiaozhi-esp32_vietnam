@@ -11,5 +11,12 @@ set(PROJECT_VER "2.0.5.06")
 # Add this line to disable the specific warning
 add_compile_options(-Wno-missing-field-initializers)
 
+# Fix Windows CreateProcess command line length limit (32767 chars).
+# WITH many managed components, the -I include list overflows the limit.
+# Forcing response files keeps the actual command short: `ccache g++ @rsp`.
+if(WIN32)
+    set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON CACHE BOOL "Force rsp files" FORCE)
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi_vn)

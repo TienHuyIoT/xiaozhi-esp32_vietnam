@@ -9,6 +9,7 @@
 
 #include "media_player_service.h"
 #include "media_render_factory.h"
+#include "media_video_renderer.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -50,15 +51,21 @@ MediaPlayerService::~MediaPlayerService() {
 /* ================================================================== */
 
 bool MediaPlayerService::Init(const MediaPlayerConfig& config) {
-    return InitInternal(nullptr, nullptr, config);
+    MediaPlayerConfig cfg = config;
+    cfg.render_mode = MediaRenderMode::kCallback;
+    return InitInternal(nullptr, nullptr, 0, 0, nullptr, cfg);
 }
 
 bool MediaPlayerService::Init(AudioCodec* codec, esp_lcd_panel_handle_t panel,
+                               uint16_t lcd_width, uint16_t lcd_height,
+                               Display* display,
                                const MediaPlayerConfig& config) {
-    return InitInternal(codec, panel, config);
+    return InitInternal(codec, panel, lcd_width, lcd_height, display, config);
 }
 
 bool MediaPlayerService::InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t panel,
+                                       uint16_t lcd_width, uint16_t lcd_height,
+                                       Display* display,
                                        const MediaPlayerConfig& config) {
     if (initialized_.load()) {
         ESP_LOGW(TAG, "Already initialized");
@@ -96,6 +103,9 @@ bool MediaPlayerService::InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t 
     esp_video_dec_register_default();
 
     config_ = config;
+    display_ = display;
+    lcd_width_ = lcd_width;
+    lcd_height_ = lcd_height;
 
     /* Create command queue */
     cmd_queue_ = xQueueCreate(kCmdQueueLen, sizeof(Command));
@@ -113,20 +123,68 @@ bool MediaPlayerService::InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t 
         return false;
     }
 
-    /* Create audio render if codec provided and audio enabled */
-    if (config_.enable_audio && codec) {
-        audio_render_ = media_render::CreateAudioRender(codec);
-        if (!audio_render_) {
-            ESP_LOGW(TAG, "Audio render creation failed, audio output disabled");
-        }
-    }
+    /* ---- Create renders based on render mode ---- */
+    switch (config_.render_mode) {
+        case MediaRenderMode::kDirectLcd:
+            /* Audio: I2S render via AudioCodec */
+            if (config_.enable_audio && codec) {
+                audio_render_ = media_render::CreateAudioRender(codec);
+                if (!audio_render_) {
+                    ESP_LOGW(TAG, "I2S audio render creation failed");
+                }
+            }
+            /* Video: direct LCD panel render */
+            if (config_.enable_video && panel) {
+                video_render_ = media_render::CreateVideoRender(panel);
+                if (!video_render_) {
+                    ESP_LOGW(TAG, "LCD video render creation failed");
+                }
+            }
+            break;
 
-    /* Create video render if panel provided and video enabled */
-    if (config_.enable_video && panel) {
-        video_render_ = media_render::CreateVideoRender(panel);
-        if (!video_render_) {
-            ESP_LOGW(TAG, "Video render creation failed, video output disabled");
-        }
+        case MediaRenderMode::kLvglCanvas:
+            /* Audio: I2S render (same as kDirectLcd) */
+            if (config_.enable_audio && codec) {
+                audio_render_ = media_render::CreateAudioRender(codec);
+                if (!audio_render_) {
+                    ESP_LOGW(TAG, "I2S audio render creation failed");
+                }
+            }
+            /* Video: LVGL canvas render via MediaVideoRenderer */
+            if (config_.enable_video && display) {
+                internal_renderer_ = new MediaVideoRenderer();
+                if (internal_renderer_->Init(panel, lcd_width, lcd_height, display)) {
+                    video_render_ = media_render::CreateCanvasVideoRender(internal_renderer_);
+                    if (!video_render_) {
+                        ESP_LOGW(TAG, "Canvas video render creation failed");
+                        internal_renderer_->Deinit();
+                        delete internal_renderer_;
+                        internal_renderer_ = nullptr;
+                    }
+                } else {
+                    ESP_LOGW(TAG, "MediaVideoRenderer init failed, video disabled");
+                    delete internal_renderer_;
+                    internal_renderer_ = nullptr;
+                }
+            }
+            break;
+
+        case MediaRenderMode::kCallback:
+            /* Audio: callback render → user audio callbacks */
+            if (config_.enable_audio && config_.callbacks.HasAudioCallbacks()) {
+                audio_render_ = media_render::CreateCallbackAudioRender(this);
+                if (!audio_render_) {
+                    ESP_LOGW(TAG, "Callback audio render creation failed");
+                }
+            }
+            /* Video: callback render → user video callbacks */
+            if (config_.enable_video && config_.callbacks.HasVideoCallbacks()) {
+                video_render_ = media_render::CreateCallbackVideoRender(this);
+                if (!video_render_) {
+                    ESP_LOGW(TAG, "Callback video render creation failed");
+                }
+            }
+            break;
     }
 
     /* Configure player */
@@ -187,8 +245,9 @@ bool MediaPlayerService::InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t 
 
     initialized_.store(true);
     SetState(MediaPlayerState::kStopped);
-    ESP_LOGI(TAG, "Initialized (audio=%d video=%d fast_seek=%d)",
-             config_.enable_audio, config_.enable_video, config_.fast_seek);
+    ESP_LOGI(TAG, "Initialized (audio=%d video=%d mode=%d fast_seek=%d)",
+             config_.enable_audio, config_.enable_video,
+             (int)config_.render_mode, config_.fast_seek);
     return true;
 }
 
@@ -222,6 +281,13 @@ void MediaPlayerService::Deinit() {
     if (video_render_) {
         video_render_free_handle(static_cast<video_render_handle_t>(video_render_));
         video_render_ = nullptr;
+    }
+
+    /* Clean up internal LVGL canvas renderer (kLvglCanvas mode) */
+    if (internal_renderer_) {
+        internal_renderer_->Deinit();
+        delete internal_renderer_;
+        internal_renderer_ = nullptr;
     }
 
     if (cmd_queue_) {
@@ -469,7 +535,12 @@ void MediaPlayerService::HandlePlayerEvent(int event) {
 
     SetState(new_state);
 
-    /* Dispatch to registered callback (non-blocking, mutex-protected read) */
+    /* Fire play_end_cb for EOS events (similar to AVI player's avi_play_end_cb) */
+    if (mapped_event == MediaPlayerEvent::kEndOfStream && config_.callbacks.play_end_cb) {
+        config_.callbacks.play_end_cb(config_.callbacks.user_data);
+    }
+
+    /* Dispatch to registered event callback (non-blocking, mutex-protected read) */
     if (callback_mutex_) {
         xSemaphoreTake(callback_mutex_, portMAX_DELAY);
     }

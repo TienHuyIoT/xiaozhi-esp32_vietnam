@@ -9,9 +9,15 @@
  * All control commands are serialized through a FreeRTOS queue to guarantee
  * thread safety when called from multiple tasks (UI, MCP, application).
  *
+ * Supports three rendering modes (MediaRenderMode):
+ *   1. kDirectLcd:  Hardware av_render — I2S audio + direct LCD panel write.
+ *   2. kLvglCanvas: I2S audio + LVGL canvas video rendering (like VideoPlayer).
+ *   3. kCallback:   Forward decoded frames to user callbacks (AVI-style).
+ *
  * Architecture:
  *   - Command path: public API -> command queue -> worker task -> media_player
  *   - Event path:   media_player callback -> event dispatch -> app listeners
+ *   - Frame path:   media_player -> av_render -> render (hw/canvas/callback)
  *   - Lifecycle:    Init() -> SetSource() -> Play() -> Stop() -> Deinit()
  */
 
@@ -33,6 +39,9 @@ typedef void* audio_render_handle_t;
 typedef void* video_render_handle_t;
 
 class AudioCodec;
+class Display;
+class MediaVideoRenderer;
+
 struct esp_lcd_panel_t;
 typedef struct esp_lcd_panel_t* esp_lcd_panel_handle_t;
 
@@ -73,6 +82,93 @@ enum class MediaPlayerEvent : uint8_t {
 using MediaPlayerEventCallback = std::function<void(MediaPlayerEvent event,
                                                      MediaPlayerState state)>;
 
+/**
+ * @brief Video rendering strategy for MediaPlayerService.
+ *
+ * Mirrors VideoPlayer's VideoRenderMode concept:
+ *   - kDirectLcd:  Hardware av_render — I2S audio + direct LCD panel write
+ *                  (bypasses LVGL for maximum throughput).
+ *   - kLvglCanvas: I2S audio + LVGL canvas video rendering — goes through
+ *                  LVGL's refresh pipeline (supports UI overlays on video).
+ *   - kCallback:   Forward decoded audio/video frames to user callbacks
+ *                  for external rendering (similar to AVI player callbacks).
+ */
+enum class MediaRenderMode : uint8_t {
+    kDirectLcd = 0,   ///< Hardware I2S audio + direct LCD panel video
+    kLvglCanvas,      ///< Hardware I2S audio + LVGL canvas video
+    kCallback,        ///< Forward all frames to user callbacks
+};
+
+/* ------------------------------------------------------------------ */
+/*  Render callbacks (AVI-player style)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Called when decoded audio PCM data is available for rendering.
+ * Similar to AVI player's audio_cb.
+ *
+ * @param data      Decoded PCM audio data
+ * @param size      Data size in bytes
+ * @param pts_ms    Presentation timestamp in milliseconds
+ * @param user_data User context pointer
+ *
+ * @note Called from media_player's audio render thread. Keep non-blocking.
+ */
+typedef void (*media_audio_frame_cb_t)(const uint8_t* data, int size,
+                                       uint32_t pts_ms, void* user_data);
+
+/**
+ * Called when audio format is determined (before first audio frame).
+ * Similar to AVI player's audio_set_clock_cb.
+ *
+ * @param sample_rate   Audio sample rate in Hz
+ * @param bits_per_sample  Bits per sample (8/16/24/32)
+ * @param channels      Number of audio channels
+ * @param user_data     User context pointer
+ */
+typedef void (*media_audio_set_clock_cb_t)(uint32_t sample_rate,
+                                           uint8_t bits_per_sample,
+                                           uint8_t channels,
+                                           void* user_data);
+
+/**
+ * Called when decoded video frame data is available for rendering.
+ * Similar to AVI player's video_cb.
+ *
+ * @param data      Decoded video frame data (RGB565 or other format)
+ * @param size      Data size in bytes
+ * @param width     Frame width in pixels
+ * @param height    Frame height in pixels
+ * @param pts_ms    Presentation timestamp in milliseconds
+ * @param user_data User context pointer
+ *
+ * @note Called from media_player's video render thread. Keep non-blocking.
+ */
+typedef void (*media_video_frame_cb_t)(const uint8_t* data, int size,
+                                       uint16_t width, uint16_t height,
+                                       uint32_t pts_ms, void* user_data);
+
+/**
+ * Called when video format info is determined (before first video frame).
+ *
+ * @param width       Video width in pixels
+ * @param height      Video height in pixels
+ * @param fps         Frames per second
+ * @param frame_type  Decoded frame pixel type (RGB565, YUV420, etc.)
+ * @param user_data   User context pointer
+ */
+typedef void (*media_video_set_info_cb_t)(uint16_t width, uint16_t height,
+                                          uint8_t fps, uint8_t frame_type,
+                                          void* user_data);
+
+/**
+ * Called when playback reaches end of stream.
+ * Similar to AVI player's avi_play_end_cb.
+ *
+ * @param user_data User context pointer
+ */
+typedef void (*media_play_end_cb_t)(void* user_data);
+
 /* ------------------------------------------------------------------ */
 /*  Configuration                                                     */
 /* ------------------------------------------------------------------ */
@@ -86,12 +182,34 @@ struct MediaFifoConfig {
     uint32_t extractor_pool_size = 10;     ///< Frame pool size
 };
 
+/**
+ * Render callback configuration.
+ * When callbacks are set, decoded frames are forwarded to the user
+ * instead of being rendered internally (similar to AVI player callbacks).
+ * All callbacks share a single user_data context pointer.
+ */
+struct MediaRenderCallbacks {
+    media_audio_frame_cb_t     audio_cb        = nullptr;  ///< Decoded audio PCM data
+    media_audio_set_clock_cb_t audio_clock_cb   = nullptr;  ///< Audio format notification
+    media_video_frame_cb_t     video_cb        = nullptr;  ///< Decoded video frame data
+    media_video_set_info_cb_t  video_info_cb    = nullptr;  ///< Video format notification
+    media_play_end_cb_t        play_end_cb     = nullptr;  ///< Playback end notification
+    void*                      user_data       = nullptr;  ///< Shared context for all callbacks
+
+    /** @return true if any audio callback is registered. */
+    bool HasAudioCallbacks() const { return audio_cb != nullptr; }
+    /** @return true if any video callback is registered. */
+    bool HasVideoCallbacks() const { return video_cb != nullptr; }
+};
+
 /** Initialization config for the media player service. */
 struct MediaPlayerConfig {
     bool enable_audio         = true;    ///< Enable audio playback
     bool enable_video         = false;   ///< Enable video playback
     bool fast_seek            = true;    ///< Non-accurate seek for lower latency
+    MediaRenderMode render_mode = MediaRenderMode::kDirectLcd;  ///< Rendering strategy
     MediaFifoConfig fifo;                ///< FIFO tuning preset
+    MediaRenderCallbacks callbacks;      ///< Render callbacks (only for kCallback mode)
 };
 
 /* ------------------------------------------------------------------ */
@@ -109,21 +227,38 @@ public:
     /* ---- Lifecycle ---- */
 
     /**
-     * @brief Initialize player with given config.
-     * Creates renderers, opens player instance, starts worker task.
-     * @return true on success
-     */
-    bool Init(const MediaPlayerConfig& config = {});
-
-    /**
-     * @brief Initialize player with hardware handles for audio/video output.
-     * @param codec  AudioCodec (for I2S render via GetOutputDevHandle)
-     * @param panel  LCD panel handle (for video render), nullptr for audio-only
-     * @param config Player configuration
+     * @brief Initialize player with full hardware and display parameters.
+     *
+     * Mirrors VideoPlayer::Initialize() signature.  Supports all three
+     * render modes selected via config.render_mode:
+     *   - kDirectLcd:  Uses codec for I2S audio, panel for direct LCD video.
+     *   - kLvglCanvas: Uses codec for I2S audio, creates LVGL canvas for video
+     *                  (requires display, lcd_width, lcd_height).
+     *   - kCallback:   Forwards frames to config.callbacks (codec/panel unused).
+     *
+     * @param codec      AudioCodec instance (for I2S render; nullptr for callback mode)
+     * @param panel      LCD panel handle (for direct LCD; nullptr for audio-only)
+     * @param lcd_width  Display width in pixels (required for kLvglCanvas)
+     * @param lcd_height Display height in pixels (required for kLvglCanvas)
+     * @param display    Display instance for LVGL lock (required for kLvglCanvas)
+     * @param config     Player configuration including render mode
      * @return true on success
      */
     bool Init(AudioCodec* codec, esp_lcd_panel_handle_t panel,
+              uint16_t lcd_width, uint16_t lcd_height,
+              Display* display = nullptr,
               const MediaPlayerConfig& config = {});
+
+    /**
+     * @brief Initialize player with callback rendering only.
+     *
+     * Convenience overload for kCallback mode without hardware handles.
+     * config.render_mode is forced to kCallback.
+     *
+     * @param config Player configuration (must include callbacks)
+     * @return true on success
+     */
+    bool Init(const MediaPlayerConfig& config = {});
 
     /**
      * @brief Release all resources and stop worker task.
@@ -188,11 +323,16 @@ public:
     /* ---- Event listener ---- */
 
     /**
-     * @brief Register event callback.
+     * @brief Register event callback for state/error notifications.
      * Callback is invoked from the worker task context (non-ISR safe).
      * Keep handlers lightweight; post heavy work to another task.
      */
     void SetEventCallback(MediaPlayerEventCallback cb);
+
+    /* ---- Render callbacks access (used by callback renders) ---- */
+
+    /** @return Current render callback configuration. */
+    const MediaRenderCallbacks& GetCallbacks() const { return config_.callbacks; }
 
 private:
     MediaPlayerService();
@@ -235,7 +375,8 @@ private:
 
     /* ---- Internal init ---- */
     bool InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t panel,
-                      const MediaPlayerConfig& config);
+                      uint16_t lcd_width, uint16_t lcd_height,
+                      Display* display, const MediaPlayerConfig& config);
 
     /* ---- State management ---- */
     void SetState(MediaPlayerState new_state);
@@ -248,6 +389,14 @@ private:
     video_render_handle_t          video_render_{nullptr};
     MediaPlayerConfig              config_{};
     MediaPlayerEventCallback       event_callback_;
+
+    /* Hardware / display handles (stored for queries and LVGL canvas) */
+    Display*               display_{nullptr};
+    uint16_t               lcd_width_{0};
+    uint16_t               lcd_height_{0};
+
+    /* Internal LVGL canvas renderer (owned, only for kLvglCanvas mode) */
+    MediaVideoRenderer*    internal_renderer_{nullptr};
 
     QueueHandle_t    cmd_queue_{nullptr};
     TaskHandle_t     worker_task_{nullptr};

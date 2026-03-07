@@ -1586,12 +1586,20 @@ bool Application::InitMedia() {
     auto* lcd = dynamic_cast<LcdDisplay*>(display);
     esp_lcd_panel_handle_t panel = lcd ? lcd->GetPanelHandle() : nullptr;
 
+    uint16_t lcd_width  = lcd ? static_cast<uint16_t>(lcd->width())  : 0;
+    uint16_t lcd_height = lcd ? static_cast<uint16_t>(lcd->height()) : 0;
+
     MediaPlayerConfig config;
     config.enable_audio = true;
     config.enable_video = (panel != nullptr);
+    /* Use LVGL canvas for video when LCD display is available
+     * (mirrors VideoPlayer's LvglCanvas mode for UI overlay support).
+     * Switch to kDirectLcd for maximum FPS without LVGL overhead. */
+    config.render_mode = panel ? MediaRenderMode::kLvglCanvas
+                               : MediaRenderMode::kDirectLcd;
 
     auto& player = MediaPlayerService::GetInstance();
-    bool ok = player.Init(codec, panel, config);
+    bool ok = player.Init(codec, panel, lcd_width, lcd_height, display, config);
     if (!ok) {
         ESP_LOGE(TAG, "InitMedia: MediaPlayerService init failed");
         return false;

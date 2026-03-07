@@ -29,6 +29,12 @@
 /*  Forward declarations -- avoid exposing third-party headers        */
 /* ------------------------------------------------------------------ */
 typedef void* media_player_handle_t;
+typedef void* audio_render_handle_t;
+typedef void* video_render_handle_t;
+
+class AudioCodec;
+struct esp_lcd_panel_t;
+typedef struct esp_lcd_panel_t* esp_lcd_panel_handle_t;
 
 /* ------------------------------------------------------------------ */
 /*  Public enums                                                      */
@@ -108,6 +114,16 @@ public:
      * @return true on success
      */
     bool Init(const MediaPlayerConfig& config = {});
+
+    /**
+     * @brief Initialize player with hardware handles for audio/video output.
+     * @param codec  AudioCodec (for I2S render via GetOutputDevHandle)
+     * @param panel  LCD panel handle (for video render), nullptr for audio-only
+     * @param config Player configuration
+     * @return true on success
+     */
+    bool Init(AudioCodec* codec, esp_lcd_panel_handle_t panel,
+              const MediaPlayerConfig& config = {});
 
     /**
      * @brief Release all resources and stop worker task.
@@ -217,6 +233,10 @@ private:
     static int PlayerCallbackTrampoline(int event, void* ctx);
     void HandlePlayerEvent(int event);
 
+    /* ---- Internal init ---- */
+    bool InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t panel,
+                      const MediaPlayerConfig& config);
+
     /* ---- State management ---- */
     void SetState(MediaPlayerState new_state);
 
@@ -224,6 +244,8 @@ private:
     std::atomic<bool>              initialized_{false};
     std::atomic<MediaPlayerState>  state_{MediaPlayerState::kIdle};
     media_player_handle_t          player_{nullptr};
+    audio_render_handle_t          audio_render_{nullptr};
+    video_render_handle_t          video_render_{nullptr};
     MediaPlayerConfig              config_{};
     MediaPlayerEventCallback       event_callback_;
 

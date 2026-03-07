@@ -9,6 +9,8 @@
 #include <string>
 #include <functional>
 
+#include <esp_codec_dev.h>
+
 #include "board.h"
 
 #define AUDIO_CODEC_DMA_DESC_NUM 6
@@ -28,6 +30,10 @@ public:
     virtual void OutputData(std::vector<int16_t>& data);
     virtual bool InputData(std::vector<int16_t>& data);
     virtual void Start();
+
+    /** Get esp_codec_dev output handle for media render integration.
+     *  Returns nullptr for codecs without esp_codec_dev support. */
+    virtual esp_codec_dev_handle_t GetOutputDevHandle() { return nullptr; }
 
     inline bool duplex() const { return duplex_; }
     inline bool input_reference() const { return input_reference_; }

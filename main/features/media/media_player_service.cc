@@ -8,6 +8,7 @@
  */
 
 #include "media_player_service.h"
+#include "media_render_factory.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -16,6 +17,15 @@
 extern "C" {
 #include "player.h"
 #include "av_render.h"
+#include "audio_render.h"
+#include "video_render.h"
+#include "media_lib_adapter.h"
+#include "media_lib_os.h"
+#include "media_src_storage.h"
+#include "media_src_network.h"
+#include "esp_extractor_reg.h"
+#include "esp_audio_dec_default.h"
+#include "esp_video_dec_default.h"
 }
 
 static const char* TAG = "MediaPlayerSvc";
@@ -40,10 +50,50 @@ MediaPlayerService::~MediaPlayerService() {
 /* ================================================================== */
 
 bool MediaPlayerService::Init(const MediaPlayerConfig& config) {
+    return InitInternal(nullptr, nullptr, config);
+}
+
+bool MediaPlayerService::Init(AudioCodec* codec, esp_lcd_panel_handle_t panel,
+                               const MediaPlayerConfig& config) {
+    return InitInternal(codec, panel, config);
+}
+
+bool MediaPlayerService::InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t panel,
+                                       const MediaPlayerConfig& config) {
     if (initialized_.load()) {
         ESP_LOGW(TAG, "Already initialized");
         return true;
     }
+
+    /* Install default OS/memory/socket adapters for the media_lib family.
+     * Must be called once before any media_lib_calloc / media_player_open. */
+    media_lib_add_default_adapter();
+
+    /* Set thread scheduler for media worker threads (decoder, render).
+     * Controls stack size, priority and core affinity per thread name. */
+    media_lib_thread_set_schedule_cb([](const char* name, media_lib_thread_cfg_t* cfg) {
+        if (strcmp(name, "Vdec") == 0) {
+            cfg->core_id = 1;
+            cfg->priority = 15;
+            cfg->stack_size = 10 * 1024;
+        } else if (strcmp(name, "ARender") == 0) {
+            cfg->core_id = 1;
+            cfg->priority = 21;
+            cfg->stack_size = 10 * 1024;
+        } else if (strcmp(name, "Adec") == 0) {
+            cfg->core_id = 0;
+            cfg->priority = 10;
+            cfg->stack_size = 15 * 1024;
+        }
+    });
+
+    /* Register media components: sources, extractors, decoders.
+     * Without these registrations the player cannot parse or decode any format. */
+    media_src_register_storage();
+    media_src_register_network();
+    esp_extractor_register_all();
+    esp_audio_dec_register_default();
+    esp_video_dec_register_default();
 
     config_ = config;
 
@@ -63,6 +113,22 @@ bool MediaPlayerService::Init(const MediaPlayerConfig& config) {
         return false;
     }
 
+    /* Create audio render if codec provided and audio enabled */
+    if (config_.enable_audio && codec) {
+        audio_render_ = media_render::CreateAudioRender(codec);
+        if (!audio_render_) {
+            ESP_LOGW(TAG, "Audio render creation failed, audio output disabled");
+        }
+    }
+
+    /* Create video render if panel provided and video enabled */
+    if (config_.enable_video && panel) {
+        video_render_ = media_render::CreateVideoRender(panel);
+        if (!video_render_) {
+            ESP_LOGW(TAG, "Video render creation failed, video output disabled");
+        }
+    }
+
     /* Configure player */
     uint8_t play_mask = 0;
     if (config_.enable_audio) {
@@ -75,12 +141,8 @@ bool MediaPlayerService::Init(const MediaPlayerConfig& config) {
     player_cfg_t cfg = {};
     cfg.play_mask = play_mask;
     cfg.no_accurate_seek = config_.fast_seek;
-
-    /* TODO: Initialize audio_render and video_render when renderers are wired.
-     * For now, leave them as nullptr -- media_player may still parse/decode
-     * but won't produce output until renderers are connected. */
-    cfg.audio_render = nullptr;
-    cfg.video_render = nullptr;
+    cfg.audio_render = static_cast<audio_render_handle_t>(audio_render_);
+    cfg.video_render = static_cast<video_render_handle_t>(video_render_);
 
     player_ = media_player_open(&cfg);
     if (!player_) {
@@ -92,8 +154,12 @@ bool MediaPlayerService::Init(const MediaPlayerConfig& config) {
         return false;
     }
 
-    /* Register event callback */
-    media_player_set_callback(player_, PlayerCallbackTrampoline, this);
+    /* Register event callback via non-capturing lambda (convertible to C function pointer) */
+    media_player_set_callback(player_, [](player_event_t event, void* ctx) -> int {
+        auto* self = static_cast<MediaPlayerService*>(ctx);
+        self->HandlePlayerEvent(static_cast<int>(event));
+        return 0;
+    }, this);
 
     /* Apply FIFO configuration */
     player_fifo_cfg_t fifo_cfg = {};
@@ -148,6 +214,16 @@ void MediaPlayerService::Deinit() {
         player_ = nullptr;
     }
 
+    if (audio_render_) {
+        audio_render_free_handle(static_cast<audio_render_handle_t>(audio_render_));
+        audio_render_ = nullptr;
+    }
+
+    if (video_render_) {
+        video_render_free_handle(static_cast<video_render_handle_t>(video_render_));
+        video_render_ = nullptr;
+    }
+
     if (cmd_queue_) {
         vQueueDelete(cmd_queue_);
         cmd_queue_ = nullptr;
@@ -157,6 +233,11 @@ void MediaPlayerService::Deinit() {
         vSemaphoreDelete(callback_mutex_);
         callback_mutex_ = nullptr;
     }
+
+    /* Unregister media components registered during Init */
+    esp_extractor_unregister_all();
+    esp_audio_dec_unregister_default();
+    esp_video_dec_unregister_default();
 
     initialized_.store(false);
     SetState(MediaPlayerState::kIdle);
@@ -234,14 +315,14 @@ bool MediaPlayerService::SetLoop(bool enable) {
 
 int64_t MediaPlayerService::GetPosition() const {
     if (!player_) return -1;
-    int position = 0;
+    uint32_t position = 0;
     if (media_player_get_position(player_, &position) != 0) return -1;
     return static_cast<int64_t>(position);
 }
 
 int64_t MediaPlayerService::GetDuration() const {
     if (!player_) return -1;
-    int duration = 0;
+    uint32_t duration = 0;
     if (media_player_get_duration(player_, &duration) != 0) return -1;
     return static_cast<int64_t>(duration);
 }
@@ -278,10 +359,10 @@ void MediaPlayerService::ProcessCommand(const Command& cmd) {
 
     switch (cmd.type) {
         case CmdType::kSetSource: {
-            int src_type = (cmd.params.source.src_type == MediaSourceType::kFile)
-                           ? MEDIA_SRC_TYPE_FILE
-                           : MEDIA_SRC_TYPE_HTTP;
-            int ret = media_player_set_source(player_, src_type, cmd.uri);
+            media_src_type_t src_type = (cmd.params.source.src_type == MediaSourceType::kFile)
+                           ? MEDIA_SRC_TYPE_STORAGE
+                           : MEDIA_SRC_TYPE_NETWORK;
+            int ret = media_player_set_source(player_, src_type, const_cast<char*>(cmd.uri));
             if (ret != 0) {
                 ESP_LOGE(TAG, "set_source failed: %d uri=%s", ret, cmd.uri);
                 SetState(MediaPlayerState::kError);

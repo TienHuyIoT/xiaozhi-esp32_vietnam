@@ -21,6 +21,7 @@
 #include "features/music/music_visualizer.h"
 #include "features/spectrum/spectrum_manager.h"
 #include "features/video/video_player.h"
+#include "features/media/media_player_service.h"
 #include "features/QRCode/qrcode_display.h"
 #include <esp_lvgl_port.h>
 #include <cmath>
@@ -420,6 +421,7 @@ void Application::Start() {
     // Initialize media components and register their MCP tools
     InitMusic();
     InitRadio();
+    InitMedia();
 
 #ifdef CONFIG_SD_CARD_ENABLE
     auto sd_card = board.GetSdCard();
@@ -427,7 +429,7 @@ void Application::Start() {
         if (sd_card->Initialize() == ESP_OK) {
             ESP_LOGI(TAG, "SD card mounted successfully");
             InitSdMusic();
-            InitVideo();
+            // InitVideo();
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
@@ -1229,6 +1231,7 @@ bool Application::IsMediaPlaying() const {
 #ifdef CONFIG_SD_CARD_ENABLE
     if (sd_video_ && sd_video_->GetState() == VideoPlayerState::Playing) return true;
 #endif
+    if (MediaPlayerService::GetInstance().IsPlaying()) return true;
     return false;
 }
 
@@ -1574,6 +1577,41 @@ bool Application::InitSdMusic() {
 #else
     return false;
 #endif
+}
+
+bool Application::InitMedia() {
+    auto& board = Board::GetInstance();
+    auto* codec = board.GetAudioCodec();
+    auto* display = board.GetDisplay();
+    auto* lcd = dynamic_cast<LcdDisplay*>(display);
+    esp_lcd_panel_handle_t panel = lcd ? lcd->GetPanelHandle() : nullptr;
+
+    MediaPlayerConfig config;
+    config.enable_audio = true;
+    config.enable_video = (panel != nullptr);
+
+    auto& player = MediaPlayerService::GetInstance();
+    bool ok = player.Init(codec, panel, config);
+    if (!ok) {
+        ESP_LOGE(TAG, "InitMedia: MediaPlayerService init failed");
+        return false;
+    }
+
+    /* Manage UI overlay during media playback */
+    player.SetEventCallback([](MediaPlayerEvent event, MediaPlayerState state) {
+        auto* disp = Board::GetInstance().GetDisplay();
+        if (!disp) return;
+        if (state == MediaPlayerState::kPlaying) {
+            disp->SetMediaOverlayActive(true);
+        } else if (state == MediaPlayerState::kStopped ||
+                   state == MediaPlayerState::kError) {
+            disp->SetMediaOverlayActive(false);
+        }
+    });
+
+    McpFeatureTools::RegisterMediaPlayerTools();
+    ESP_LOGI(TAG, "InitMedia: ready (audio=%d video=%d)", config.enable_audio, config.enable_video);
+    return ok;
 }
 
 bool Application::InitVideo() {

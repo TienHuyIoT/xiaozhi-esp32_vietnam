@@ -1,0 +1,12 @@
+version: "0.5.0"
+description: Extractor library
+
+tags:
+   - "multimedia"
+   - "extractor"
+   - "gmf"
+
+dependencies:
+  tempotian/media_lib_sal:
+    require: public
+    version: "*"

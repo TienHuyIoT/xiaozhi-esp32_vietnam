@@ -63,8 +63,15 @@ dependencies:
 
   # Media player component (audio + video playback from SD / HTTP)
   tempotian/media_player: ^0.5.0
-  tempotian/av_render: ^0.9.1
-  tempotian/media_lib_sal: ^0.9.1
+  # tempotian/av_render: ^0.9.1
+  # tempotian/media_lib_sal: ^0.9.1
+  espressif/esp_extractor:
+    version: '*'
+    override_path: "../components/esp_extractor"
+  espressif/media_src:
+    version: '*'
+    override_path: "../components/media_src"
+
   # # Override av_render to resolve esp_codec_dev ~1.4 vs ~1.5 conflict
   # tempotian/av_render:
   #   version: ">=0.9.0"

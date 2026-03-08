@@ -1,0 +1,11 @@
+version: "0.5.0"
+description: Media Source for playback
+
+tags:
+   - "multimedia"
+   - "mediasource"
+
+dependencies:
+  tempotian/media_lib_sal:
+    require: public
+    version: "*"

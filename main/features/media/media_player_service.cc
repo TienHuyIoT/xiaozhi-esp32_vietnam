@@ -10,6 +10,7 @@
 #include "media_player_service.h"
 #include "media_render_factory.h"
 #include "media_video_renderer.h"
+#include "media_render_callback.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -170,15 +171,49 @@ bool MediaPlayerService::InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t 
             break;
 
         case MediaRenderMode::kCallback:
-            /* Audio: callback render → user audio callbacks */
-            if (config_.enable_audio && config_.callbacks.HasAudioCallbacks()) {
+            /* When hardware handles are provided, create MediaRenderCallback
+             * to handle audio output via AudioCodec and video rendering via
+             * LVGL canvas with YUV420→RGB565 conversion. */
+            if (codec || (display && panel)) {
+                render_callback_ = new MediaRenderCallback();
+                if (render_callback_->Init(codec, panel, lcd_width, lcd_height, display)) {
+                    /* Wire up C-style callbacks to MediaRenderCallback */
+                    auto* rcb = render_callback_;
+                    config_.callbacks.audio_cb = [](const uint8_t* data, int size,
+                                                    uint32_t pts_ms, void* ctx) {
+                        static_cast<MediaRenderCallback*>(ctx)->OnAudioData(data, size, pts_ms);
+                    };
+                    config_.callbacks.audio_clock_cb = [](uint32_t rate, uint8_t bits,
+                                                          uint8_t ch, void* ctx) {
+                        static_cast<MediaRenderCallback*>(ctx)->OnAudioClock(rate, bits, ch);
+                    };
+                    config_.callbacks.video_cb = [](const uint8_t* data, int size,
+                                                    uint16_t w, uint16_t h,
+                                                    uint32_t pts_ms, void* ctx) {
+                        static_cast<MediaRenderCallback*>(ctx)->OnVideoFrame(data, size, w, h, pts_ms);
+                    };
+                    config_.callbacks.video_info_cb = [](uint16_t w, uint16_t h,
+                                                         uint8_t fps, uint8_t type,
+                                                         void* ctx) {
+                        static_cast<MediaRenderCallback*>(ctx)->OnVideoInfo(w, h, fps, type);
+                    };
+                    config_.callbacks.user_data = rcb;
+                    ESP_LOGI(TAG, "MediaRenderCallback initialized for kCallback mode");
+                } else {
+                    ESP_LOGW(TAG, "MediaRenderCallback init failed, falling back to pure callbacks");
+                    delete render_callback_;
+                    render_callback_ = nullptr;
+                }
+            }
+            /* Audio: callback render → audio callbacks */
+            if (config_.enable_audio) {
                 audio_render_ = media_render::CreateCallbackAudioRender(this);
                 if (!audio_render_) {
                     ESP_LOGW(TAG, "Callback audio render creation failed");
                 }
             }
-            /* Video: callback render → user video callbacks */
-            if (config_.enable_video && config_.callbacks.HasVideoCallbacks()) {
+            /* Video: callback render → video callbacks */
+            if (config_.enable_video) {
                 video_render_ = media_render::CreateCallbackVideoRender(this);
                 if (!video_render_) {
                     ESP_LOGW(TAG, "Callback video render creation failed");
@@ -286,6 +321,13 @@ void MediaPlayerService::Deinit() {
         internal_renderer_->Deinit();
         delete internal_renderer_;
         internal_renderer_ = nullptr;
+    }
+
+    /* Clean up callback render handler (kCallback mode) */
+    if (render_callback_) {
+        render_callback_->Deinit();
+        delete render_callback_;
+        render_callback_ = nullptr;
     }
 
     if (cmd_queue_) {

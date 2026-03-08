@@ -41,6 +41,7 @@ typedef void* video_render_handle_t;
 class AudioCodec;
 class Display;
 class MediaVideoRenderer;
+class MediaRenderCallback;
 
 struct esp_lcd_panel_t;
 typedef struct esp_lcd_panel_t* esp_lcd_panel_handle_t;
@@ -51,31 +52,31 @@ typedef struct esp_lcd_panel_t* esp_lcd_panel_handle_t;
 
 /** Player state visible to the rest of the application. */
 enum class MediaPlayerState : uint8_t {
-    kIdle = 0,       ///< Not initialized or stopped
-    kConnecting,     ///< Source connecting (network only)
-    kPrepared,       ///< Source parsed, ready to play
-    kPlaying,        ///< Active playback
-    kPaused,         ///< Paused (can resume)
-    kStopped,        ///< Stopped (can set new source)
-    kError,          ///< Error occurred
+    kIdle = 0,       ///< 0 Not initialized or stopped
+    kConnecting,     ///< 1 Source connecting (network only)
+    kPrepared,       ///< 2 Source parsed, ready to play
+    kPlaying,        ///< 3 Active playback
+    kPaused,         ///< 4 Paused (can resume)
+    kStopped,        ///< 5 Stopped (can set new source)
+    kError,          ///< 6 Error occurred
 };
 
 /** Source type for media content. */
 enum class MediaSourceType : uint8_t {
-    kFile = 0,       ///< Local file (SD card, flash)
-    kHttp,           ///< HTTP/HTTPS network stream
+    kFile = 0,       ///< 0 Local file (SD card, flash)
+    kHttp,           ///< 1 HTTP/HTTPS network stream
 };
 
 /** Player events forwarded to application listeners. */
 enum class MediaPlayerEvent : uint8_t {
     kSourceConnecting = 0,
-    kSourceConnected,
-    kPrepared,
-    kPlayStarted,
-    kSeekDone,
-    kEndOfStream,
-    kPlayError,
-    kStateChanged,
+    kSourceConnected,  ///< 1 Source connection established (network only) or file opened
+    kPrepared,         ///< 2 Source parsed and ready to play (codecs identified, first frames decoded)
+    kPlayStarted,      ///< 3 First frame rendered and playback started (after prepared)
+    kSeekDone,         ///< 4 Seek operation completed (if supported by player, otherwise not used)
+    kEndOfStream,      ///< 5 Playback reached end of stream
+    kPlayError,        ///< 6 Playback error occurred
+    kStateChanged,     ///< 7 Player state changed
 };
 
 /** Callback signature for player events. */
@@ -397,6 +398,9 @@ private:
 
     /* Internal LVGL canvas renderer (owned, only for kLvglCanvas mode) */
     MediaVideoRenderer*    internal_renderer_{nullptr};
+
+    /* Callback render handler (owned, only for kCallback mode with hardware) */
+    MediaRenderCallback*   render_callback_{nullptr};
 
     QueueHandle_t    cmd_queue_{nullptr};
     TaskHandle_t     worker_task_{nullptr};

@@ -430,9 +430,16 @@ void Application::Start() {
             InitSdMusic();
             // InitVideo();
             InitMedia();
+
+            if (media_) {
+                ESP_LOGW(TAG, "Start playing media from SD card");
+                media_->SetSource(MediaSourceType::kFile, "/sdcard/videos/demo.mp4");
+                media_->Play();
+            }
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
+        return;
     }
 #endif
 
@@ -607,12 +614,6 @@ void Application::Start() {
         display->SetChatMessage("system", "");
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
-    }
-
-    if (media_) {
-        ESP_LOGW(TAG, "Start playing media from SD card");
-        media_->SetSource(MediaSourceType::kFile, "/sdcard/videos/demo.mp4");
-        media_->Play();
     }
 }
 
@@ -1598,7 +1599,7 @@ bool Application::InitMedia() {
     MediaPlayerConfig config;
     config.enable_audio = true;
     config.enable_video = (panel != nullptr);
-    config.render_mode = MediaRenderMode::kDirectLcd;
+    config.render_mode = MediaRenderMode::kCallback;  // Let application handle rendering via callback for maximum flexibility
 
     media_ = &MediaPlayerService::GetInstance();
     bool ok = media_->Init(codec, panel, lcd_width, lcd_height, display, config);
@@ -1612,9 +1613,11 @@ bool Application::InitMedia() {
         auto* disp = Board::GetInstance().GetDisplay();
         if (!disp) return;
         if (state == MediaPlayerState::kPlaying) {
+            ESP_LOGI(TAG, "Media started: activating media overlay to hide main UI");
             disp->SetMediaOverlayActive(true);
         } else if (state == MediaPlayerState::kStopped ||
                    state == MediaPlayerState::kError) {
+            ESP_LOGI(TAG, "Media stopped/error: deactivating media overlay to restore main UI");
             disp->SetMediaOverlayActive(false);
         }
     });

@@ -123,7 +123,7 @@ int media_src_storage_open(media_src_t *src)
         return -1;
     }
 #ifdef USE_ALIGN_CACHE
-    m->align_buffer = heap_caps_aligned_alloc(64, CACHE_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    m->align_buffer = heap_caps_aligned_alloc(64, CACHE_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (m->align_buffer == NULL) {
         free(m);
         return -1;

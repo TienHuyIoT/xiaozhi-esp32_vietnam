@@ -390,6 +390,7 @@ private:
     video_render_handle_t          video_render_{nullptr};
     MediaPlayerConfig              config_{};
     MediaPlayerEventCallback       event_callback_;
+    MediaPlayerEvent               mapped_event_ = MediaPlayerEvent::kStateChanged;
 
     /* Hardware / display handles (stored for queries and LVGL canvas) */
     Display*               display_{nullptr};

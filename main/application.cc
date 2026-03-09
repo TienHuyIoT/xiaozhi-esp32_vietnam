@@ -430,12 +430,6 @@ void Application::Start() {
             InitSdMusic();
             // InitVideo();
             InitMedia();
-
-            if (media_) {
-                ESP_LOGW(TAG, "Start playing media from SD card");
-                media_->SetSource(MediaSourceType::kFile, "/sdcard/videos/demo.mp4");
-                media_->Play();
-            }
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
@@ -1599,7 +1593,7 @@ bool Application::InitMedia() {
     MediaPlayerConfig config;
     config.enable_audio = true;
     config.enable_video = (panel != nullptr);
-    config.render_mode = MediaRenderMode::kCallback;  // Let application handle rendering via callback for maximum flexibility
+    config.render_mode = MediaRenderMode::kDirectLcd;  // Let application handle rendering via callback for maximum flexibility
 
     media_ = &MediaPlayerService::GetInstance();
     bool ok = media_->Init(codec, panel, lcd_width, lcd_height, display, config);
@@ -1624,6 +1618,10 @@ bool Application::InitMedia() {
 
     McpFeatureTools::RegisterMediaPlayerTools();
     ESP_LOGI(TAG, "InitMedia: ready (audio=%d video=%d)", config.enable_audio, config.enable_video);
+
+    ESP_LOGW(TAG, "Start playing media from SD card");
+    media_->SetSource(MediaSourceType::kFile, "/sdcard/videos/demo.mp4");
+    media_->Play();
     return ok;
 }
 

@@ -30,7 +30,7 @@ extern "C" {
 #include "esp_video_dec_default.h"
 }
 
-static const char* TAG = "MediaPlayerSvc";
+static const char* TAG = "🎬 MediaPlayerSvc";
 
 /* ================================================================== */
 /*  Singleton                                                         */
@@ -127,13 +127,44 @@ bool MediaPlayerService::InitInternal(AudioCodec* codec, esp_lcd_panel_handle_t 
     /* ---- Create renders based on render mode ---- */
     switch (config_.render_mode) {
         case MediaRenderMode::kDirectLcd:
-            /* Audio: I2S render via AudioCodec */
-            if (config_.enable_audio && codec) {
-                audio_render_ = media_render::CreateAudioRender(codec);
-                if (!audio_render_) {
-                    ESP_LOGW(TAG, "I2S audio render creation failed");
+            /* When hardware handles are provided, create MediaRenderCallback
+             * to handle audio output via AudioCodec and video rendering via
+             * LVGL canvas with YUV420→RGB565 conversion. */
+            if (codec || (display && panel)) {
+                render_callback_ = new MediaRenderCallback();
+                if (render_callback_->Init(codec, panel, lcd_width, lcd_height, display)) {
+                    /* Wire up C-style callbacks to MediaRenderCallback */
+                    auto* rcb = render_callback_;
+                    config_.callbacks.audio_cb = [](const uint8_t* data, int size,
+                                                    uint32_t pts_ms, void* ctx) {
+                        static_cast<MediaRenderCallback*>(ctx)->OnAudioData(data, size, pts_ms);
+                    };
+                    config_.callbacks.audio_clock_cb = [](uint32_t rate, uint8_t bits,
+                                                          uint8_t ch, void* ctx) {
+                        static_cast<MediaRenderCallback*>(ctx)->OnAudioClock(rate, bits, ch);
+                    };
+                    config_.callbacks.user_data = rcb;
+                    ESP_LOGI(TAG, "MediaRenderCallback initialized for kCallback mode");
+                } else {
+                    ESP_LOGW(TAG, "MediaRenderCallback init failed, falling back to pure callbacks");
+                    delete render_callback_;
+                    render_callback_ = nullptr;
                 }
             }
+            /* Audio: callback render → audio callbacks */
+            if (config_.enable_audio) {
+                audio_render_ = media_render::CreateCallbackAudioRender(this);
+                if (!audio_render_) {
+                    ESP_LOGW(TAG, "Callback audio render creation failed");
+                }
+            }
+            /* Audio: I2S render via AudioCodec */
+            // if (config_.enable_audio && codec) {
+            //     audio_render_ = media_render::CreateAudioRender(codec);
+            //     if (!audio_render_) {
+            //         ESP_LOGW(TAG, "I2S audio render creation failed");
+            //     }
+            // }
             /* Video: direct LCD panel render */
             if (config_.enable_video && panel) {
                 video_render_ = media_render::CreateVideoRender(panel);
@@ -477,6 +508,7 @@ void MediaPlayerService::ProcessCommand(const Command& cmd) {
         }
         case CmdType::kPlay:
             media_player_play(player_);
+            SetState(MediaPlayerState::kPlaying);
             break;
         case CmdType::kPause:
             media_player_set_speed(player_, 0.0f);
@@ -575,20 +607,10 @@ void MediaPlayerService::HandlePlayerEvent(int event) {
 
     SetState(new_state);
 
+    mapped_event_ = mapped_event;
     /* Fire play_end_cb for EOS events (similar to AVI player's avi_play_end_cb) */
     if (mapped_event == MediaPlayerEvent::kEndOfStream && config_.callbacks.play_end_cb) {
         config_.callbacks.play_end_cb(config_.callbacks.user_data);
-    }
-
-    /* Dispatch to registered event callback (non-blocking, mutex-protected read) */
-    if (callback_mutex_) {
-        xSemaphoreTake(callback_mutex_, portMAX_DELAY);
-    }
-    if (event_callback_) {
-        event_callback_(mapped_event, new_state);
-    }
-    if (callback_mutex_) {
-        xSemaphoreGive(callback_mutex_);
     }
 }
 
@@ -600,5 +622,15 @@ void MediaPlayerService::SetState(MediaPlayerState new_state) {
     MediaPlayerState old = state_.exchange(new_state);
     if (old != new_state) {
         ESP_LOGI(TAG, "State: %d -> %d", (int)old, (int)new_state);
+        /* Dispatch to registered event callback (non-blocking, mutex-protected read) */
+        if (callback_mutex_) {
+            xSemaphoreTake(callback_mutex_, portMAX_DELAY);
+        }
+        if (event_callback_) {
+            event_callback_(mapped_event_, new_state);
+        }
+        if (callback_mutex_) {
+            xSemaphoreGive(callback_mutex_);
+        }
     }
 }

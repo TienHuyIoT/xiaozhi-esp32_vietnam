@@ -19,7 +19,7 @@
 #include <esp_heap_caps.h>
 #include <lvgl.h>
 
-static const char* TAG = "MediaVideoRdr";
+static const char* TAG = "🎥 MediaVideoRdr";
 
 MediaVideoRenderer::MediaVideoRenderer() = default;
 

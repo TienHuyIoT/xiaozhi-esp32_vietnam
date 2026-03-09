@@ -47,7 +47,7 @@ extern "C" {
                                      int width, int height);
 }
 
-static const char* TAG = "💡 MediaRenderCb";
+static const char* TAG = "📺 MediaRenderCb";
 
 /* ================================================================== */
 /*  Constructor / Destructor                                          */

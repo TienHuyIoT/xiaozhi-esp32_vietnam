@@ -700,13 +700,13 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     auto now = std::chrono::steady_clock::now();
     auto input_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
     auto output_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
-    if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled()) {
-        codec_->EnableInput(false);
-    }
-    if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
-        ESP_LOGW(TAG, "%s Disabling audio output to save power", __func__);
-        codec_->EnableOutput(false);
-    }
+    // if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled()) {
+    //     codec_->EnableInput(false);
+    // }
+    // if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
+    //     ESP_LOGW(TAG, "%s Disabling audio output to save power", __func__);
+    //     codec_->EnableOutput(false);
+    // }
     if (!codec_->input_enabled() && !codec_->output_enabled()) {
         ESP_LOGW(TAG, "%s Stopping audio power timer", __func__);
         esp_timer_stop(audio_power_timer_);

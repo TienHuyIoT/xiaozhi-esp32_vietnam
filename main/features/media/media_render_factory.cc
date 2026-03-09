@@ -22,7 +22,7 @@ extern "C" {
 #include "video_render.h"
 }
 
-static const char* TAG = "👉 MediaRender";
+static const char* TAG = "🧩 MediaRender";
 
 /* ================================================================== */
 /*  Callback audio render implementation                              */
@@ -304,7 +304,7 @@ audio_render_handle_t CreateAudioRender(AudioCodec* codec) {
 
     esp_codec_dev_handle_t dev = codec->GetOutputDevHandle();
     if (!dev) {
-        ESP_LOGE(TAG, "AudioCodec has no esp_codec_dev output handle");
+        ESP_LOGE(TAG, "------------------------------> AudioCodec has no esp_codec_dev output handle");
         return nullptr;
     }
 
@@ -320,7 +320,7 @@ audio_render_handle_t CreateAudioRender(AudioCodec* codec) {
         return nullptr;
     }
 
-    ESP_LOGI(TAG, "I2S audio render created");
+    ESP_LOGI(TAG, "------------------------------> I2S audio render created");
     return render;
 }
 

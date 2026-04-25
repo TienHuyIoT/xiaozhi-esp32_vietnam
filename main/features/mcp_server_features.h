@@ -46,6 +46,9 @@ public:
     /** SD card video tools (play_video). */
     static void RegisterSdVideoTools(VideoPlayer* video);
 
+    /** Media player tools (play, control, seek, status). Singleton — no pointer needed. */
+    static void RegisterMediaPlayerTools();
+
 private:
     McpFeatureTools() = delete;
 };

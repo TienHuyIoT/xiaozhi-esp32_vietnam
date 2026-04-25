@@ -20,6 +20,7 @@
 #include "esp32_radio.h"
 class AudioStreamPlayer;
 class VideoPlayer;
+class MediaPlayerService;
 
 // Forward declaration for MusicVisualizer (owned by Application)
 namespace music { class MusicVisualizer; struct MusicInfo; }
@@ -181,6 +182,9 @@ public:
     /** Initialize SD card video player and register MCP tools. */
     bool InitVideo();
 
+    /** Initialize media player service (MP4/audio/video/HTTP) and register MCP tools. */
+    bool InitMedia();
+
 private:
     Application();
     ~Application();
@@ -199,6 +203,7 @@ private:
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
     VideoPlayer* sd_video_ = nullptr;
+    MediaPlayerService* media_ = nullptr;
 
     // Music spectrum visualizer (owned by Application, not Display)
     std::unique_ptr<music::MusicVisualizer> music_visualizer_;
@@ -225,6 +230,7 @@ private:
         kRadio    = 2,   ///< Keep radio, stop everything else
         kSdMusic  = 3,   ///< Keep SD music, stop everything else
         kVideo    = 4,   ///< Keep video, stop everything else
+        kMedia    = 5,   ///< Keep MediaPlayerService, stop everything else
     };
 
     /**

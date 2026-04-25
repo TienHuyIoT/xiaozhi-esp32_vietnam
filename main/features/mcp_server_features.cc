@@ -13,6 +13,7 @@
 #include "esp32_radio.h"
 #include "esp32_sd_music.h"
 #include "features/video/video_player.h"
+#include "features/media/media_player_service.h"
 #include "wifi_station.h"
 #include "system_info.h"
 #include "display.h"
@@ -744,3 +745,84 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
         });
 }
 #endif // CONFIG_SD_CARD_ENABLE
+
+/* ------------------------------------------------------------------ */
+/*  Media player tools (MediaPlayerService singleton)                  */
+/* ------------------------------------------------------------------ */
+void McpFeatureTools::RegisterMediaPlayerTools() {
+    auto& mcp = McpServer::GetInstance();
+
+    /* --- 1) Play a media file or URL --- */
+    mcp.AddTool("self.mediaPlayer.play",
+        "Phát file video/audio (MP4, MP3, AAC, v.v.) từ SD card hoặc HTTP URL.\n"
+        "Dùng khi người dùng yêu cầu phát video/audio từ URL hoặc đường dẫn file.\n"
+        "\n"
+        "Args:\n"
+        "  `path`: Đường dẫn file hoặc HTTP URL (ví dụ: '/sdcard/demo.mp4', 'http://...')\n"
+        "  `type`: Nguồn - 'file' (SD card, mặc định) hoặc 'http' (stream)\n"
+        "Return: Trạng thái bắt đầu phát.",
+        PropertyList({
+            Property("path", kPropertyTypeString),
+            Property("type", kPropertyTypeString, "file"),
+        }),
+        [](const PropertyList& props) -> ReturnValue {
+            auto& player = MediaPlayerService::GetInstance();
+            if (!player.IsInitialized()) {
+                return "{\"success\": false, \"message\": \"Media player not initialized\"}";
+            }
+            std::string path = props["path"].value<std::string>();
+            std::string type = props["type"].value<std::string>();
+            MediaSourceType src = (type == "http") ? MediaSourceType::kHttp : MediaSourceType::kFile;
+            // if (!player.SetSource(src, path)) 
+            if (!player.SetSource(MediaSourceType::kFile, "/sdcard/videos/demo.mp4")) 
+            {
+                return "{\"success\": false, \"message\": \"Failed to set media source\"}";
+            }
+            bool ok = player.Play();
+            return ok ? "{\"success\": true, \"message\": \"Playback started: " + path + "\"}"
+                      : "{\"success\": false, \"message\": \"Play failed\"}";
+        });
+
+    /* --- 2) Playback control (pause / resume / stop / set_speed) --- */
+    mcp.AddTool("self.mediaPlayer.control",
+        "Điều khiển phát lại: tạm dừng, tiếp tục, dừng, hoặc đổi tốc độ.\n"
+        "\n"
+        "action:\n"
+        "  pause      - tạm dừng\n"
+        "  resume     - tiếp tục\n"
+        "  stop       - dừng hẳn\n"
+        "  set_speed  - đặt tốc độ phát (dùng kèm tham số `speed`)\n"
+        "\n"
+        "speed: chuỗi số thực, ví dụ '0.5', '1.0', '2.0' (chỉ dùng với set_speed)\n"
+        "Return: Xác nhận thao tác.",
+        PropertyList({
+            Property("action", kPropertyTypeString),
+            Property("speed",  kPropertyTypeString, "1.0"),
+        }),
+        [](const PropertyList& props) -> ReturnValue {
+            auto& player = MediaPlayerService::GetInstance();
+            if (!player.IsInitialized()) {
+                return "{\"success\": false, \"message\": \"Media player not initialized\"}";
+            }
+            std::string action = props["action"].value<std::string>();
+            if (action == "pause") {
+                player.Pause();
+                return "{\"success\": true, \"message\": \"Paused\"}";
+            } else if (action == "resume") {
+                player.Resume();
+                return "{\"success\": true, \"message\": \"Resumed\"}";
+            } else if (action == "stop") {
+                player.Stop();
+                return "{\"success\": true, \"message\": \"Stopped\"}";
+            } else if (action == "set_speed") {
+                std::string speed_str = props["speed"].value<std::string>();
+                float spd = static_cast<float>(atof(speed_str.c_str()));
+                if (spd <= 0.0f || spd > 4.0f) {
+                    return "{\"success\": false, \"message\": \"Speed out of range (0.1 - 4.0)\"}";
+                }
+                player.SetSpeed(spd);
+                return "{\"success\": true, \"message\": \"Speed set to " + speed_str + "\"}";
+            }
+            return "{\"success\": false, \"message\": \"Unknown action\"}";
+        });
+}

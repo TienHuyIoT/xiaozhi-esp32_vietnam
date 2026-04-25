@@ -1,0 +1,3 @@
+dependencies:
+  media_player: {}
+  tempotian/codec_board: '*'

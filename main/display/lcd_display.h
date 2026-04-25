@@ -4,6 +4,7 @@
 #include "lvgl_display.h"
 #include "gif/lvgl_gif.h"
 #include "features/weather/weather_ui.h"
+#include "fft_display.h"
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -11,6 +12,12 @@
 
 #include <atomic>
 #include <memory>
+
+// Forward declarations
+class FFTDisplay;
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+class LCDDisplayAdapter;
+#endif
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
@@ -54,12 +61,22 @@ protected:
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
+<<<<<<< HEAD
     // Media overlay state (true = emoji/chat hidden for media content)
     bool media_overlay_active_ = false;
 
+    // FFT Display integration
+    FFTDisplay* fft_display_;
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+    std::unique_ptr<LCDDisplayAdapter> fft_adapter_;
+#endif
+    
     // Rotate and offset settings
     int rotation_degree_ = 0;
     void SetRotationAndOffset(lv_display_rotation_t rotation, int offset_x, int offset_y);
+
+    virtual void clearScreen() override;
+    virtual void stopFft() override;  // Stop FFT display
 
 protected:
     // Add protected constructor

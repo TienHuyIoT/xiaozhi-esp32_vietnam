@@ -186,8 +186,11 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     width_ = width;
     height_ = height;
 
+<<<<<<< HEAD
     rotation_degree_ = 0;
 
+=======
+>>>>>>> origin/spectrum_audio
     // Initialize LCD themes
     InitializeLcdThemes();
 
@@ -1269,6 +1272,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
     Display::SetTheme(lvgl_theme);
 }
 
+<<<<<<< HEAD
 void LcdDisplay::SetRotationAndOffset(lv_display_rotation_t rotation, int offset_x, int offset_y) {
     DisplayLockGuard lock(this);
     lv_display_set_rotation(display_, rotation);
@@ -1304,4 +1308,65 @@ bool LcdDisplay::SetRotation(int rotation_degree, bool save_setting) {
     Settings settings("display", true);
     settings.SetInt("rotation_degree", rotation_degree);
     return true;
+}
+
+void LcdDisplay::clearScreen() {
+    if (fft_display_) {
+        fft_display_->clearDisplay();
+    }
+}
+
+void LcdDisplay::start() {
+    ESP_LOGI(TAG, "Starting LcdDisplay with FFT visualization");
+
+#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
+    fft_adapter_ = std::make_unique<LCDDisplayAdapter>(width_, height_);
+    if (fft_adapter_->initialize()) {
+        fft_display_ = new FFTDisplay(std::move(fft_adapter_));
+        ESP_LOGI(TAG, "FFT Display initialized successfully for LCD");
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize FFT Display adapter for LCD");
+    }
+#else
+    ESP_LOGW(TAG, "LVGL not enabled, FFT Display not available for LCD");
+#endif
+    
+    if (fft_display_) {
+        fft_display_->start();
+        ESP_LOGI(TAG, "FFT Display started successfully");
+    } else {
+        ESP_LOGW(TAG, "FFT Display not available");
+    }
+}
+
+void LcdDisplay::stopFft() {
+    ESP_LOGI(TAG, "Stopping FFT display");
+    
+    if (fft_display_) {
+        fft_display_->stop();
+        delete fft_display_;
+        fft_display_ = nullptr;
+        ESP_LOGI(TAG, "FFT Display stopped successfully");
+    }
+    
+    ESP_LOGI(TAG, "FFT display stopped, original UI restored");
+}
+
+int16_t* LcdDisplay::createAudioDataBuffer(size_t sample_count) {
+    if (fft_display_) {
+        return fft_display_->createAudioDataBuffer(sample_count);
+    }
+    return nullptr;
+}
+
+void LcdDisplay::updateAudioDataBuffer(int16_t* data, size_t sample_count) {
+    if (fft_display_) {
+        fft_display_->updateAudioDataBuffer(data, sample_count);
+    }
+}
+
+void LcdDisplay::releaseAudioDataBuffer(int16_t* buffer) {
+    if (fft_display_) {
+        fft_display_->releaseAudioDataBuffer(buffer);
+    }
 }

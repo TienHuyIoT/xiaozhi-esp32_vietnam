@@ -21,11 +21,22 @@ static const char *TAG = "WifiBoard";
 
 WifiBoard::WifiBoard() {
     Settings settings("wifi", true);
-    wifi_config_mode_ = settings.GetInt("force_ap") == 1;
-    if (wifi_config_mode_) {
+    in_config_mode_ = settings.GetInt("force_ap") == 1;
+    if (in_config_mode_) {
         ESP_LOGI(TAG, "force_ap is set to 1, reset to 0");
         settings.SetInt("force_ap", 0);
     }
+}
+
+WifiBoard::~WifiBoard() {
+}
+
+void WifiBoard::SetNetworkEventCallback(NetworkEventCallback callback) {
+    network_event_callback_ = callback;
+}
+
+void WifiBoard::SetPowerSaveLevel(PowerSaveLevel level) {
+    // TODO: Implement power save level configuration if needed
 }
 
 std::string WifiBoard::GetBoardType() {
@@ -73,7 +84,7 @@ void WifiBoard::EnterWifiConfigMode() {
 
 void WifiBoard::StartNetwork() {
     // User can press BOOT button while starting to enter WiFi configuration mode
-    if (wifi_config_mode_) {
+    if (in_config_mode_) {
         EnterWifiConfigMode();
         return;
     }
@@ -82,7 +93,7 @@ void WifiBoard::StartNetwork() {
     auto& ssid_manager = SsidManager::GetInstance();
     auto ssid_list = ssid_manager.GetSsidList();
     if (ssid_list.empty()) {
-        wifi_config_mode_ = true;
+        in_config_mode_ = true;
         EnterWifiConfigMode();
         return;
     }
@@ -114,7 +125,7 @@ void WifiBoard::StartNetwork() {
     // Try to connect to WiFi, if failed, launch the WiFi configuration AP
     if (!wifi_station.WaitForConnected(60 * 1000)) {
         wifi_station.Stop();
-        wifi_config_mode_ = true;
+        in_config_mode_ = true;
         EnterWifiConfigMode();
         return;
     }
@@ -126,7 +137,7 @@ NetworkInterface* WifiBoard::GetNetwork() {
 }
 
 const char* WifiBoard::GetNetworkStateIcon() {
-    if (wifi_config_mode_) {
+    if (in_config_mode_) {
         return FONT_AWESOME_WIFI;
     }
     auto& wifi_station = WifiStation::GetInstance();
@@ -149,7 +160,7 @@ std::string WifiBoard::GetBoardJson() {
     std::string board_json = R"({)";
     board_json += R"("type":")" + std::string(BOARD_TYPE) + R"(",)";
     board_json += R"("name":")" + std::string(BOARD_NAME) + R"(",)";
-    if (!wifi_config_mode_) {
+    if (!in_config_mode_) {
         board_json += R"("ssid":")" + wifi_station.GetSsid() + R"(",)";
         board_json += R"("rssi":)" + std::to_string(wifi_station.GetRssi()) + R"(,)";
         board_json += R"("channel":)" + std::to_string(wifi_station.GetChannel()) + R"(,)";

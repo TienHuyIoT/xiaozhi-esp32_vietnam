@@ -8,6 +8,7 @@
 #include <esp_mn_models.h>
 #include <esp_mn_speech_commands.h>
 #include <cJSON.h>
+#include <esp_opus_enc.h>
 
 #define TAG "CustomWakeWord"
 
@@ -217,7 +218,7 @@ void CustomWakeWord::EncodeWakeWordData() {
         {
             auto start_time = esp_timer_get_time();
             // Create encoder
-            esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
+            esp_opus_enc_config_t opus_enc_cfg = ESP_OPUS_ENC_CONFIG_DEFAULT();
             void* encoder_handle = nullptr;
             auto ret = esp_opus_enc_open(&opus_enc_cfg, sizeof(esp_opus_enc_config_t), &encoder_handle);
             if (encoder_handle == nullptr) {

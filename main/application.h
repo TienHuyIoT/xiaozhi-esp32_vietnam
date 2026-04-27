@@ -14,7 +14,7 @@
 #include "protocol.h"
 #include "ota.h"
 #include "audio_service.h"
-#include "device_state_event.h"
+#include "device_state.h"
 #include "esp32_sd_music.h"
 #include "esp32_music.h"
 #include "esp32_radio.h"

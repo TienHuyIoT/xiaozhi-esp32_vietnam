@@ -97,6 +97,10 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         esp_timer_stop(reconnect_timer_);
     });
 
+    mqtt_->OnError([this](const std::string& error) {
+        ESP_LOGE(TAG, "MQTT error: %s", error.c_str());
+    });
+
     mqtt_->OnMessage([this](const std::string& topic, const std::string& payload) {
         cJSON* root = cJSON_Parse(payload.c_str());
         if (root == nullptr) {
@@ -141,7 +145,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         broker_address = endpoint;
     }
     if (!mqtt_->Connect(broker_address, broker_port, client_id, username, password)) {
-        ESP_LOGE(TAG, "Failed to connect to endpoint, code=%d", mqtt_->GetLastError());
+        ESP_LOGE(TAG, "Failed to connect to endpoint");
         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
         return false;
     }

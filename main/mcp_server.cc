@@ -11,6 +11,7 @@
 #include <esp_pthread.h>
 
 #include "application.h"
+#include "ota.h"
 #include "display.h"
 #include "oled_display.h"
 #include "board.h"
@@ -187,7 +188,8 @@ void McpServer::AddUserOnlyTools() {
             
             auto& app = Application::GetInstance();
             app.Schedule([url, &app]() {
-                bool success = app.UpgradeFirmware(url);
+                Ota ota;
+                bool success = app.UpgradeFirmware(ota, url);
                 if (!success) {
                     ESP_LOGE(TAG, "Firmware upgrade failed");
                 }

@@ -27,6 +27,9 @@ dependencies:
     version: "v1.0.7"
   78/esp-opus-encoder: ~2.4.1
   78/esp-ml307: ~3.3.7
+  78/uart-eth-modem: "*"
+  espressif/iot_usbh_rndis: "*"
+  espressif/mqtt: ==1.0.0
   78/xiaozhi-fonts: ~1.5.4
   espressif/led_strip: ~3.0.1
   espressif/esp_codec_dev: ~1.4

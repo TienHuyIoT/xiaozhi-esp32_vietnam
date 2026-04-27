@@ -12,6 +12,10 @@
 #include <string>
 #include <chrono>
 
+// Forward declarations
+class FFTDisplay;
+class LCDDisplayAdapter;
+
 class LvglDisplay : public Display {
 public:
     LvglDisplay();
@@ -24,6 +28,17 @@ public:
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
     virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80);
+
+    // FFT display virtual methods (override in subclasses)
+    virtual void start() {}
+    virtual void clearScreen() {}
+    virtual void stopFft() {}
+    virtual void updateAudioDataBuffer(int16_t* data, size_t sample_count) {}
+    virtual int16_t* createAudioDataBuffer(size_t sample_count) { return nullptr; }
+    virtual void releaseAudioDataBuffer(int16_t* buffer = nullptr) {}
+
+    // Rotation helper
+    virtual void SetRotationAndOffset(lv_display_rotation_t rotation, int offset_x, int offset_y) {}
 
 protected:
     esp_pm_lock_handle_t pm_lock_ = nullptr;

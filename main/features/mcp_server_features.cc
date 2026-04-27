@@ -773,9 +773,7 @@ void McpFeatureTools::RegisterMediaPlayerTools() {
             std::string path = props["path"].value<std::string>();
             std::string type = props["type"].value<std::string>();
             MediaSourceType src = (type == "http") ? MediaSourceType::kHttp : MediaSourceType::kFile;
-            // if (!player.SetSource(src, path)) 
-            if (!player.SetSource(MediaSourceType::kFile, "/sdcard/videos/demo.mp4")) 
-            {
+            if (!player.SetSource(src, path)) {
                 return "{\"success\": false, \"message\": \"Failed to set media source\"}";
             }
             bool ok = player.Play();

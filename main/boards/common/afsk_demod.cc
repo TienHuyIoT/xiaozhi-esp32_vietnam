@@ -3,7 +3,8 @@
 #include <algorithm>
 #include "esp_log.h"
 #include "display.h"
-#include "ssid_manager.h"
+#include <esp_system.h>
+#include <wifi_configuration_ap.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -14,7 +15,7 @@ namespace audio_wifi_config
     static const char *kLogTag = "AUDIO_WIFI_CONFIG";
 
     void ReceiveWifiCredentialsFromAudio(Application *app,
-                                        WifiManager *wifi_manager,
+                                        WifiConfigurationAp *wifi_ap,
                                         Display *display,
                                         size_t input_channels
                                     )
@@ -92,16 +93,13 @@ namespace audio_wifi_config
                         continue;
                     }
                     
-                    // Save WiFi credentials using SsidManager
-                    auto& ssid_manager = SsidManager::GetInstance();
-                    ssid_manager.AddSsid(wifi_ssid, wifi_password);
-                    ESP_LOGI(kLogTag, "WiFi credentials saved successfully");
-                    
-                    // Exit config mode (triggers ConfigModeExit event)
-                    wifi_manager->StopConfigAp();
-                    
+                    if (wifi_ap->ConnectToWifi(wifi_ssid, wifi_password)) {
+                        wifi_ap->Save(wifi_ssid, wifi_password);  // Save WiFi credentials
+                        esp_restart();                            // Restart device to apply new WiFi configuration
+                    } else {
+                        ESP_LOGE(kLogTag, "Failed to connect to WiFi with received credentials");
+                    }
                     data_buffer.decoded_text.reset();  // Clear processed data
-                    return;  // Exit the function
                 }
             }
             vTaskDelay(pdMS_TO_TICKS(1));  // 1ms delay

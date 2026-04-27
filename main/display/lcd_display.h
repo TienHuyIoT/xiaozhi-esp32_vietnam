@@ -61,7 +61,6 @@ protected:
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
-<<<<<<< HEAD
     // Media overlay state (true = emoji/chat hidden for media content)
     bool media_overlay_active_ = false;
 
@@ -70,13 +69,13 @@ protected:
 #if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
     std::unique_ptr<LCDDisplayAdapter> fft_adapter_;
 #endif
-    
+
     // Rotate and offset settings
     int rotation_degree_ = 0;
     void SetRotationAndOffset(lv_display_rotation_t rotation, int offset_x, int offset_y);
 
     virtual void clearScreen() override;
-    virtual void stopFft() override;  // Stop FFT display
+    virtual void stopFft() override;
 
 protected:
     // Add protected constructor
@@ -94,11 +93,20 @@ public:
     /** Show/hide the media overlay (hides emoji + chat for FFT/video). */
     virtual void SetMediaOverlayActive(bool active) override;
 
+    /** Show/hide the subtitle (chat message area) from assets config. */
+    virtual void SetHideSubtitle(bool hide) override;
+
     // Rotate lcd display
     virtual bool SetRotation(int rotation_degree, bool save_setting) override;
 
     /** Get the raw LCD panel handle (for direct drawing, e.g. video player) */
     esp_lcd_panel_handle_t GetPanelHandle() const { return panel_; }
+
+    // FFT display virtual method overrides
+    virtual void start() override;
+    virtual int16_t* createAudioDataBuffer(size_t sample_count) override;
+    virtual void updateAudioDataBuffer(int16_t* data, size_t sample_count) override;
+    virtual void releaseAudioDataBuffer(int16_t* buffer = nullptr) override;
     
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     virtual void ShowIdleCard(const IdleCardInfo& info) override;

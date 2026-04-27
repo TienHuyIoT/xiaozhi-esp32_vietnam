@@ -2,6 +2,7 @@
 #include "display.h"
 #include "application.h"
 #include "audio_codec.h"
+#include <uart_eth_modem.h>
 #include <esp_log.h>
 #include <font_awesome.h>
 #include <cJSON.h>
@@ -54,7 +55,7 @@ std::string Nt26Board::GetBoardType() {
 
 void Nt26Board::OnNetworkEvent(NetworkEvent event, const std::string& data) {
     if (network_event_callback_) {
-        network_event_callback_(event, data);
+        network_event_callback_(static_cast<int>(event), data);
     }
 }
 
@@ -86,6 +87,7 @@ void Nt26Board::StartNetwork() {
                 OnNetworkEvent(NetworkEvent::Connected);
                 break;
             case UartEthModem::UartEthModemEvent::Disconnected:
+            case UartEthModem::UartEthModemEvent::InFlightMode:
                 OnNetworkEvent(NetworkEvent::Disconnected);
                 break;
             case UartEthModem::UartEthModemEvent::ErrorNoSim:

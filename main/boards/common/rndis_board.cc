@@ -92,9 +92,7 @@ void RndisBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
         case NetworkEvent::Connected:
             ESP_LOGI(TAG, "Connected to WiFi: %s", data.c_str());
             break;
-        case NetworkEvent::Scanning:
-            ESP_LOGI(TAG, "WiFi scanning");
-            break;
+        // Removed NetworkEvent::Scanning as it's not a member
         case NetworkEvent::Connecting:
             ESP_LOGI(TAG, "WiFi connecting to %s", data.c_str());
             break;
@@ -107,7 +105,7 @@ void RndisBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
 
     // Notify external callback if set
     if (network_event_callback_) {
-        network_event_callback_(event, data);
+        network_event_callback_(static_cast<int>(event), data);
     }
 }
 

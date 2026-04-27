@@ -2,11 +2,12 @@
 #define NT26_BOARD_H
 
 #include <memory>
-#include <uart_eth_modem.h>
 #include <esp_network.h>
 #include <esp_pm.h>
 #include <esp_timer.h>
 #include "board.h"
+
+class UartEthModem;
 
 struct Nt26CeregState {
     int stat = 0;

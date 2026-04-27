@@ -60,7 +60,7 @@ void Ml307Board::OnNetworkEvent(NetworkEvent event, const std::string& data) {
 
     // Notify external callback if set
     if (network_event_callback_) {
-        network_event_callback_(event, data);
+        network_event_callback_(static_cast<int>(event), data);
     }
 }
 
@@ -181,6 +181,11 @@ std::string Ml307Board::GetBoardJson() {
 void Ml307Board::SetPowerSaveLevel(PowerSaveLevel level) {
     // TODO: Implement power save level for ML307
     (void)level;
+}
+
+void Ml307Board::SetPowerSaveMode(bool enabled) {
+    // TODO: Implement power save mode for ML307
+    (void)enabled;
 }
 
 std::string Ml307Board::GetDeviceStatusJson() {

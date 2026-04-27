@@ -4,7 +4,6 @@
 #include "application.h"
 #include "lvgl_theme.h"
 #include "emote_display.h"
-#include "expression_emote.h"
 #if HAVE_LVGL
 #include "display/lcd_display.h"
 #include <spi_flash_mmap.h>
@@ -362,49 +361,38 @@ bool Assets::EmoteStrategy::InitializePartition(Assets* assets) {
         return false;
     }
 
-    esp_err_t ret = ESP_ERR_INVALID_STATE;
     auto display = Board::GetInstance().GetDisplay();
     auto* emote_display = dynamic_cast<emote::EmoteDisplay*>(display);
-    if (emote_display && emote_display->GetEmoteHandle() != nullptr) {
-        const emote_data_t data = {
-            .type = EMOTE_SOURCE_PARTITION,
-            .source = {
-                .partition_label = PARTITION_LABEL,
-            },
-            .flags = {
-                .mmap_enable = true, //must be true here!!!
-            },
-        };
-        ret = emote_mount_assets(emote_display->GetEmoteHandle(), &data);
+    if (emote_display && emote_display->GetEngineHandle() != nullptr) {
+        ESP_LOGI(TAG, "Emote display engine is ready");
+        assets->partition_valid_ = true;
     } else {
-        ESP_LOGE(TAG, "Emote display is not initialized");
+        ESP_LOGW(TAG, "Emote display is not initialized");
+        assets->partition_valid_ = false;
     }
-    assets->partition_valid_ = ((ret == ESP_OK) ? true : false);
     return assets->partition_valid_;
 }
 
 void Assets::EmoteStrategy::UnApplyPartition(Assets* assets) {
-    auto display = Board::GetInstance().GetDisplay();
-    auto* emote_display = dynamic_cast<emote::EmoteDisplay*>(display);
-    if (emote_display && emote_display->GetEmoteHandle() != nullptr) {
-        emote_unmount_assets(emote_display->GetEmoteHandle());
-    }
     (void)assets; // Unused parameter
 }
 
 bool Assets::EmoteStrategy::GetAssetData(Assets* assets, const std::string& name, void*& ptr, size_t& size) {
     auto display = Board::GetInstance().GetDisplay();
     auto* emote_display = dynamic_cast<emote::EmoteDisplay*>(display);
-    if (emote_display && emote_display->GetEmoteHandle() != nullptr) {
-        const uint8_t* data = nullptr;
-        size_t data_size = 0;
-        if (ESP_OK == emote_get_asset_data_by_name(emote_display->GetEmoteHandle(), name.c_str(), &data, &data_size)) {
-            ptr = const_cast<void*>(static_cast<const void*>(data));
-            size = data_size;
+    if (emote_display && emote_display->GetEngineHandle() != nullptr) {
+        auto asset = emote_display->GetEmojiData(name);
+        if (asset.data != nullptr) {
+            ptr = const_cast<void*>(asset.data);
+            size = asset.size;
             return true;
         }
-        ESP_LOGE(TAG, "Failed to get asset data by name: %s", name.c_str());
-        return false;
+        auto icon_asset = emote_display->GetIconData(name);
+        if (icon_asset.data != nullptr) {
+            ptr = const_cast<void*>(icon_asset.data);
+            size = icon_asset.size;
+            return true;
+        }
     }
     (void)assets; // Unused parameter
     return false;
@@ -412,13 +400,6 @@ bool Assets::EmoteStrategy::GetAssetData(Assets* assets, const std::string& name
 
 bool Assets::EmoteStrategy::Apply(Assets* assets) {
     Assets::LoadSrmodelsFromIndex(assets);
-
-    auto display = Board::GetInstance().GetDisplay();
-    auto* emote_display = dynamic_cast<emote::EmoteDisplay*>(display);
-
-    if (emote_display && emote_display->GetEmoteHandle() != nullptr) {
-        emote_load_assets(emote_display->GetEmoteHandle());
-    }
     return true;
 }
 

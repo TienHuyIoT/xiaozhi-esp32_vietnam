@@ -54,9 +54,9 @@ set(SOURCES "audio/audio_codec.cc"
             "ota.cc"
             "ota_server.cc"
             "settings.cc"
-            "device_state_event.cc"
             "assets.cc"
             "main.cc"
+            "device_state_event_manager.cc"
             )
 
 set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "protocols" "features/music" "features/video" "features/media" "features/weather" "features/spectrum" "features/QRCode")

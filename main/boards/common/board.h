@@ -5,6 +5,7 @@
 #include <web_socket.h>
 #include <mqtt.h>
 #include <udp.h>
+#include <functional>
 #include <string>
 #include <network_interface.h>
 
@@ -18,6 +19,29 @@ class AudioCodec;
 class Display;
 class LcdTouch;
 class SdCard;
+
+// Network event types (used by all board implementations)
+using NetworkEventCallback = std::function<void(int event, const std::string& data)>;
+
+enum class NetworkEvent {
+    Disconnected = 0,
+    Connecting,
+    Connected,
+    Error,
+    // Modem-specific events (used by Ml307Board)
+    ModemDetecting,
+    ModemErrorNoSim,
+    ModemErrorRegDenied,
+    ModemErrorInitFailed,
+    ModemErrorTimeout,
+};
+
+enum class PowerSaveLevel {
+    LOW_POWER,
+    BALANCED,
+    PERFORMANCE,
+};
+
 class Board {
 private:
     Board(const Board&) = delete; // Disable copy constructor
@@ -52,6 +76,8 @@ public:
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging);
     virtual std::string GetSystemInfoJson();
     virtual void SetPowerSaveMode(bool enabled) = 0;
+    virtual void SetNetworkEventCallback(NetworkEventCallback callback) {}
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) {}
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
 };

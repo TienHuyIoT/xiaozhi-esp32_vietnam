@@ -58,6 +58,9 @@ public:
 
     // For rotation display
     virtual bool SetRotation(int rotation_degree, bool save_setting) { return false; }
+
+    // For assets config: show/hide subtitle (chat message area)
+    virtual void SetHideSubtitle(bool hide) {}
     
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     // For weather idle card

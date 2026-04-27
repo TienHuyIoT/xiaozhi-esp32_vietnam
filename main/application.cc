@@ -10,6 +10,7 @@
 #include "assets.h"
 #include "settings.h"
 #include "ota_server.h"
+#include "device_state_event_manager.h"
 #include "wifi_station.h"
 #include "sd_card.h"
 #include "esp32_sd_music.h"

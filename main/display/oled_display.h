@@ -8,10 +8,6 @@
 #include <esp_lcd_panel_ops.h>
 
 // Forward declarations
-class FFTDisplay;
-#if defined(HAVE_LVGL) || __has_include(<lvgl.h>)
-class OLEDDisplayAdapter;
-#endif
 
 class OledDisplay : public LvglDisplay {
 private:

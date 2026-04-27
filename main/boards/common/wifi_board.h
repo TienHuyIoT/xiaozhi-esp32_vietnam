@@ -52,6 +52,7 @@ public:
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) override;
     virtual const char* GetNetworkStateIcon() override;
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override;
+    virtual void SetPowerSaveMode(bool enabled) override;
     virtual AudioCodec* GetAudioCodec() override { return nullptr; }
     virtual std::string GetDeviceStatusJson() override;
     
@@ -64,6 +65,11 @@ public:
      * Check if in WiFi config mode
      */
     bool IsInWifiConfigMode() const;
+
+    /**
+     * Reset WiFi configuration and reboot
+     */
+    void ResetWifiConfiguration();
 };
 
 #endif // WIFI_BOARD_H

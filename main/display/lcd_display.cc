@@ -186,11 +186,8 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     width_ = width;
     height_ = height;
 
-<<<<<<< HEAD
     rotation_degree_ = 0;
 
-=======
->>>>>>> origin/spectrum_audio
     // Initialize LCD themes
     InitializeLcdThemes();
 
@@ -1272,7 +1269,6 @@ void LcdDisplay::SetTheme(Theme* theme) {
     Display::SetTheme(lvgl_theme);
 }
 
-<<<<<<< HEAD
 void LcdDisplay::SetRotationAndOffset(lv_display_rotation_t rotation, int offset_x, int offset_y) {
     DisplayLockGuard lock(this);
     lv_display_set_rotation(display_, rotation);
@@ -1350,6 +1346,10 @@ void LcdDisplay::stopFft() {
     }
     
     ESP_LOGI(TAG, "FFT display stopped, original UI restored");
+}
+
+void LcdDisplay::SetHideSubtitle(bool hide) {
+    ESP_LOGI(TAG, "SetHideSubtitle: %s", hide ? "true" : "false");
 }
 
 int16_t* LcdDisplay::createAudioDataBuffer(size_t sample_count) {

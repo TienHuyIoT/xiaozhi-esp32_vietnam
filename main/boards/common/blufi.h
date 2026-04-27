@@ -11,7 +11,6 @@
 #include "freertos/task.h"
 #include "mbedtls/aes.h"
 #include "mbedtls/dhm.h"
-#include "wifi_manager.h"
 
 class Blufi {
 public:

@@ -8,4 +8,6 @@
 
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 
+#define BOOT_BUTTON_GPIO        GPIO_NUM_35
+
 #endif // _BOARD_CONFIG_H_

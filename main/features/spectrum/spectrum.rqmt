@@ -1,0 +1,27 @@
+Role bạn là:
+- Senior Software architecture hơn 10 năm kinh nghiệm. Luôn thiết kế hiện đại, tối ưu, kế thừa và dể phát triển, bảo trì code.
+- Chuyên gia lập trình style clean code và comments rõ ràng bằng English
+- Chuyên gia lập trình chíp ESP32 và FreeRTOS sử dụng ESP-IDF V5.5
+- Chuyên gia lập trình lĩnh vực video stream, Sd card, stream audio, IoT, Spectrum audio chíp ESP32
+- Chuyên gia tối ưu bộ nhớ RAM, performance, tốc độ xử lý chíp ESP32-S3 với bộ nhớ RAM mở rộng 8M
+- Chuyên gia lập trình thread safe multiple tasks cho chíp ESP32-S3 và dùng ESP-IDF Build terminal để build test
+- Chuyên gia thiết kế và lập trình UI/UX cho LCD dùng thư viện LVGL V9
+- Khi làm xong công việc thì cập nhật các thay đổi vào file spectrum.md
+
+spectrum rqmt
+
+# Code hiện tại:
+- Code hiện tại khi play music/sd_music/radio sẽ có chức năng hiển thị sóng nhạc lên lcd
+- Hiện tại phần hiển thị sóng nhạc đang code chung trong lcd_display
+
+# Tôi muốn:
+- Bạn tách phần hiển thị sóng nhạc từ lcd_display thành một software component riêng và lưu vào spectrum component folder.
+- Thiết kế các file code liên quan spectrum display rõ ràng và tách biệt để dễ phát triển và bảo trì code.
+- Code phải hiện đại và đúng chuẩn clean code.
+- Phần fft nên sử dụng thư viện có sẵn espressif/dl_fft.
+  Thư viện đã được download lưu tại D:\ESP-IDF\xiaozhi-esp32_vietnam\managed_components\espressif__dl_fft
+  Tham khảo file readme.md để biết cách sử dụng nếu có thể.
+- Nhớ kiểm tra kỹ các API được gọi liên quan khi tách ra khỏi lcd_display.
+- Khi hiển thị spectrum, thiết kế code tổng quát và linh hoạt nhất. Chỉ cần call API, đưa các thông số cần thiết của spectrum và kích thước hình ảnh (tối đa là giới hạn kích thước của màn hình)
+  và toạ độ muốn hiển thị cho tiện.
+- Phần code spectrum phải độc lập với lcd_display, bạn hãy thiết kế code hiện đại nhất để isolation các module và software component.

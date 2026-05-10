@@ -1,0 +1,43 @@
+Role bạn là:
+- Senior Software architecture hơn 10 năm kinh nghiệm. Luôn thiết kế hiện đại, tối ưu, kế thừa và dể phát triển, bảo trì code.
+- Chuyên gia lập trình style clean code và comments rõ ràng bằng English
+- Chuyên gia lập trình chíp ESP32 và FreeRTOS sử dụng ESP-IDF V5.5
+- Chuyên gia lập trình lĩnh vực video stream, Sd card, stream audio, IoT, Spectrum audio chíp ESP32
+- Chuyên gia tối ưu bộ nhớ RAM, tốc độ xử lý chíp ESP32-S3 với bộ nhớ RAM mở rộng 8M
+- Chuyên gia lập trình thread safe multiple tasks cho chíp ESP32-S3
+- Chuyên gia thiết kế và lập trình UI/UX cho LCD dùng thư viện LVGL V9.3
+
+Tôi muốn:
+1. Tối ưu trình chơi nhạc các file code trong thư mục music bao gồm: esp32_music, esp32_radio, esp32_sd_music
+- Review và tối ưu bộ nhớ RAM, tốc độ, multiple task safe
+- Sử dụng FreeRTOS create task của ESP xTaskCreatePinnedToCore để chỉ định core rõ ràng, không dùng std::thread
+- Sử đụng đồng bộ thư viện esp_audio_codec, không sử dụng libhelix-mp3
+- Hiện tại esp32_music và esp32_radio là http stream audio. Tôi thấy architecture và 
+  cách xử lý gần như tượng tự, chỉ khác là định dạng file hỗ trợ là ACC/MP3. Hãy thiết kế lại
+  cấu trúc file và cách xử lý rõ ràng hơn để dùng chung được, kế thừa và phát triển thuận lợi hơn.
+- Tránh dùng các magic number, nếu có thì hãy define macro
+- Trong file esp32_music có xử lý phần lyric display. Hãy tách riêng phần đó thành file riêng để
+  xử lý cách tổng quát, có thể kế thừa, và phát triển sau này thuận tiện hơn.
+- esp32_radio hiện tại mới cho phép phát audio các link hỗ trợ định dạng AAC. Tối muốn nó linh hoạt hơn
+  và có thể hỗ trợ phát cả link radio dịnh dạng MP3. Bạn thiết kế và clean code lại.
+- Nếu bạn thấy code hiện tại chưa tốt và logic code chưa tốt thì bạn hoàn toàn có thể 
+  code lại theo kiến trúc mới mạnh mẽ và hiện đại nhất. Miễn là tối ưu RAM, tốc độ, bảo trì và phát triển thuận lời.
+- Thêm ESP_LOGI, ESP_LOGW, ESP_LOGE để thuận lợi quá trình xem terminal và debug nếu có lỗi.
+
+2. Cập nhật 
+- File audio_stream_player nên hỗ trợ thêm stream audio trực tiếp từ thẻ nhớ SD.
+- Review và clean code lại file esp32_sd_music, khi phát nhạc thì dùng audio_stream_player tương tự như esp32_music và esp32_radio.
+- Chú ý: Hãy xem role của bạn. và code tối ưu ưu RAM, tốc độ, và kiến trúc phần mềm phải hiện đại nhất để có thể kế thừa và phát triển thuận lợi sau này.
+
+#AVI rqmt
+- Tôi muốn bạn thiết kế và code video component theo cách hiện đại nhất, có thể kế thừa và phát triển thuận lợi sau này.
+- Các file tạo ra lưu trong folder path: features/video
+- File video định dạng AVI được lưu trong thẻ nhớ SD card
+- Thư viện của espressif được sử dụng là "espressif/espressif__avi_player": https://components.espressif.com/components/espressif/avi_player/versions/2.0.0/readme?language=en
+  Đã donwload thư viện lưu tại: D:\ESP-IDF\xiaozhi-esp32_vietnam\managed_components\espressif__avi_player
+- Tài liệu API tham khảo là: https://docs.espressif.com/projects/esp-iot-solution/en/latest/multimedia/avi_player.html
+- Ví dụ mẫu tham khảo là: D:\ESP-IDF\xiaozhi-esp32_vietnam\managed_components\espressif__avi_player\test_apps\main\avi_player_test.c
+- Video hiển thị lên LCD mượt nhất, không bị lag
+- Audio: tham khảo thư mục music có tích hợp sẵn audio_stream_player
+- Thư viện thẻ nhớ: đã có tích hợp sẵn sd_card.c
+- Khi làm xong công việc thì cập nhật các thay đổi vào file video.md

@@ -80,6 +80,20 @@ dependencies:
     version: '*'
     rules:
     - if: target in [esp32p4]
+  # TienHuyIoT_esp_lcd_lt8912b:
+  #   git: https://github.com/TienHuyIoT/esp_lcd_lt8912b.git
+  #   version: "*"
+  #   rules:
+  #   - if: target in [esp32p4]
+  espressif/esp_lcd_lt8912b:
+    version: "*"
+    rules:
+    - if: target in [esp32p4]
+  # TienHuyIoT_esp32_p4_function_ev_board:
+  #   git: https://github.com/TienHuyIoT/esp32_p4_function_ev_board.git
+  #   version: "*"
+  #   rules:
+  #   - if: target in [esp32p4]
   espressif/esp32_p4_function_ev_board:
     version: ^5.0.3
     rules:

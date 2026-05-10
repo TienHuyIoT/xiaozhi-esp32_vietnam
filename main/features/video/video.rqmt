@@ -1,0 +1,147 @@
+Role bạn là:
+- Đọc file role.rqmt để biết role của bạn.
+
+#AVI rqmt
+- Tôi muốn bạn thiết kế và code video component theo cách hiện đại nhất, có thể kế thừa và phát triển thuận lợi sau này.
+- Các file tạo ra lưu trong folder path: features/video
+- File video định dạng AVI được lưu trong thẻ nhớ SD card
+- Thư viện của espressif được sử dụng là "espressif/espressif__avi_player": https://components.espressif.com/components/espressif/avi_player/versions/2.0.0/readme?language=en
+  Đã donwload thư viện lưu tại: D:\ESP-IDF\xiaozhi-esp32_vietnam\managed_components\espressif__avi_player
+- Tài liệu API tham khảo là: https://docs.espressif.com/projects/esp-iot-solution/en/latest/multimedia/avi_player.html
+- Ví dụ mẫu tham khảo là: D:\ESP-IDF\xiaozhi-esp32_vietnam\managed_components\espressif__avi_player\test_apps\main\avi_player_test.c
+- Video hiển thị lên LCD mượt nhất, không bị lag
+- Audio: tham khảo thư mục music có tích hợp sẵn audio_stream_player
+- Thư viện thẻ nhớ: đã có tích hợp sẵn sd_card.c
+
+
+#Update
+- Tôi muốn chức năng HandleVideoFrame chạy ở 1 task độc lập để tránh ảnh hưởng đến tốc độ giải mã video
+- Tham khảo function void LcdDisplay::DisplayQRCode(const uint8_t* qrcode, const char* text)
+- Code thêm một hàm render LCD có chức năng như DrawFrameToLcd nhưng sử dụng canvas (tham khảo QRCode) để tôi test xem tốc độ đáp ứng khi dùng lvgl có đáp ứng ổn không.
+- Thêm mcp tool trong mcp_server để tôi có thể ra lệnh phát video.
+
+#1 video component
+- Khi phát video định thời hoặc event in ra log thông tin FPS xử lý video
+- Thiết kế hàm khởi động Jpeg decoder riêng tuỳ thuộc vào VideoRenderMode
+- Thiết kế thêm các hàm callback rõ ràng cho từng state VideoStateCallback để application call xử lý riêng biệt.
+
+#2 music component (music, sd_music, radio, lyric)
+- Hãy thiết kế kiến trúc phần mềm hiện đại nhất, tổng quát nhất để thuận tiện phát triển và bảo trì code.
+- Thiết kế code hiện tại chưa được cách ly cho display và fft data processing. 
+  Nên thiết kế các hàm callbacks AudioPlayerState chung cho music, raido, sd_music (tương tự như VideoPlayerState) để application call xử lý riêng biệt.
+- Nên Xử lý output audio pcm frame trực tiếp vì call API từ application (tham khảo video_player: audio_codec_->OutputData(audio_out);)
+- Nên xử dụng con trỏ cho audio codec (tương tự video player audio_codec_)
+
+#3 application
+- Thiết kế API để play music, radio
+- Thiết kế API để play video
+- FFT display API được gọi thông qua các callbacks của music/radio
+- Trong hàm void Application::Start() sẽ thiết lập khởi động gọi các API music, radio, video,...
+
+#4 mcp_server
+- Hiện tại đang xử lý cho music, sd_music, radio, ip2qrcode. Hãy tách các tool người dùng phát triển riêng đưa vào mcp_server_features.cc module
+- Tham khảo D:\ESP-IDF\xiaozhi-esp32_vietnam\main\boards\zhengchen-cam\mcp_controller.cc để biết cách sử dụng tương tự
+- Hãy mở rộng tool sdmusic có thêm thông số yêu cầu phát nhạc hoặc video từ thẻ nhớ SD card thay vì phải làm thêm tool cho video riêng.
+
+#5 mcp_server_features
+- Các tool này sẽ call application API play music, raido, video
+
+#6 lcd_display
+
+
+            // ================================================================
+            // VIDEO PLAYER TEST
+            // ----------------------------------------------------------------
+            // HOW TO USE:
+            //   1. Copy one or more AVI files to the SD card at:
+            //        /sdcard/videos/demo.avi
+            //   2. AVI must be MJPEG video + PCM audio (see video.md for
+            //      recommended FFmpeg command).
+            //   3. Set the block below to #if (1) to enable, (0) to disable.
+            // ================================================================
+#if (1)
+            {
+                // --- Get the raw LCD panel handle (bypasses LVGL for max FPS) ---
+                auto* lcd = dynamic_cast<LcdDisplay*>(display);
+                if (lcd != nullptr) {
+                    auto& vp = VideoPlayer::GetInstance();
+
+                    // Initialize: pass LCD panel handle, resolution, codec, SD card
+                    bool ok = vp.Initialize(
+                        lcd->GetPanelHandle(),
+                        static_cast<uint16_t>(lcd->width()),
+                        static_cast<uint16_t>(lcd->height()),
+                        codec,
+                        sd_card,
+                        display,   // Pass Display* for LVGL canvas support
+                        VideoRenderMode::DirectLcd
+                    );
+
+                    if (ok) {
+                        // Choose render mode for testing:
+                        //   VideoRenderMode::DirectLcd  — bypass LVGL, max FPS (default)
+                        //   VideoRenderMode::LvglCanvas — through LVGL canvas pipeline
+                        vp.SetRenderMode(VideoRenderMode::DirectLcd);
+
+                        // Auto-play next video when one ends
+                        vp.SetEndCallback([](const std::string& /*finished_path*/) {
+                            auto& vp = VideoPlayer::GetInstance();
+                            if (!vp.GetPlaylist().empty()) {
+                                vp.Next(); // Loop through all videos in directory
+                            }
+                        });
+
+                        // Scan /sdcard/videos/ for .avi files
+                        size_t found = vp.ScanDirectory();
+                        ESP_LOGI(TAG, "[VideoTest] Found %zu AVI file(s) in /sdcard/videos/", found);
+
+                        if (found > 0) {
+                            // Play the first video immediately
+                            const auto& first = vp.GetPlaylist()[0];
+                            ESP_LOGI(TAG, "[VideoTest] Playing: %s", first.path.c_str());
+                            vp.Play(first.path);
+                        } else {
+                            ESP_LOGW(TAG, "[VideoTest] No AVI files found."
+                                         " Put .avi files in /sdcard/videos/ to test.");
+                        }
+                    } else {
+                        ESP_LOGE(TAG, "[VideoTest] VideoPlayer::Initialize() failed.");
+                    }
+                } else {
+                    ESP_LOGW(TAG, "[VideoTest] Display is not an LcdDisplay, skipping.");
+                }
+
+                vTaskDelay(pdMS_TO_TICKS(1000000)); // Let the video play for a while before continuing with the rest of the app
+            }
+#endif // VIDEO PLAYER TEST
+            // ================================================================
+
+
+Role bạn là:
+- Senior Software architecture hơn 10 năm kinh nghiệm. Luôn thiết kế hiện đại, tối ưu, kế thừa và dể phát triển, bảo trì code.
+- Chuyên gia lập trình style clean code và comments rõ ràng bằng English
+- Chuyên gia lập trình chíp ESP32 và FreeRTOS sử dụng ESP-IDF V5.5
+- Chuyên gia lập trình lĩnh vực video stream, Sd card, stream audio, IoT, Spectrum audio chíp ESP32
+- Chuyên gia tối ưu bộ nhớ RAM, tốc độ xử lý chíp ESP32-S3 với bộ nhớ RAM mở rộng 8M
+- Chuyên gia lập trình thread safe multiple tasks cho chíp ESP32-S3
+- Chuyên gia thiết kế và lập trình UI/UX cho LCD dùng thư viện LVGL V9.3
+
+Yêu cầu:
+1. audio_stream_player.cc
+- Hiện tại FFT display đang được xử lý bên trong file. Tôi muốn xứ lý thông qua fft_callback từ application
+- Tôi không cần fallback AudioStreamPacket nữa
+- Hãy clean code và remove các phần không liên quan như GetDisplay(), FFT display. Tôi muốn Tôi muốn xứ lý chúng thông qua callback từ application.
+- Tương tự clean code các phần không liên quan display và fft trong các component music, radio, sd_music, ...
+
+2. application.cc
+- Thêm con trỏ sd_video_ handler cho video_player tương tự như sd_music_
+- Nên có API khởi động video component để thuận tiện kiểm tra là video component có được khởi động OK hay không, mục đích để khi mcp_server tool phát video sẽ kiểm tra trạng thái.
+- Làm thêm API khởi động music, sd_music, radio tương tự như khởi động video
+- API khởi động music/sd_music, radio, video thì nên xem xét khởi động luôn các callback cần thiết.
+- Khởi động API nào ok thì đăng ký mcp tool tương ứng luôn. Nếu khởi động fail thì không đăng ký.
+- Nhớ xử lý các callback cho display và fft khi play music nha.
+
+3. mcp_server_features.cc
+- Tôi muốn code c++ style, nghĩa là có class quản lý.
+- Kiểm tra RegisterSdVideoTools xem đúng chưa, nếu chưa thì fix nó
+- Các tool đăng ký nên tryền con trỏ music, radio, video vào cho dễ phát triển. Thay vì call application api check.

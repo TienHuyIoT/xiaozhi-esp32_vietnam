@@ -132,15 +132,9 @@ def generate_header(lang_code, output_path):
     if sound_fallback_count > 0:
         print(f"  - Sound fallback to en-US: {sound_fallback_count} sounds")
     
-    # 生成语言特定音效常量
-    for file in sorted(all_sound_files):
+    # Generate common sound constants (shared across all languages)
+    for file in sorted(common_sounds):
         base_name = os.path.splitext(file)[0]
-        # 优先使用当前语言的音效，如果不存在则回退到 en-US
-        if file in current_sounds:
-            sound_lang = lang_code.replace('-', '_').lower()
-        else:
-            sound_lang = 'en_us'
-            
         sounds.append(f'''
         extern const char ogg_{base_name}_start[] asm("_binary_{base_name}_ogg_start");
         extern const char ogg_{base_name}_end[] asm("_binary_{base_name}_ogg_end");
@@ -148,10 +142,13 @@ def generate_header(lang_code, output_path):
         static_cast<const char*>(ogg_{base_name}_start),
         static_cast<size_t>(ogg_{base_name}_end - ogg_{base_name}_start)
         }};''')
-    
-    # 生成公共音效常量
-    for file in sorted(common_sounds):
+
+    # Generate language-specific sound constants (only non-common files)
+    for file in sorted(current_sounds):
         base_name = os.path.splitext(file)[0]
+        # Skip files already generated as common sounds to avoid ODR violations
+        if base_name.upper() in [os.path.splitext(f)[0].upper() for f in common_sounds]:
+            continue
         sounds.append(f'''
         extern const char ogg_{base_name}_start[] asm("_binary_{base_name}_ogg_start");
         extern const char ogg_{base_name}_end[] asm("_binary_{base_name}_ogg_end");

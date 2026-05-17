@@ -22,6 +22,7 @@
 #include "features/spectrum/spectrum_manager.h"
 #include "features/video/video_player.h"
 #include "features/QRCode/qrcode_display.h"
+#include "features/alarm_clock/alarm_manager.h"
 #include <esp_lvgl_port.h>
 #include <cmath>
 #include <cstring>
@@ -433,6 +434,7 @@ void Application::Start() {
     // Initialize media components and register their MCP tools
     InitMusic();
     InitRadio();
+    InitAlarm();
 
 #ifdef CONFIG_SD_CARD_ENABLE
     auto sd_card = board.GetSdCard();
@@ -679,7 +681,12 @@ void Application::MainEventLoop() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
-        
+
+            // Check alarm triggers every second
+            if (alarm_manager_) {
+                alarm_manager_->checkAlarms();
+            }
+
             // Print the debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
                 // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));
@@ -1642,6 +1649,14 @@ bool Application::InitVideo() {
 #else
     return false;
 #endif
+}
+
+bool Application::InitAlarm() {
+    alarm_manager_ = &AlarmManager::getInstance();
+    alarm_manager_->init();
+    McpFeatureTools::RegisterAlarmTools(alarm_manager_);
+    ESP_LOGI(TAG, "InitAlarm: alarm manager ready");
+    return true;
 }
 
 // --- [DienBien Mod]- WEATHER SCREEN UPDATE----

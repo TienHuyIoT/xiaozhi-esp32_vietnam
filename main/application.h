@@ -20,6 +20,7 @@
 #include "esp32_radio.h"
 class AudioStreamPlayer;
 class VideoPlayer;
+class AlarmManager;
 
 // Forward declaration for MusicVisualizer (owned by Application)
 namespace music { class MusicVisualizer; struct MusicInfo; }
@@ -181,6 +182,12 @@ public:
     /** Initialize SD card video player and register MCP tools. */
     bool InitVideo();
 
+    /** Initialize alarm clock manager and register MCP tools. */
+    bool InitAlarm();
+
+    /** Get the alarm manager instance. */
+    AlarmManager* GetAlarmManager() const { return alarm_manager_; }
+
 private:
     Application();
     ~Application();
@@ -199,6 +206,7 @@ private:
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
     VideoPlayer* sd_video_ = nullptr;
+    AlarmManager* alarm_manager_ = nullptr;
 
     // Music spectrum visualizer (owned by Application, not Display)
     std::unique_ptr<music::MusicVisualizer> music_visualizer_;

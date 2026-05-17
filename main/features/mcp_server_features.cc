@@ -17,6 +17,8 @@
 #include "system_info.h"
 #include "display.h"
 #include "features/QRCode/qrcode_display.h"
+#include "features/alarm_clock/alarm_manager.h"
+#include "features/alarm_clock/alarm_sounds.h"
 
 #include <esp_log.h>
 #include <cJSON.h>
@@ -744,3 +746,219 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
         });
 }
 #endif // CONFIG_SD_CARD_ENABLE
+
+/* ------------------------------------------------------------------ */
+/*  Alarm clock tools                                                  */
+/* ------------------------------------------------------------------ */
+void McpFeatureTools::RegisterAlarmTools(AlarmManager* alarm_mgr) {
+    if (!alarm_mgr) return;
+
+    auto& mcp = McpServer::GetInstance();
+
+    mcp.AddTool("self.alarm.set",
+        "Đặt báo thức mới.\n"
+        "Khi người dùng nói: 'đặt báo thức', 'báo thức lúc', 'hẹn giờ', "
+        "'nhắc tôi lúc', 'alarm', AI phải dùng tool này.\n"
+        "\n"
+        "QUAN TRỌNG - Chọn đúng sound_id dựa trên ý định của người dùng:\n"
+        "- 'school': khi user nói về đi học, đi làm, đi làm việc, school, work.\n"
+        "  Ví dụ: 'báo thức đi học', 'đặt báo thức đi làm', 'alarm school', "
+        "'nhắc đi học', 'hẹn giờ đi làm'.\n"
+        "- 'wakeup': khi user nói về thức dậy, dậy sáng, wake up, wake.\n"
+        "  Ví dụ: 'báo thức thức dậy', 'nhắc dậy', 'wake me up'.\n"
+        "- 'medicine': khi user nói về uống thuốc, thuốc, medicine.\n"
+        "  Ví dụ: 'báo thức uống thuốc', 'nhắc uống thuốc', 'take medicine'.\n"
+        "- 'alarm': mặc định - chuông báo thức thông thường.\n"
+        "\n"
+        "Nếu user không nói rõ loại âm thanh, dùng 'alarm'.\n"
+        "\n"
+        "Args:\n"
+        "  `hour`: Giờ (0-23), bắt buộc.\n"
+        "  `minute`: Phút (0-59), bắt buộc.\n"
+        "  `message`: Nội dung nhắc nhở, ví dụ 'đi học', 'uống thuốc'.\n"
+        "  `repeated`: Lặp lại hàng ngày hay không (mặc định: false).\n"
+        "  `sound_id`: ID âm thanh. Hỗ trợ: 'alarm' (default), 'school', 'wakeup', 'medicine'.\n"
+        "Return:\n"
+        "  Kết quả đặt báo thức.",
+        PropertyList({
+            Property("hour",     kPropertyTypeInteger, 0, 0, 23),
+            Property("minute",   kPropertyTypeInteger, 0, 0, 59),
+            Property("message",  kPropertyTypeString, ""),
+            Property("repeated", kPropertyTypeBoolean, false),
+            Property("sound_id", kPropertyTypeString, "alarm")
+        }),
+        [alarm_mgr](const PropertyList& props) -> ReturnValue {
+            AlarmManager::Alarm alarm;
+            alarm.hour     = props["hour"].value<int>();
+            alarm.minute   = props["minute"].value<int>();
+            alarm.message  = props["message"].value<std::string>();
+            alarm.enabled   = true;
+            alarm.repeated  = props["repeated"].value<bool>();
+            alarm.sound_id  = props["sound_id"].value<std::string>();
+
+            if (alarm_mgr->isDuplicateAlarm(alarm.hour, alarm.minute)) {
+                return "{\"success\": false, \"message\": \"Báo thức đã tồn tại ở giờ này\"}";
+            }
+            alarm_mgr->addAlarm(alarm);
+            cJSON* json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "success", true);
+            cJSON_AddStringToObject(json, "message", "Đã đặt báo thức thành công");
+            char time_buf[16];
+            snprintf(time_buf, sizeof(time_buf), "%02d:%02d", alarm.hour, alarm.minute);
+            cJSON_AddStringToObject(json, "alarm_time", time_buf);
+            return json;
+        });
+
+    mcp.AddTool("self.alarm.list",
+        "Lấy danh sách tất cả báo thức đang hoạt động.\n"
+        "Khi người dùng hỏi: 'có bao nhiêu báo thức', 'xem danh sách báo thức', "
+        "'kiểm tra báo thức', AI phải dùng tool này.\n"
+        "Return:\n"
+        "  Danh sách báo thức.",
+        PropertyList(),
+        [alarm_mgr](const PropertyList&) -> ReturnValue {
+            cJSON* arr = cJSON_CreateArray();
+            for (const auto& a : alarm_mgr->getAlarms()) {
+                cJSON* o = cJSON_CreateObject();
+                char time_buf[16];
+                snprintf(time_buf, sizeof(time_buf), "%02d:%02d", a.hour, a.minute);
+                cJSON_AddStringToObject(o, "time",      time_buf);
+                cJSON_AddStringToObject(o, "message",   a.message.c_str());
+                cJSON_AddStringToObject(o, "sound_id",  a.sound_id.c_str());
+                cJSON_AddBoolToObject(o,  "enabled",   a.enabled);
+                cJSON_AddBoolToObject(o,  "repeated",  a.repeated);
+                cJSON_AddItemToArray(arr, o);
+            }
+            return arr;
+        });
+
+    mcp.AddTool("self.alarm.cancel",
+        "Hủy báo thức cụ thể.\n"
+        "Args:\n"
+        "  `hour`: Giờ của báo thức cần hủy (0-23).\n"
+        "  `minute`: Phút của báo thức cần hủy (0-59).\n"
+        "Return:\n"
+        "  Kết quả hủy báo thức.",
+        PropertyList({
+            Property("hour",   kPropertyTypeInteger, 0, 0, 23),
+            Property("minute", kPropertyTypeInteger, 0, 0, 59)
+        }),
+        [alarm_mgr](const PropertyList& props) -> ReturnValue {
+            int hour   = props["hour"].value<int>();
+            int minute = props["minute"].value<int>();
+
+            auto alarms = alarm_mgr->getAlarms();
+            for (auto it = alarms.begin(); it != alarms.end(); ++it) {
+                if (it->hour == hour && it->minute == minute) {
+                    alarm_mgr->clearAll();
+                    cJSON* json = cJSON_CreateObject();
+                    cJSON_AddBoolToObject(json, "success", true);
+                    cJSON_AddStringToObject(json, "message", "Đã hủy báo thức thành công");
+                    return json;
+                }
+            }
+            return "{\"success\": false, \"message\": \"Không tìm thấy báo thức để hủy\"}";
+        });
+
+    mcp.AddTool("self.alarm.cancel_all",
+        "Hủy TẤT CẢ báo thức đang hoạt động.\n"
+        "Khi người dùng nói: 'hủy tất cả báo thức', 'xóa hết báo thức', "
+        "'tắt hết báo thức', AI phải dùng tool này.\n"
+        "Return:\n"
+        "  Kết quả hủy.",
+        PropertyList(),
+        [alarm_mgr](const PropertyList&) -> ReturnValue {
+            alarm_mgr->clearAll();
+            cJSON* json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "success", true);
+            cJSON_AddStringToObject(json, "message", "Đã hủy tất cả báo thức");
+            return json;
+        });
+
+    mcp.AddTool("self.alarm.next",
+        "Lấy thông tin báo thức tiếp theo sẽ kích hoạt.\n"
+        "Return:\n"
+        "  Thông tin báo thức gần nhất.",
+        PropertyList(),
+        [alarm_mgr](const PropertyList&) -> ReturnValue {
+            auto info = alarm_mgr->getNextAlarmInfo();
+            if (info == "Khong co bao thuc") {
+                cJSON* json = cJSON_CreateObject();
+                cJSON_AddBoolToObject(json, "success", false);
+                cJSON_AddStringToObject(json, "message", "Không có báo thức nào");
+                return json;
+            }
+            cJSON* json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "success", true);
+            cJSON_AddStringToObject(json, "message", info.c_str());
+            return json;
+        });
+
+    mcp.AddTool("self.alarm.set_sound",
+        "Đặt âm thanh cho một báo thức ĐÃ TỒN TẠI.\n"
+        "QUAN TRỌNG: Tool này chỉ dùng để CẬP NHẬT âm thanh cho báo thức đã được "
+        "đặt trước đó. Sau khi gọi self.alarm.set, nếu bạn phát hiện user muốn "
+        "âm thanh đặc biệt (đi học, thức dậy, uống thuốc), gọi tool này ngay.\n"
+        "\n"
+        "Ví dụ: User nói 'đặt báo thức 7h đi học' -> gọi self.alarm.set "
+        "xong rồi gọi self.alarm.set_sound với sound_id='school'.\n"
+        "\n"
+        "Args:\n"
+        "  `hour`: Giờ của báo thức (0-23).\n"
+        "  `minute`: Phút của báo thức (0-59).\n"
+        "  `sound_id`: ID âm thanh:\n"
+        "    - 'alarm': Chuông báo thức mặc định\n"
+        "    - 'school': Đã tới giờ đi học rồi đấy\n"
+        "    - 'wakeup': Dậy thôi, sáng rồi!\n"
+        "    - 'medicine': Đã tới giờ uống thuốc\n",
+        PropertyList({
+            Property("hour",    kPropertyTypeInteger, 0, 0, 23),
+            Property("minute",  kPropertyTypeInteger, 0, 0, 59),
+            Property("sound_id", kPropertyTypeString, "alarm")
+        }),
+        [alarm_mgr](const PropertyList& props) -> ReturnValue {
+            int hour   = props["hour"].value<int>();
+            int minute = props["minute"].value<int>();
+            std::string sound_id = props["sound_id"].value<std::string>();
+
+            if (FindAlarmSound(sound_id) == nullptr) {
+                cJSON* json = cJSON_CreateObject();
+                cJSON_AddBoolToObject(json, "success", false);
+                cJSON_AddStringToObject(json, "message",
+                    ("Sound ID '" + sound_id + "' không hợp lệ. "
+                     "Các giá trị: alarm, school, wakeup, medicine").c_str());
+                return json;
+            }
+
+            if (!alarm_mgr->setAlarmSound(hour, minute, sound_id)) {
+                cJSON* json = cJSON_CreateObject();
+                cJSON_AddBoolToObject(json, "success", false);
+                cJSON_AddStringToObject(json, "message", "Không tìm thấy báo thức để cập nhật");
+                return json;
+            }
+
+            cJSON* json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "success", true);
+            cJSON_AddStringToObject(json, "message",
+                ("Đã đặt âm thanh '" + sound_id + "' cho báo thức " +
+                 std::to_string(hour) + ":" +
+                 std::to_string(minute)).c_str());
+            return json;
+        });
+
+    mcp.AddTool("self.alarm.available_sounds",
+        "Lấy danh sách các âm thanh báo thức khả dụng.\n"
+        "Return:\n"
+        "  Danh sách ID và mô tả của từng âm thanh.",
+        PropertyList(),
+        [alarm_mgr](const PropertyList&) -> ReturnValue {
+            cJSON* arr = cJSON_CreateArray();
+            for (size_t i = 0; i < kAlarmSoundCount; i++) {
+                cJSON* obj = cJSON_CreateObject();
+                cJSON_AddStringToObject(obj, "id", kAlarmSounds[i].id);
+                cJSON_AddStringToObject(obj, "name", kAlarmSounds[i].name);
+                cJSON_AddItemToArray(arr, obj);
+            }
+            return arr;
+        });
+}

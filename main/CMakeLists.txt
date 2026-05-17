@@ -18,6 +18,7 @@ set(SOURCES "audio/audio_codec.cc"
             "features/spectrum/spectrum_manager.cc"
             "features/music/music_visualizer.cc"
             "features/QRCode/qrcode_display.cc"
+            "features/alarm_clock/alarm_manager.cc"
             "features/video/video_player.cc"
             "audio/processors/audio_debugger.cc"
             "led/single_led.cc"
@@ -726,7 +727,20 @@ if(NOT LANG_DIR STREQUAL "en-US")
     endforeach()
 endif()
 
-file(GLOB COMMON_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
+# Explicitly include alarm sound files from common/ directory
+# These are referenced via Lang::Sounds::OGG_* in alarm_sounds.h
+set(COMMON_ALARM_SOUNDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/alarm.ogg
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/wakeup.ogg
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/school.ogg
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/medicine.ogg
+)
+# GLOB for other common assets (non-alarm sounds) - may miss alarm files on first configure
+file(GLOB COMMON_OTHER_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
+# Remove alarm sounds from the glob to avoid duplicate entries in EMBED_FILES
+foreach(ALARM_SOUND ${COMMON_ALARM_SOUNDS})
+    list(REMOVE_ITEM COMMON_OTHER_SOUNDS ${ALARM_SOUND})
+endforeach()
 file(GLOB WEB_BROWERS ${CMAKE_CURRENT_SOURCE_DIR}/assets/web_browser/*.html)
 
 # If target chip is ESP32, exclude specific files to avoid build errors
@@ -741,7 +755,7 @@ if(CONFIG_IDF_TARGET_ESP32)
 endif()
 
 idf_component_register(SRCS ${SOURCES}
-                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS} ${WEB_BROWERS}
+                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_ALARM_SOUNDS} ${COMMON_OTHER_SOUNDS} ${WEB_BROWERS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     )

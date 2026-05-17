@@ -15,6 +15,7 @@ class Esp32Music;
 class Esp32Radio;
 class Esp32SdMusic;
 class VideoPlayer;
+class AlarmManager;
 
 /**
  * @brief Static helper that registers MCP tools per media component.
@@ -45,6 +46,9 @@ public:
 
     /** SD card video tools (play_video). */
     static void RegisterSdVideoTools(VideoPlayer* video);
+
+    /** Alarm clock tools (set, list, cancel, next). */
+    static void RegisterAlarmTools(AlarmManager* alarm_mgr);
 
 private:
     McpFeatureTools() = delete;

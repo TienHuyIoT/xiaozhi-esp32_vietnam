@@ -362,7 +362,8 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
 
 MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                             int width, int height,  int offset_x, int offset_y,
-                            bool mirror_x, bool mirror_y, bool swap_xy)
+                            bool mirror_x, bool mirror_y, bool swap_xy,
+                            lv_color_format_t color_format)
     : LcdDisplay(panel_io, panel, width, height) {
 
     ESP_LOGI(TAG, "Initialize LVGL library");
@@ -371,6 +372,8 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
     ESP_LOGI(TAG, "Initialize LVGL port");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     lvgl_port_init(&port_cfg);
+
+    bool use_rgb888 = (color_format == LV_COLOR_FORMAT_RGB888);
 
     ESP_LOGI(TAG, "Adding LCD display");
     const lvgl_port_display_cfg_t disp_cfg = {
@@ -388,8 +391,9 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
             .mirror_x = mirror_x,
             .mirror_y = mirror_y,
         },
+        .color_format = color_format,
         .flags = {
-            .buff_dma = true,
+            .buff_dma = static_cast<unsigned int>(!use_rgb888),
             .buff_spiram =false,
             .sw_rotate = true,
         },

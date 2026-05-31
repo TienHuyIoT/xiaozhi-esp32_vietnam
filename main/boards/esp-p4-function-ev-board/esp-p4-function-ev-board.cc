@@ -63,7 +63,19 @@ private:
     void InitializeLCD()
     {
         bsp_display_config_t config = {
+#if CONFIG_BSP_LCD_TYPE_HDMI
+#if CONFIG_BSP_LCD_HDMI_800x600_60HZ
+            .hdmi_resolution = BSP_HDMI_RES_800x600,
+#elif CONFIG_BSP_LCD_HDMI_1280x720_60HZ
+            .hdmi_resolution = BSP_HDMI_RES_1280x720,
+#elif CONFIG_BSP_LCD_HDMI_1280x800_60HZ
+            .hdmi_resolution = BSP_HDMI_RES_1280x800,
+#elif CONFIG_BSP_LCD_HDMI_1920x1080_30HZ
+            .hdmi_resolution = BSP_HDMI_RES_1920x1080,
+#endif
+#else
             .hdmi_resolution = BSP_HDMI_RES_NONE,
+#endif
             .dsi_bus = {
                 .phy_clk_src = (mipi_dsi_phy_clock_source_t)SOC_MOD_CLK_PLL_F20M,
                 .lane_bit_rate_mbps = 1000,
@@ -72,8 +84,19 @@ private:
 
         bsp_lcd_handles_t handles;
         ESP_ERROR_CHECK(bsp_display_new_with_handles(&config, &handles));
-
-        display_ = new MipiLcdDisplay(handles.io, handles.panel, 1024, 600, 0, 0, true, true, false);
+#if CONFIG_BSP_LCD_TYPE_HDMI
+#if CONFIG_BSP_LCD_HDMI_800x600_60HZ
+        display_ = new MipiLcdDisplay(handles.io, handles.panel, 800, 600, 0, 0, true, true, false, LV_COLOR_FORMAT_RGB888);
+#elif CONFIG_BSP_LCD_HDMI_1280x720_60HZ
+        display_ = new MipiLcdDisplay(handles.io, handles.panel, 1280, 720, 0, 0, true, true, false, LV_COLOR_FORMAT_RGB888);
+#elif CONFIG_BSP_LCD_HDMI_1280x800_60HZ
+        display_ = new MipiLcdDisplay(handles.io, handles.panel, 1280, 800, 0, 0, true, true, false, LV_COLOR_FORMAT_RGB888);
+#elif CONFIG_BSP_LCD_HDMI_1920x1080_30HZ
+        display_ = new MipiLcdDisplay(handles.io, handles.panel, 1920, 1080, 0, 0, true, true, false, LV_COLOR_FORMAT_RGB888);
+#endif
+#else
+        display_ = new MipiLcdDisplay(handles.io, handles.panel, 1024, 600, 0, 0, true, true, false, LV_COLOR_FORMAT_RGB565);
+#endif
     }
 
     void InitializeButtons()
@@ -180,13 +203,15 @@ private:
 
 public:
 
-    ESP32P4FunctionEvBoard() : boot_button_(0)
+    ESP32P4FunctionEvBoard() : boot_button_(BOOT_BUTTON_GPIO)
     {
         InitializeI2cBuses();
         // Audio is initialized by Es8311AudioCodec
         InitializeLCD();
         InitializeButtons();
+#ifndef CONFIG_BSP_LCD_TYPE_HDMI
         InitializeTouch();
+#endif
         InitializeSdCard();
         InitializeCamera();
         InitializeFonts();

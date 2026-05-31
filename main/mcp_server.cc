@@ -128,11 +128,22 @@ void McpServer::AddCommonTools() {
     auto camera = board.GetCamera();
     if (camera) {
         AddTool("self.camera.take_photo",
-            "Take a photo and explain it. Use this tool after the user asks you to see something.\n"
+            "Take a photo using the device camera and analyze it with AI vision.\n\n"
+            "USE WHEN the user asks to:\n"
+            "  - See, look, or view: 'see what is here', 'look around', 'what do you see', 'nhìn xem', 'nhìn gì đây'\n"
+            "  - Take a photo/picture: 'take a photo', 'take a picture', 'chụp ảnh', 'chup anh', 'snap a photo'\n"
+            "  - Identify objects: 'what is this', 'what is that', 'identify', 'recognize', 'đây là gì', 'cái gì đây'\n"
+            "  - Record video: 'record video', 'quay video', 'ghi hinh', 'take a video'\n"
+            "  - Describe scene: 'describe this', 'analyze this image', 'what is in front of you'\n"
+            "  - Any visual question about the environment or any object.\n\n"
+            "IMPORTANT:\n"
+            "  - Call this tool DIRECTLY without checking `is_ready` first — it handles readiness internally.\n"
+            "  - NEVER refuse or say 'camera not ready' — if the device has a camera, it is always available.\n"
+            "  - If camera hardware fails, the tool returns an error — do not assume it is unavailable.\n"
+            "  - The tool automatically retries internally if the camera buffer is temporarily busy.\n\n"
             "Args:\n"
-            "  `question`: The question that you want to ask about the photo.\n"
-            "Return:\n"
-            "  A JSON object that provides the photo information.",
+            "  `question` (string): What to analyze in the captured photo.\n"
+            "     Examples: 'What do you see?', 'Describe this scene', 'Identify this object', 'What is in front of me?'",
             PropertyList({
                 Property("question", kPropertyTypeString)
             }),

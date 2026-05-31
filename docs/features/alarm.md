@@ -257,13 +257,6 @@ static constexpr AlarmSound kAlarmSounds[] = {
 };
 ```
 
-### Bước 3: Commit Thay Đổi
-
-```bash
-git add main/assets/common/meeting.ogg main/features/alarm_clock/alarm_sounds.h scripts/generate_alarm_sounds.py
-git commit -m "Add meeting alarm sound"
-```
-
 ---
 
 ## Cấu Trúc Dữ Liệu

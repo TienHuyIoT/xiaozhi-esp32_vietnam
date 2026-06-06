@@ -6,6 +6,8 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_touch.h>
 #include <functional>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 /** Touch release debounce timeout
  * If touch using interrupt, after the interrupt is triggered, wait for this time
@@ -88,6 +90,15 @@ protected:
     uint16_t height_;
     TouchInterruptCallback interrupt_callback_ = nullptr;
 
+    // --- Producer-consumer snapshot ---
+    // Written by touch_event_task, read by LVGL read_cb (ReadFromBuffer)
+    SemaphoreHandle_t point_mutex_ = nullptr;
+    struct {
+        int16_t x = 0;
+        int16_t y = 0;
+        lv_indev_state_t state = LV_INDEV_STATE_RELEASED;
+    } latest_point_;
+
 public:
     LcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_t panel_io,
              uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y, TouchInterruptCallback callback);
@@ -111,6 +122,9 @@ public:
 
     // LVGL touch driver callback
     void touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data);
+
+    // Read latest snapshot for LVGL indev callback — no I2C, no blocking
+    void ReadFromBuffer(lv_indev_data_t *data);
 
     static void touch_event_task(void* arg);
     

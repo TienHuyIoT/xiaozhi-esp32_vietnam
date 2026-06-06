@@ -37,14 +37,18 @@ LcdTouch::LcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_
     lv_indev_set_type(touch_indev_, LV_INDEV_TYPE_POINTER);
     lv_indev_set_driver_data(touch_indev_, touch_handle_);
     lv_indev_set_user_data(touch_indev_, this);
-#if (0)
+
+    // Create mutex protecting the shared snapshot
+    point_mutex_ = xSemaphoreCreateMutex();
+
+    // LVGL read_cb only copies the latest snapshot — no I2C, no blocking
     lv_indev_set_read_cb(touch_indev_, [](lv_indev_t *drv, lv_indev_data_t *data) {
         LcdTouch* instance = (LcdTouch*)lv_indev_get_user_data(drv);
-        instance->touch_driver_read(drv, data);
+        instance->ReadFromBuffer(data);
     });
-#else
+
+    // touch_event_task is the sole hardware reader and snapshot producer
     xTaskCreatePinnedToCore(touch_event_task, "touch_task", 4 * 1024, this, 5, NULL, 0);
-#endif
 #endif
 }
 
@@ -63,6 +67,8 @@ void LcdTouch::touch_event_task(void* arg)
         return;
     }
 
+    ESP_LOGI(TAG, "touch_event_task started");
+
     lv_indev_data_t data;
     vTaskDelay(pdMS_TO_TICKS(100)); // Initial delay
     while (true) {
@@ -75,8 +81,10 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
     esp_lcd_touch_point_data_t point_data[TOUCH_MAX_POINT];
     uint8_t touch_cnt = 0;
 
+    bool has_interrupt = false;
     if (interrupt_callback_) {
-        if (!interrupt_callback_()) {
+        has_interrupt = interrupt_callback_();
+        if (!has_interrupt && !was_touching_) {
             data->state = LV_INDEV_STATE_RELEASED;
             data->continue_reading = true;
             return;
@@ -99,7 +107,11 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         return;
     }
 
-    ESP_LOGD(TAG, "Touch points detected: %d, at (%d, %d)", touch_cnt, point_data[0].x, point_data[0].y);
+    if (touch_cnt > 0) {
+        ESP_LOGD(TAG, "Touch points detected: %d, at (%d, %d)", touch_cnt, point_data[0].x, point_data[0].y);
+    } else {
+        ESP_LOGD(TAG, "Touch points detected: %d", touch_cnt);
+    }
 
     if (err == ESP_OK && touch_cnt > 0 && touch_cnt <= TOUCH_MAX_POINT) {
         data->state = LV_INDEV_STATE_PRESSED;
@@ -170,7 +182,55 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         }
     }
 
+    // Write to shared snapshot so LVGL read_cb (ReadFromBuffer) has fresh data
+    if (point_mutex_ && xSemaphoreTake(point_mutex_, 0) == pdTRUE) {
+        latest_point_.state = data->state;
+        if (data->state == LV_INDEV_STATE_PRESSED) {
+            latest_point_.x = data->point.x;
+            latest_point_.y = data->point.y;
+        }
+        xSemaphoreGive(point_mutex_);
+    } else {
+        ESP_LOGW(TAG, "Snapshot mutex busy while producing touch data");
+    }
+
+    static lv_indev_state_t last_state = LV_INDEV_STATE_RELEASED;
+    if (data->state != last_state) {
+        if (data->state == LV_INDEV_STATE_PRESSED) {
+            ESP_LOGD(TAG, "Producer state -> PRESSED (%d, %d)", data->point.x,
+                     data->point.y);
+        } else {
+            ESP_LOGD(TAG, "Producer state -> RELEASED");
+        }
+        last_state = data->state;
+    }
+
     data->continue_reading = true;
+}
+
+void LcdTouch::ReadFromBuffer(lv_indev_data_t* data) {
+    if (point_mutex_ && xSemaphoreTake(point_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
+        data->point.x = latest_point_.x;
+        data->point.y = latest_point_.y;
+        data->state   = latest_point_.state;
+        xSemaphoreGive(point_mutex_);
+
+        static lv_indev_state_t last_consumer_state = LV_INDEV_STATE_RELEASED;
+        if (data->state != last_consumer_state) {
+            if (data->state == LV_INDEV_STATE_PRESSED) {
+                ESP_LOGD(TAG, "LVGL read_cb state -> PRESSED (%d, %d)", data->point.x,
+                         data->point.y);
+            } else {
+                ESP_LOGD(TAG, "LVGL read_cb state -> RELEASED");
+            }
+            last_consumer_state = data->state;
+        }
+    } else {
+        // Mutex timeout (very rare) — report released so LVGL does not hang
+        data->state = LV_INDEV_STATE_RELEASED;
+        ESP_LOGW(TAG, "Snapshot mutex timeout in LVGL read_cb");
+    }
+    data->continue_reading = false;
 }
 
 void LcdTouch::HandleTouchPress(int16_t x, int16_t y) {

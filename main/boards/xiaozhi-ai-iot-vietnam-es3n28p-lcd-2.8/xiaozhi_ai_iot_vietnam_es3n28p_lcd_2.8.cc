@@ -27,6 +27,7 @@
 #include "wifi_board.h"
 #include "mcp_server.h"
 #include "lamp_controller.h"
+#include "features/file_browser/file_browser.h"
 #include "config.h"
 #include "power_save_timer.h"
 #include "assets/lang_config.h"
@@ -72,6 +73,8 @@
 class XiaozhiAIIoTEs3n28p : public WifiBoard {
  private:
   Button boot_button_;
+  bool file_browser_initialized_ = false;
+  lv_obj_t* file_browser_screen_ = nullptr;
   LcdDisplay *display_;
   PowerSaveTimer* power_save_timer_;
   PowerManager* power_manager_;
@@ -267,8 +270,8 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     
     // Touch configuration - enable interrupt, use polling mode
     const esp_lcd_touch_config_t tp_cfg = {
-      .x_max = DISPLAY_WIDTH - 1,
-      .y_max = DISPLAY_HEIGHT - 1,
+      .x_max = DISPLAY_WIDTH,
+      .y_max = DISPLAY_HEIGHT,
       // TOUCH_RST_PIN already handled above, should not handle reset here by driver 
       // due to timing delay 10ms is very short and causes issues inside driver
       .rst_gpio_num = GPIO_NUM_NC, // TOUCH_RST_PIN
@@ -278,10 +281,10 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
         .interrupt = 0,
       },
       .flags = {
-        .swap_xy = DISPLAY_SWAP_XY ? 1U : 0U,
-        .mirror_x = DISPLAY_MIRROR_X ? 0U : 1U,
-        .mirror_y = DISPLAY_MIRROR_Y ? 1U : 0U,
-      },
+        .swap_xy = DISPLAY_SWAP_XY,
+        .mirror_x = DISPLAY_MIRROR_X,
+        .mirror_y = !DISPLAY_MIRROR_Y,
+      }
     };
     
     ESP_LOGI(TAG, "Touch config: x_max=%d, y_max=%d, swap_xy=%d, mirror_x=%d, mirror_y=%d",
@@ -311,6 +314,10 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     }
     ESP_LOGI(TAG, "✅ Touch panel FT6236G initialized successfully with custom driver!");
 
+    // esp_lcd_touch_set_swap_xy(tp_, tp_cfg.flags.swap_xy);
+    // esp_lcd_touch_set_mirror_x(tp_, tp_cfg.flags.mirror_x);
+    // esp_lcd_touch_set_mirror_y(tp_, tp_cfg.flags.mirror_y);
+
     // Set touch threshold
     uint8_t threshold_reg[1] = {TOUCH_FT62XX_DEFAULT_THRESHOLD};
     ret = esp_lcd_panel_io_tx_param(tp_io_handle, TOUCH_FT62XX_REG_THRESHHOLD, threshold_reg, 1);
@@ -337,9 +344,10 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
                           DISPLAY_SWAP_XY, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     
     touch_->SetInterruptCallback([this]()->bool {
-        return this->WaitForTouchEvent();
+      return this->WaitForTouchEvent(10);
     });
 
+#if (0)
     touch_->SetGestureCallback([this](TouchGesture gesture, int16_t x, int16_t y) {
       ESP_LOGI(TAG, "Touch gesture detected: %d at (%d, %d)", static_cast<int>(gesture), x, y);
       switch (gesture) {
@@ -457,14 +465,44 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
         default:
             break;
       } });
+#endif
     ESP_LOGI(TAG, "Touch screen is ready - try touching now...");
   }
 #endif
+
+  void ShowFileBrowserScreen() {
+    auto& app = Application::GetInstance();
+    app.Schedule([this]() {
+      DisplayLockGuard guard(GetDisplay());
+
+      if (!file_browser_initialized_) {
+        file_browser_init();
+        file_browser_initialized_ = true;
+      }
+
+      if (file_browser_screen_ == nullptr) {
+        file_browser_screen_ = file_browser_create_screen();
+      }
+
+      if (file_browser_screen_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create file browser screen");
+        return;
+      }
+
+      lv_scr_load(file_browser_screen_);
+      file_browser_open_folder("/sdcard");
+      ESP_LOGI(TAG, "File browser opened from BOOT long press");
+    });
+  }
 
   void InitializeButtons() {
     boot_button_.OnMultipleClick([this]() {
         ResetWifiConfiguration();
     }, 5);
+
+    boot_button_.OnLongPress([this]() {
+      ShowFileBrowserScreen();
+    });
 
     boot_button_.OnClick([this]() {
       auto &app = Application::GetInstance();
@@ -481,7 +519,7 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
   }
 
  public:
-  XiaozhiAIIoTEs3n28p(): boot_button_(BOOT_BUTTON_GPIO)
+    XiaozhiAIIoTEs3n28p(): boot_button_(BOOT_BUTTON_GPIO, false, 5000)
   {
     InitializePowerManager();
     InitializePowerSaveTimer();

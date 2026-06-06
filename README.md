@@ -275,6 +275,9 @@ Chúng tôi rất hoan nghênh mọi đóng góp! Vui lòng:
 
 ### Quy Tắc Đóng Góp
 - Tuân thủ Google C++ Style Guide
+- Dự án đã cấu hình sẵn `.clang-format` theo Google style, vui lòng format code C/C++ trước khi commit
+- Khuyến nghị VS Code bật Format On Save và chọn formatter `clang-format` cho C/C++
+- Có thể format nhanh bằng lệnh: `clang-format -i <danh_sach_file.cc/.h>`
 - Viết commit message rõ ràng bằng tiếng Việt hoặc tiếng Anh
 - Test kỹ trước khi tạo PR
 

@@ -6,6 +6,11 @@
 #define WEATHER_UPDATE_INTERVAL_MS (30 * 60 * 1000)  // 30 minutes
 #endif
 
+// Weather data is considered stale when it is older than this threshold.
+#ifndef WEATHER_STALE_THRESHOLD_MS
+#define WEATHER_STALE_THRESHOLD_MS (15 * 60 * 1000)  // 15 minutes
+#endif
+
 // Default OpenWeatherMap API key, you can replace it with your own key
 // Get a free API key from https://openweathermap.org/api
 #ifndef OPEN_WEATHERMAP_API_KEY_DEFAULT

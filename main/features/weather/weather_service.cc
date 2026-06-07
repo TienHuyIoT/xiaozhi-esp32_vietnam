@@ -20,13 +20,30 @@
 
 WeatherService::WeatherService() 
     : api_key_(OPEN_WEATHERMAP_API_KEY_DEFAULT)
-    , last_update_time_(0) {
+    , last_update_time_(0)
+    , last_fetch_status_(FetchStatus::kNever) {
     weather_info_.valid = false;
+    weather_info_.state = WeatherDataState::kLoading;
 }
 
 bool WeatherService::NeedsUpdate() const {
     uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
     return (current_time - last_update_time_) >= WEATHER_UPDATE_INTERVAL_MS;
+}
+
+uint32_t WeatherService::GetDataAgeMs() const {
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    if (weather_info_.last_success_update_ms == 0) {
+        return UINT32_MAX;
+    }
+    return current_time - weather_info_.last_success_update_ms;
+}
+
+bool WeatherService::IsStale(uint32_t stale_threshold_ms) const {
+    if (!weather_info_.valid || weather_info_.last_success_update_ms == 0) {
+        return true;
+    }
+    return GetDataAgeMs() >= stale_threshold_ms;
 }
 
 std::string WeatherService::UrlEncode(const std::string& value) {
@@ -142,6 +159,12 @@ bool WeatherService::FetchWeatherData() {
 
     if (!WifiStation::GetInstance().IsConnected()) {
         ESP_LOGE(TAG, "WiFi not connected, skipping weather update.");
+        last_fetch_status_ = FetchStatus::kOffline;
+        if (weather_info_.valid) {
+            weather_info_.state = IsStale() ? WeatherDataState::kStale : WeatherDataState::kOffline;
+        } else {
+            weather_info_.state = WeatherDataState::kOffline;
+        }
         return false;
     }
 
@@ -177,10 +200,18 @@ bool WeatherService::FetchWeatherData() {
 
     // Fetch current weather and forecast data
     if (!FetchCurrentWeatherData(city, api_key)) {
+        last_fetch_status_ = FetchStatus::kError;
+        if (weather_info_.valid) {
+            weather_info_.state = IsStale() ? WeatherDataState::kStale : WeatherDataState::kError;
+        } else {
+            weather_info_.state = WeatherDataState::kError;
+        }
         return false;
     }
 
     FetchForecastData(city, api_key);
+    last_fetch_status_ = FetchStatus::kSuccess;
+    weather_info_.state = IsStale() ? WeatherDataState::kStale : WeatherDataState::kSuccess;
     return true;
 }
 
@@ -250,6 +281,7 @@ bool WeatherService::FetchCurrentWeatherData(const std::string& city, const std:
         weather_info_.valid = true;
         success = true;
         last_update_time_ = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        weather_info_.last_success_update_ms = last_update_time_;
         ESP_LOGI(TAG, "Current Weather Updated: %s, %.1f C", weather_info_.city.c_str(), weather_info_.temp);
 
     } while (0);
@@ -258,6 +290,7 @@ bool WeatherService::FetchCurrentWeatherData(const std::string& city, const std:
 
     if (!success) {
         ESP_LOGE(TAG, "Failed to extract current weather data from JSON");
+        weather_info_.state = WeatherDataState::kError;
     }
 
     return success;

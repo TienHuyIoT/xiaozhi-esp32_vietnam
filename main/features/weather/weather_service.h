@@ -9,6 +9,13 @@
 
 class WeatherService {
 public:
+    enum class FetchStatus {
+        kNever = 0,
+        kSuccess,
+        kOffline,
+        kError,
+    };
+
     static WeatherService& GetInstance() {
         static WeatherService instance;
         return instance;
@@ -32,6 +39,15 @@ public:
     // Check if weather data needs update
     bool NeedsUpdate() const;
 
+    // Returns age of latest successful weather data in milliseconds.
+    uint32_t GetDataAgeMs() const;
+
+    // Returns true when data age exceeds stale threshold.
+    bool IsStale(uint32_t stale_threshold_ms = WEATHER_STALE_THRESHOLD_MS) const;
+
+    // Returns last fetch status for UI state decisions.
+    FetchStatus GetLastFetchStatus() const { return last_fetch_status_; }
+
     // Get city from IP address
     static std::string GetCityFromIP();
 
@@ -49,6 +65,7 @@ private:
     std::string api_key_;
     std::string city_;
     uint32_t last_update_time_;
+    FetchStatus last_fetch_status_;
 
     // Helper function to encode URL
     static std::string UrlEncode(const std::string& value);

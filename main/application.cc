@@ -32,6 +32,8 @@
 #include <arpa/inet.h>
 #include <font_awesome.h>
 #include "features/weather/weather_ui.h"
+#include "features/weather/weather_view_model.h"
+#include "features/weather/weather_view_model_fixture.h"
 #include "ml307_board.h"
 #define TAG "Application"
 
@@ -420,8 +422,7 @@ void Application::Start() {
     board.StartNetwork();
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    // Start the independent weather idle display task after network is ready
-    StartWeatherIdleTask();
+    weather_idle_init();
 #endif
 
     // Register network tool — pass overlay callback so the QR canvas can
@@ -694,6 +695,18 @@ void Application::MainEventLoop() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
+            if (device_state_ == kDeviceStateIdle) {
+                if (!IsMediaPlaying()) {
+                    UpdateIdleDisplay();
+                }
+
+                if (clock_ticks_ == 5 || clock_ticks_ % 1800 == 0) {
+                    StartWeatherFetchTask();
+                }
+            }
+#endif
         
             // Print the debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -774,17 +787,16 @@ void Application::SetDeviceState(DeviceState state) {
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
 
+
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    // --- [ADD HIDDEN/SHOWABLE LOGIC FOR IDLE SCREEN] ---
     if (state != kDeviceStateIdle) {
         // If not Idle, hide the idle screen
         ESP_LOGI(TAG, "Hiding idle screen due to state change: %s -> %s", 
                 STATE_STRINGS[previous_state], STATE_STRINGS[state]);
-        display->HideIdleCard();
+        DisplayLockGuard guard(display);
+        weather_idle_hide();
     }
-    // -----------------------------
 #endif
-
     auto led = board.GetLed();
     led->OnStateChanged();
     // Stop all active media and clear display overlays when leaving idle state
@@ -1747,108 +1759,31 @@ bool Application::InitMp4Video() {
 
 // --- [DienBien Mod]- WEATHER SCREEN UPDATE----
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-void Application::StartWeatherIdleTask() {
-    xTaskCreate([](void* arg) {
-        Application* app = static_cast<Application*>(arg);
-        int tick_count = 0;
-        while (true) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            tick_count++;
-
-            if (app->GetDeviceState() == kDeviceStateIdle) {
-                if (app->IsMediaPlaying()) {
-                    // When music/radio is playing, hide the idle screen
-                    auto display = Board::GetInstance().GetDisplay();
-                    display->HideIdleCard();
-                } else {
-                    // Update the clock every second
-                    app->UpdateIdleDisplay();
-
-                    // Weather fetch logic: call at the 5th second after boot OR every 30 minutes (1800 seconds)
-                    if (tick_count == 5 || tick_count % 1800 == 0) {
-                        ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
-                        auto& weather_service = WeatherService::GetInstance();
-                        if (weather_service.FetchWeatherData()) {
-                            app->UpdateIdleDisplay();
-                        }
-                    }
-                }
+void Application::StartWeatherFetchTask() {
+    ESP_LOGI(TAG, "Starting one-shot weather fetch task");
+    xTaskCreate(
+        [](void* arg) {
+            auto* app = static_cast<Application*>(arg);
+            auto& weather_service = WeatherService::GetInstance();
+            if (weather_service.FetchWeatherData()) {
+                app->UpdateIdleDisplay();
             }
-        }
-        vTaskDelete(NULL);
-    }, "weather_idle_task", 1024 * 6, this, 2, &weather_idle_task_handle_);
+            vTaskDelete(nullptr);
+        },
+        "weather_fetch_task", 1024 * 4, this, 2, nullptr);
 }
 
 void Application::UpdateIdleDisplay() {
     auto& weather_service = WeatherService::GetInstance();
-    const WeatherInfo& weather_info = weather_service.GetWeatherInfo();
-    
-    IdleCardInfo card;
-
-    // 2. THÔNG TIN HỆ THỐNG
     auto& board = Board::GetInstance();
-    card.network_icon = board.GetNetworkStateIcon();
-    if (board.GetBoardType() == "wifi") {
-        auto& wifi_station = WifiStation::GetInstance();
-        card.rssi = wifi_station.GetRssi();
-    } else {
-        AtModem* cellular_modem = static_cast<AtModem*>(board.GetNetwork());
-        card.rssi = cellular_modem ? cellular_modem->GetCsq() : 0;
+    auto display = board.GetDisplay();
+    if (display == nullptr) {
+        return;
     }
 
-    int battery_level;
-    bool charging, discharging;
-    const char* icon = nullptr;
-    if (board.GetBatteryLevel(battery_level, charging, discharging)) {
-        if (charging) {
-            icon = FONT_AWESOME_BATTERY_BOLT;
-        } else {
-            const char* const levels[] = {
-                FONT_AWESOME_BATTERY_EMPTY,            // 0-19%
-                FONT_AWESOME_BATTERY_QUARTER,          // 20-39%
-                FONT_AWESOME_BATTERY_HALF,             // 40-59%
-                FONT_AWESOME_BATTERY_THREE_QUARTERS,   // 60-79%
-                FONT_AWESOME_BATTERY_FULL,             // 80-99%
-                FONT_AWESOME_BATTERY_FULL              // 100%
-            };
-            icon = levels[battery_level / 20];
-        }
-        card.battery_level = battery_level;
-        card.battery_icon = icon;
-        card.is_charging = charging;
-    } else {
-        card.battery_icon = FONT_AWESOME_BATTERY_BOLT;
-        card.battery_level = -1; // Không biết mức pin
-        card.is_charging = false;
-    }
-
-    // 3. THÔNG TIN THỜI TIẾT
-    if (weather_info.valid) {
-        card.city = weather_info.city;
-        
-        char temp_buf[16];
-        snprintf(temp_buf, sizeof(temp_buf), "%d°C", (int)round(weather_info.temp));
-        card.temperature_text = temp_buf;
-
-        card.description_text = weather_info.description;
-        card.humidity_text = std::to_string(weather_info.humidity) + "%";
-
-        char extra_buf[32];
-        snprintf(extra_buf, sizeof(extra_buf), "%.1f m/s", weather_info.wind_speed);
-        card.wind_text = extra_buf;
-
-        // Cập nhật Forecast vào Card
-        card.forecast = weather_info.forecast; // COPY DỮ LIỆU DỰ BÁO SANG UI
-
-        card.icon = WeatherUI::GetWeatherIcon(weather_info.icon_code);
-    } else {
-        card.city = "Dang cap nhat...";
-        card.temperature_text = "--";
-        card.icon = "\uf128"; 
-    }
-
-    auto display = Board::GetInstance().GetDisplay();
-    display->ShowIdleCard(card);
+    IdleCardInfo card = WeatherViewModel::BuildIdleCardInfo(weather_service, board);
+    DisplayLockGuard guard(display);
+    weather_idle_show_card(&card);
 }
-#endif
 // --- [DienBien Mod]- END WEATHER SCREEN UPDATE----
+#endif

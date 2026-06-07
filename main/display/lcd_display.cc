@@ -8,6 +8,7 @@ Contributors: Xiaozhi AI-IoT Vietnam Team
 #include "lvgl_theme.h"
 #include "assets/lang_config.h"
 #include "features/weather/weather_model.h"
+#include "features/weather/weather_ui.h"
 
 #include <vector>
 #include <algorithm>
@@ -123,28 +124,6 @@ void LcdDisplay::InitializeLcdThemes() {
     theme_manager.RegisterTheme("dark", dark_theme);
 }
 
-
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-void LcdDisplay::ShowIdleCard(const IdleCardInfo& info) {
-    if (weather_ui_) {
-        DisplayLockGuard lock(this);
-        if (container_) lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
-        weather_ui_->ShowIdleCard(info);
-    }
-}
-#endif
-
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-void LcdDisplay::HideIdleCard() {
-    if (weather_ui_) {
-        DisplayLockGuard lock(this);
-        if (container_ && lv_obj_has_flag(container_, LV_OBJ_FLAG_HIDDEN)) {
-            lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);
-            weather_ui_->HideIdleCard();
-        }
-    }
-}
-#endif
 // --- [DienBien Mod]- END KHỞI TẠO MÀN HÌNH THỜI TIẾT----
 
 /* ------------------------------------------------------------------
@@ -162,21 +141,17 @@ void LcdDisplay::SetMediaOverlayActive(bool active) {
 
     if (active) {
         // Hide main UI widgets for media playback
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-        if (weather_ui_) weather_ui_->HideIdleCard();
+        weather_idle_hide();
         if (container_) lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
-#endif
         if (content_) lv_obj_add_flag(content_, LV_OBJ_FLAG_HIDDEN);
         ESP_LOGI(TAG, "Media overlay active: main UI hidden");
     } else {
         if (content_ && lv_obj_has_flag(content_, LV_OBJ_FLAG_HIDDEN)) {
             lv_obj_remove_flag(content_, LV_OBJ_FLAG_HIDDEN);
         }
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
         if (container_ && lv_obj_has_flag(container_, LV_OBJ_FLAG_HIDDEN)) {
             lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);
         }
-#endif
         ESP_LOGI(TAG, "Media overlay inactive: main UI restored");
     }
 }
@@ -195,10 +170,6 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     Settings settings("display", false);
     std::string theme_name = settings.GetString("theme", "light");
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
-
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    weather_ui_ = std::make_unique<WeatherUI>();
-#endif
 
     // Create a timer to hide the preview image
     esp_timer_create_args_t preview_timer_args = {
@@ -602,11 +573,7 @@ void LcdDisplay::SetupUI() {
         SetRotation(rotation_degree, false);
     }
 
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    if (weather_ui_) {
-        weather_ui_->SetupIdleUI(screen, width_, height_);
-    }
-#endif
+    weather_idle_create_screen(screen, width_, height_);
 }
 #if CONFIG_IDF_TARGET_ESP32P4
 #define  MAX_MESSAGES 40
@@ -1017,11 +984,7 @@ void LcdDisplay::SetupUI() {
         SetRotation(rotation_degree, false);
     }
 
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    if (weather_ui_) {
-        weather_ui_->SetupIdleUI(screen, width_, height_);
-    }
-#endif
+    weather_idle_create_screen(screen, width_, height_);
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {

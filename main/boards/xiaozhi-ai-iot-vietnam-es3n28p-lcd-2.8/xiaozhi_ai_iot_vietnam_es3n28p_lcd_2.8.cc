@@ -28,6 +28,7 @@
 #include "mcp_server.h"
 #include "lamp_controller.h"
 #include "features/file_browser/file_browser.h"
+#include "features/weather/weather_ui.h"
 #include "config.h"
 #include "power_save_timer.h"
 #include "assets/lang_config.h"
@@ -532,6 +533,14 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     }, 5);
 
     boot_button_.OnLongPress([this]() {
+      auto& app = Application::GetInstance();
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
+      if (app.GetDeviceState() == kDeviceStateIdle &&
+          weather_idle_is_visible()) {
+        weather_idle_toggle_details();
+        return;
+      }
+#endif
       ShowFileBrowserScreen();
     });
 

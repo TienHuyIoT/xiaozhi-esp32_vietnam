@@ -3,7 +3,6 @@
 
 #include "lvgl_display.h"
 #include "gif/lvgl_gif.h"
-#include "features/weather/weather_ui.h"
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -46,9 +45,6 @@ protected:
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
 
-    // Weather UI component
-    std::unique_ptr<WeatherUI> weather_ui_;
-
     void InitializeLcdThemes();
     void SetupUI();
     virtual bool Lock(int timeout_ms = 0) override;
@@ -83,10 +79,6 @@ public:
     /** Get the raw LCD panel handle (for direct drawing, e.g. video player) */
     esp_lcd_panel_handle_t GetPanelHandle() const { return panel_; }
     
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    virtual void ShowIdleCard(const IdleCardInfo& info) override;
-    virtual void HideIdleCard() override;
-#endif
 };
 
 // SPI LCD Display

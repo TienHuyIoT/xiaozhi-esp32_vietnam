@@ -261,6 +261,16 @@ idf.py merge-bin
 - [Tài liệu MQTT + UDP](docs/mqtt-udp.md)
 - [Tài liệu WebSocket](docs/websocket.md)
 
+### Weather UI Customizations (Cho Team Dev)
+- Instruction consistency: [.github/instructions/weather-ui-consistency.instructions.md](.github/instructions/weather-ui-consistency.instructions.md)
+- Prompt mock states: [.github/prompts/generate-weather-mock-states.prompt.md](.github/prompts/generate-weather-mock-states.prompt.md)
+- Agent data-to-UI binding: [.github/agents/weather-data-ui-binding.agent.md](.github/agents/weather-data-ui-binding.agent.md)
+
+Cách gọi nhanh:
+- Agent: chọn `Weather Data-UI Binding` trong Agent Picker rồi mô tả task (ví dụ: chuẩn hóa luồng cập nhật weather model -> LVGL labels/icons theo state loading/success/offline/error/stale).
+- Prompt mock states: chạy prompt `Generate weather mock UI states...` để sinh dữ liệu test nhanh cho idle weather.
+- Instruction consistency: tự động áp dụng khi chỉnh sửa các file weather/UI theo `applyTo`.
+
 ---
 
 ## 🤝 Đóng Góp

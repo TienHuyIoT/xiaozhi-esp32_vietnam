@@ -5,6 +5,14 @@
 #include <string>
 #include <vector>
 
+enum class WeatherDataState {
+    kLoading = 0,
+    kSuccess,
+    kStale,
+    kOffline,
+    kError,
+};
+
 // Cấu trúc lưu trữ 1 mốc dự báo
 struct ForecastItem {
     std::string day_name; // Ví dụ: "T2", "T3"
@@ -23,6 +31,8 @@ struct WeatherInfo {
     int pressure = 0;
     float wind_speed = 0.0f;
     bool valid = false;
+    WeatherDataState state = WeatherDataState::kLoading;
+    uint32_t last_success_update_ms = 0;
 
     std::vector<ForecastItem> forecast; 
 };
@@ -39,9 +49,12 @@ struct IdleCardInfo {
     std::string feels_like_text;
     std::string wind_text;
     std::string pressure_text;
+    std::string stale_badge_text;
+    std::string updated_text;
     std::string battery_icon;
     std::string network_icon;
     const char* icon = nullptr;
+    WeatherDataState weather_state = WeatherDataState::kLoading;
     
     // System Info
     int battery_level = 100;

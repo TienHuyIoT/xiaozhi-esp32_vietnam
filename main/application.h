@@ -224,10 +224,6 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
     TaskHandle_t main_event_loop_task_handle_ = nullptr;
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    TaskHandle_t weather_idle_task_handle_ = nullptr;
-#endif
-
     /**
      * @brief Identifies which media component to exclude from stopping.
      * Used by StopOtherMedia() to skip the component about to play.
@@ -258,12 +254,16 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
 
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    // --- Weather Info ---
-    void StartWeatherIdleTask();
+    /**
+     * @brief Refresh the weather idle screen from the current service snapshot.
+     * Safe to call from the main loop or a short-lived worker task.
+     */
     void UpdateIdleDisplay();
-    // -------------------
-#endif
+
+    /**
+     * @brief Launch a short-lived worker task that fetches weather once and exits.
+     */
+    void StartWeatherFetchTask();
 };
 
 

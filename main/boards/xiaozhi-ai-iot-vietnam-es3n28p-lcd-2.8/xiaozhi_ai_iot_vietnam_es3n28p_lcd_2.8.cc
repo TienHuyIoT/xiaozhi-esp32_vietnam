@@ -72,9 +72,12 @@
 
 class XiaozhiAIIoTEs3n28p : public WifiBoard {
  private:
+  static XiaozhiAIIoTEs3n28p* active_instance_;
   Button boot_button_;
   bool file_browser_initialized_ = false;
   lv_obj_t* file_browser_screen_ = nullptr;
+  lv_obj_t* previous_screen_ = nullptr;
+  bool file_browser_active_ = false;
   LcdDisplay *display_;
   PowerSaveTimer* power_save_timer_;
   PowerManager* power_manager_;
@@ -85,6 +88,12 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
   // Touch interrupt semaphore
   SemaphoreHandle_t touch_isr_mux_ = nullptr;
 #endif
+
+  static void OnFileBrowserExitStatic() {
+    if (active_instance_ != nullptr) {
+      active_instance_->CloseFileBrowserScreen();
+    }
+  }
 
   void InitializePowerManager() {
     power_manager_ = new PowerManager(CHARGING_DETECTION_GPIO);
@@ -489,9 +498,31 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
         return;
       }
 
+      previous_screen_ = lv_screen_active();
+      file_browser_active_ = true;
+
       lv_scr_load(file_browser_screen_);
+      file_browser_show_exit_button(true);
       file_browser_open_folder("/sdcard");
+
+      file_browser_set_exit_callback(&XiaozhiAIIoTEs3n28p::OnFileBrowserExitStatic);
+      
       ESP_LOGI(TAG, "File browser opened from BOOT long press");
+    });
+  }
+
+  void CloseFileBrowserScreen() {
+    auto& app = Application::GetInstance();
+    app.Schedule([this]() {
+      DisplayLockGuard guard(GetDisplay());
+
+      file_browser_active_ = false;
+      file_browser_show_exit_button(false);
+
+      if (previous_screen_ != nullptr) {
+        lv_scr_load(previous_screen_);
+        ESP_LOGI(TAG, "File browser closed, restored previous screen");
+      }
     });
   }
 
@@ -505,6 +536,11 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     });
 
     boot_button_.OnClick([this]() {
+      if (file_browser_active_) {
+        CloseFileBrowserScreen();
+        return;
+      }
+      
       auto &app = Application::GetInstance();
       if (app.GetDeviceState() == kDeviceStateStarting &&
           !WifiStation::GetInstance().IsConnected()) {
@@ -521,6 +557,7 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
  public:
     XiaozhiAIIoTEs3n28p(): boot_button_(BOOT_BUTTON_GPIO, false, 5000)
   {
+    active_instance_ = this;
     InitializePowerManager();
     InitializePowerSaveTimer();
     InitializeI2c();
@@ -615,3 +652,5 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
 };
 
 DECLARE_BOARD(XiaozhiAIIoTEs3n28p);
+
+XiaozhiAIIoTEs3n28p* XiaozhiAIIoTEs3n28p::active_instance_ = nullptr;

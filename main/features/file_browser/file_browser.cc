@@ -1,5 +1,6 @@
 #include "file_browser.h"
 
+#include <functional>
 #include <stdio.h>
 #include <string.h>
 
@@ -26,11 +27,17 @@ constexpr int kMenuItemCount = 5;
 
 class FileBrowser final {
  public:
+  /**
+   * @brief Singleton accessor for FileBrowser controller.
+   */
   static FileBrowser& Instance() {
     static FileBrowser instance;
     return instance;
   }
 
+  /**
+   * @brief Initialize file-browser dependencies (keymap + scanner).
+   */
   void Init() {
     ESP_LOGI(kTag, "Initializing file browser module");
     file_browser_keymap_init();
@@ -38,6 +45,11 @@ class FileBrowser final {
     ESP_LOGI(kTag, "File browser module initialized successfully");
   }
 
+  /**
+   * @brief Build and return file-browser screen.
+   *
+   * Creates the screen once, wires all UI callbacks, and starts opening root folder.
+   */
   lv_obj_t* CreateScreen() {
     if (g_fb_ctx.screen != nullptr) {
       return g_fb_ctx.screen;
@@ -93,6 +105,15 @@ class FileBrowser final {
     lv_obj_t* refresh_lbl = lv_label_create(refresh_btn_);
     lv_label_set_text(refresh_lbl, "R");
     lv_obj_center(refresh_lbl);
+
+    exit_btn_ = lv_btn_create(header);
+    // Exit button: hide by default, shown only when needed
+    // size=(36x32), position after refresh button
+    lv_obj_set_size(exit_btn_, 36, 32);
+    lv_obj_t* exit_lbl = lv_label_create(exit_btn_);
+    lv_label_set_text(exit_lbl, "X");
+    lv_obj_center(exit_lbl);
+    lv_obj_add_flag(exit_btn_, LV_OBJ_FLAG_HIDDEN);
 
     list_obj_ = lv_obj_create(screen);
     lv_obj_set_size(list_obj_, kScreenW, kListH);
@@ -200,10 +221,12 @@ class FileBrowser final {
 
     lv_obj_add_event_cb(back_btn_, OnBackClicked, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(refresh_btn_, OnRefreshClicked, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(exit_btn_, OnExitClicked, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(cancel_btn_, OnCancelDeleteClicked, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(delete_btn_, OnConfirmDeleteClicked, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(back_btn_, OnDebugInputEvent, LV_EVENT_ALL, this);
     lv_obj_add_event_cb(refresh_btn_, OnDebugInputEvent, LV_EVENT_ALL, this);
+    lv_obj_add_event_cb(exit_btn_, OnDebugInputEvent, LV_EVENT_ALL, this);
     lv_obj_add_event_cb(cancel_btn_, OnDebugInputEvent, LV_EVENT_ALL, this);
     lv_obj_add_event_cb(delete_btn_, OnDebugInputEvent, LV_EVENT_ALL, this);
     lv_obj_add_event_cb(list_obj_, OnDebugInputEvent, LV_EVENT_ALL, this);
@@ -229,6 +252,9 @@ class FileBrowser final {
     return g_fb_ctx.screen;
   }
 
+  /**
+   * @brief Request opening a folder path and trigger async scan.
+   */
   void OpenFolder(const char* folder_path) {
     if (folder_path == nullptr) {
       return;
@@ -245,11 +271,48 @@ class FileBrowser final {
     file_browser_scan_folder(folder_path);
   }
 
+  /**
+   * @brief Close file browser state (UI cleanup only).
+   */
+  void Close() {
+    // Hide exit button when closing
+    if (exit_btn_ != nullptr) {
+      lv_obj_add_flag(exit_btn_, LV_OBJ_FLAG_HIDDEN);
+    }
+    ESP_LOGI(kTag, "File browser closed");
+  }
+
+  /**
+   * @brief Get current file-browser state machine state.
+   */
   file_browser_state_t GetState() const {
     return file_browser_state_get();
   }
 
+  /**
+   * @brief Set callback invoked when user exits file browser.
+   */
+  void SetExitCallback(std::function<void()> callback) {
+    on_exit_callback_ = callback;
+  }
+
+  /**
+   * @brief Show or hide Exit button in header.
+   */
+  void ShowExitButton(bool show) {
+    if (exit_btn_ != nullptr) {
+      if (show) {
+        lv_obj_clear_flag(exit_btn_, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_add_flag(exit_btn_, LV_OBJ_FLAG_HIDDEN);
+      }
+    }
+  }
+
  private:
+  /**
+   * @brief Convert LVGL input event code to readable string for logs.
+   */
     static const char* EventCodeToString(lv_event_code_t code) {
       switch (code) {
         case LV_EVENT_PRESSED:
@@ -267,6 +330,9 @@ class FileBrowser final {
       }
     }
 
+    /**
+     * @brief Generic debug hook for touch/key events on target widgets.
+     */
     static void OnDebugInputEvent(lv_event_t* e) {
       FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
       if (self == nullptr) {
@@ -283,6 +349,9 @@ class FileBrowser final {
       self->LogTouchTarget(lv_event_get_target_obj(e), code);
     }
 
+    /**
+     * @brief Log the target object and hitbox for input-debugging.
+     */
     void LogTouchTarget(lv_obj_t* obj, lv_event_code_t code) {
       if (obj == nullptr) {
         return;
@@ -324,6 +393,9 @@ class FileBrowser final {
                (area.x2 - area.x1 + 1), (area.y2 - area.y1 + 1));
     }
 
+  /**
+   * @brief Event handler for Back button click.
+   */
   static void OnBackClicked(lv_event_t* e) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
     if (self != nullptr) {
@@ -332,6 +404,11 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Event handler for Refresh button click.
+   *
+   * Reloads current folder content.
+   */
   static void OnRefreshClicked(lv_event_t* e) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
     if (self != nullptr) {
@@ -340,6 +417,25 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Event handler for Exit button click.
+   *
+   * Closes file browser and triggers registered exit callback.
+   */
+  static void OnExitClicked(lv_event_t* e) {
+    FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
+    if (self != nullptr) {
+      ESP_LOGI(kTag, "Exit button clicked");
+      self->Close();
+      if (self->on_exit_callback_) {
+        self->on_exit_callback_();
+      }
+    }
+  }
+
+  /**
+   * @brief Event handler for row click.
+   */
   static void OnRowClicked(lv_event_t* e) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
     if (self != nullptr) {
@@ -348,6 +444,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Event handler for row long-press to open context menu.
+   */
   static void OnRowLongPressed(lv_event_t* e) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
     if (self != nullptr) {
@@ -357,6 +456,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Event handler for opening context menu from keymap event.
+   */
   static void OnRowMenuEvent(lv_event_t* e) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
     if (self != nullptr) {
@@ -366,6 +468,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Event handler for context-menu item click.
+   */
   static void OnMenuItemClicked(lv_event_t* e) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
     if (self != nullptr) {
@@ -374,6 +479,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Event handler for canceling delete confirmation.
+   */
   static void OnCancelDeleteClicked(lv_event_t* e) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
     if (self != nullptr) {
@@ -382,6 +490,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Event handler for confirming delete action.
+   */
   static void OnConfirmDeleteClicked(lv_event_t* e) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_event_get_user_data(e));
     if (self != nullptr) {
@@ -390,6 +501,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Periodic timer callback to poll async scan events.
+   */
   static void OnScanTimer(lv_timer_t* timer) {
     FileBrowser* self = static_cast<FileBrowser*>(lv_timer_get_user_data(timer));
     if (self != nullptr) {
@@ -397,6 +511,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Handle back-navigation behavior in current UI context.
+   */
   void HandleBack() {
     if (menu_panel_ != nullptr && !lv_obj_has_flag(menu_panel_, LV_OBJ_FLAG_HIDDEN)) {
       ESP_LOGD(kTag, "Back closes menu panel");
@@ -418,10 +535,16 @@ class FileBrowser final {
     OpenFolder(parent);
   }
 
+  /**
+   * @brief Refresh current folder listing.
+   */
   void HandleRefresh() {
     OpenFolder(current_path_);
   }
 
+  /**
+   * @brief Focus/select a file row and update footer counter.
+   */
   void HandleRowFocus(lv_obj_t* row) {
     if (row == nullptr || list_obj_ == nullptr) {
       return;
@@ -452,6 +575,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Execute selected menu action.
+   */
   void HandleMenuItem(lv_obj_t* target) {
     int action = -1;
     for (int i = 0; i < kMenuItemCount; ++i) {
@@ -489,6 +615,9 @@ class FileBrowser final {
     HideMenu();
   }
 
+  /**
+   * @brief Delete currently selected item then refresh folder.
+   */
   void HandleDeleteSelected() {
     if (selected_item_ == nullptr) {
       HideConfirmDelete();
@@ -513,6 +642,9 @@ class FileBrowser final {
     OpenFolder(current_path_);
   }
 
+  /**
+   * @brief Show context menu panel and switch state.
+   */
   void ShowMenu() {
     if (menu_panel_ == nullptr) {
       return;
@@ -522,6 +654,9 @@ class FileBrowser final {
     file_browser_state_menu_open_enter();
   }
 
+  /**
+   * @brief Hide context menu panel and restore browsing state.
+   */
   void HideMenu() {
     if (menu_panel_ == nullptr) {
       return;
@@ -531,6 +666,9 @@ class FileBrowser final {
     file_browser_state_menu_open_exit();
   }
 
+  /**
+   * @brief Show delete confirmation dialog.
+   */
   void ShowConfirmDelete() {
     if (confirm_dialog_ == nullptr) {
       return;
@@ -540,6 +678,9 @@ class FileBrowser final {
     file_browser_state_confirm_delete_enter();
   }
 
+  /**
+   * @brief Hide delete confirmation dialog.
+   */
   void HideConfirmDelete() {
     if (confirm_dialog_ == nullptr) {
       return;
@@ -549,6 +690,9 @@ class FileBrowser final {
     file_browser_state_confirm_delete_result(false);
   }
 
+  /**
+   * @brief Poll and process folder-scan events from queue.
+   */
   void PollScanEvents() {
     QueueHandle_t queue = file_browser_scan_get_event_queue();
     if (queue == nullptr) {
@@ -579,6 +723,9 @@ class FileBrowser final {
     }
   }
 
+  /**
+   * @brief Rebuild visible file rows from latest scan result.
+   */
   void RefreshListFromScanResult() {
     if (list_obj_ == nullptr) {
       return;
@@ -627,6 +774,9 @@ class FileBrowser final {
     UpdateCounterLabel(1, count);
   }
 
+  /**
+   * @brief Update footer item counter text.
+   */
   void UpdateCounterLabel(uint32_t current, uint32_t total) {
     if (count_label_ == nullptr) {
       return;
@@ -637,6 +787,9 @@ class FileBrowser final {
     lv_label_set_text(count_label_, buf);
   }
 
+  /**
+   * @brief Resolve parent path of current folder.
+   */
   bool GetParentPath(char* out, size_t out_size) const {
     if (out == nullptr || out_size == 0) {
       return false;
@@ -674,6 +827,7 @@ class FileBrowser final {
       : list_obj_(nullptr),
         back_btn_(nullptr),
         refresh_btn_(nullptr),
+        exit_btn_(nullptr),
         menu_panel_(nullptr),
         confirm_dialog_(nullptr),
         cancel_btn_(nullptr),
@@ -682,7 +836,8 @@ class FileBrowser final {
         count_label_(nullptr),
         hint_label_(nullptr),
         selected_item_(nullptr),
-        scan_timer_(nullptr) {
+        scan_timer_(nullptr),
+        on_exit_callback_(nullptr) {
     memset(menu_buttons_, 0, sizeof(menu_buttons_));
     memset(current_path_, 0, sizeof(current_path_));
     snprintf(current_path_, sizeof(current_path_), "%s", kRootPath);
@@ -691,6 +846,7 @@ class FileBrowser final {
   lv_obj_t* list_obj_;
   lv_obj_t* back_btn_;
   lv_obj_t* refresh_btn_;
+  lv_obj_t* exit_btn_;
   lv_obj_t* menu_panel_;
   lv_obj_t* confirm_dialog_;
   lv_obj_t* cancel_btn_;
@@ -701,6 +857,7 @@ class FileBrowser final {
   lv_obj_t* menu_buttons_[kMenuItemCount];
   const file_item_t* selected_item_;
   lv_timer_t* scan_timer_;
+  std::function<void()> on_exit_callback_;
   char current_path_[512];
 };
 
@@ -708,14 +865,46 @@ class FileBrowser final {
 
 extern "C" void file_browser_init(void) { FileBrowser::Instance().Init(); }
 
+/**
+ * @brief Create/get file browser screen.
+ */
 extern "C" lv_obj_t* file_browser_create_screen(void) {
   return FileBrowser::Instance().CreateScreen();
 }
 
+/**
+ * @brief Open a folder path in file browser.
+ */
 extern "C" void file_browser_open_folder(const char* folder_path) {
   FileBrowser::Instance().OpenFolder(folder_path);
 }
 
+/**
+ * @brief Get current state of file browser.
+ */
 extern "C" file_browser_state_t file_browser_get_state(void) {
   return FileBrowser::Instance().GetState();
+}
+
+/**
+ * @brief Close file browser UI state.
+ */
+extern "C" void file_browser_close(void) {
+  FileBrowser::Instance().Close();
+}
+
+/**
+ * @brief Register C-style exit callback for file browser.
+ */
+extern "C" void file_browser_set_exit_callback(void (*callback)(void)) {
+  FileBrowser::Instance().SetExitCallback([callback]() {
+    if (callback) callback();
+  });
+}
+
+/**
+ * @brief Show or hide the file browser exit button.
+ */
+extern "C" void file_browser_show_exit_button(bool show) {
+  FileBrowser::Instance().ShowExitButton(show);
 }

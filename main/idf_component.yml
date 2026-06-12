@@ -27,9 +27,9 @@ dependencies:
   espressif/esp_io_expander_tca9554: ==2.0.0
   espressif/esp_lcd_panel_io_additions: ^1.0.1
   78/esp_lcd_nv3023: ~1.0.0
-  TienHuyIoT_esp_lcd_touch:
-    git: https://github.com/TienHuyIoT/esp_lcd_touch.git
-    version: "*"
+  # TienHuyIoT_esp_lcd_touch:
+  #   git: https://github.com/TienHuyIoT/esp_lcd_touch.git
+  #   version: "*"
   TienHuyIoT_esp-wifi-connect:
     git: https://github.com/TienHuyIoT/esp-wifi-connect.git
     version: "v1.0.1"

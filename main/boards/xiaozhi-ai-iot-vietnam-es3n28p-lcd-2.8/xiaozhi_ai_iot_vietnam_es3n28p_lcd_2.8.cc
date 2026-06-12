@@ -28,6 +28,8 @@
 #include "mcp_server.h"
 #include "lamp_controller.h"
 #include "features/file_browser/file_browser.h"
+#include "features/UI/setting/brightness_volume_screen.h"
+#include "features/UI/setting/settings_encoder_map.h"
 #include "features/weather/weather_ui.h"
 #include "config.h"
 #include "power_save_timer.h"
@@ -79,7 +81,10 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
   lv_obj_t* file_browser_screen_ = nullptr;
   lv_obj_t* previous_screen_ = nullptr;
   bool file_browser_active_ = false;
+  bool settings_screen_initialized_ = false;
   LcdDisplay *display_;
+  BrightnessVolumeScreen settings_screen_;
+  SettingsEncoderMap settings_encoder_map_;
   PowerSaveTimer* power_save_timer_;
   PowerManager* power_manager_;
   i2c_master_bus_handle_t codec_i2c_bus_;
@@ -94,6 +99,119 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     if (active_instance_ != nullptr) {
       active_instance_->CloseFileBrowserScreen();
     }
+  }
+
+  /**
+   * @brief Returns monotonic time in milliseconds for settings input timing.
+   */
+  static uint32_t NowMs() {
+    return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+  }
+
+  /**
+   * @brief Resets input mapper state after settings overlay closes.
+   */
+  void OnSettingsScreenClosed(bool confirmed) {
+    settings_encoder_map_.Reset();
+    if (confirmed) {
+      GetDisplay()->ShowNotification("Settings saved");
+    } else {
+      GetDisplay()->ShowNotification("Settings canceled");
+    }
+  }
+
+  /**
+   * @brief Creates the settings overlay on the currently active LVGL screen.
+   */
+  void EnsureSettingsScreenCreatedLocked() {
+    if (settings_screen_initialized_) {
+      return;
+    }
+
+    lv_obj_t* parent = lv_screen_active();
+    if (parent == nullptr) {
+      ESP_LOGW(TAG, "Cannot create settings screen without an active LVGL screen");
+      return;
+    }
+
+    settings_screen_.Create(parent);
+    settings_screen_.SetCloseCallback([this](bool confirmed) {
+      OnSettingsScreenClosed(confirmed);
+    });
+    settings_screen_initialized_ = true;
+  }
+
+  /**
+   * @brief Applies a mapped settings action on the LVGL thread context.
+   */
+  void DispatchSettingsAction(SettingsUiAction action) {
+    if (action == SettingsUiAction::kNone) {
+      return;
+    }
+
+    auto& app = Application::GetInstance();
+    app.Schedule([this, action]() {
+      if (!settings_screen_.visible()) {
+        return;
+      }
+
+      DisplayLockGuard guard(GetDisplay());
+      settings_screen_.HandleAction(action, settings_encoder_map_.CurrentStep());
+      settings_encoder_map_.SetEditMode(settings_screen_.edit_mode());
+    });
+  }
+
+  /**
+   * @brief Opens the new settings overlay and resets its virtual encoder state.
+   */
+  void ShowSettingsScreen() {
+    auto& app = Application::GetInstance();
+    app.Schedule([this]() {
+      DisplayLockGuard guard(GetDisplay());
+      EnsureSettingsScreenCreatedLocked();
+      if (!settings_screen_initialized_) {
+        return;
+      }
+
+      settings_encoder_map_.Reset();
+      settings_screen_.Show();
+      settings_encoder_map_.SetEditMode(settings_screen_.edit_mode());
+    });
+  }
+
+  /**
+   * @brief Handles virtual encoder rotation while the settings overlay is visible.
+   */
+  void HandleSettingsRotate(int32_t delta) {
+    if (!settings_screen_.visible()) {
+      return;
+    }
+
+    DispatchSettingsAction(settings_encoder_map_.OnRotate(delta));
+  }
+
+  /**
+   * @brief Tracks virtual encoder button press/release for settings navigation.
+   */
+  void HandleSettingsButtonState(bool pressed) {
+    if (!settings_screen_.visible()) {
+      return;
+    }
+
+    const uint32_t now_ms = NowMs();
+    settings_encoder_map_.OnButtonState(pressed, now_ms);
+    DispatchSettingsAction(settings_encoder_map_.Poll(now_ms));
+  }
+
+  /**
+   * @brief Cancels the settings overlay from a long-press shortcut.
+   */
+  void HandleSettingsCancel() {
+    if (!settings_screen_.visible()) {
+      return;
+    }
+
+    DispatchSettingsAction(SettingsUiAction::kCancel);
   }
 
   void InitializePowerManager() {
@@ -356,126 +474,6 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     touch_->SetInterruptCallback([this]()->bool {
       return this->WaitForTouchEvent(10);
     });
-
-#if (0)
-    touch_->SetGestureCallback([this](TouchGesture gesture, int16_t x, int16_t y) {
-      ESP_LOGI(TAG, "Touch gesture detected: %d at (%d, %d)", static_cast<int>(gesture), x, y);
-      switch (gesture) {
-        case TOUCH_GESTURE_SWIPE_RIGHT:
-          {
-            music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
-            ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-            if (source == music::SourceType::SD_CARD) {
-              ESP_LOGI(TAG, "Play Next track");
-              auto& app = Application::GetInstance();
-              auto sd_music = app.GetSdMusic();
-              if (sd_music) {
-                sd_music->Stop();
-                vTaskDelay(pdMS_TO_TICKS(500));
-                sd_music->Next();
-              }
-            } else {
-              auto& board = Board::GetInstance();
-              auto backlight = board.GetBacklight();
-              int new_brightness = backlight->brightness();
-              
-              // Swipe right - increase brightness
-              new_brightness += 5;
-              if (new_brightness > 100) new_brightness = 100;
-              ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
-              
-              backlight->SetBrightness(new_brightness);
-              auto display = board.GetDisplay();
-              display->ShowNotification("Brightness: " + std::to_string(new_brightness));
-            }
-          }
-          break;
-        case TOUCH_GESTURE_SWIPE_LEFT:
-          {
-            music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
-            ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-            if (source == music::SourceType::SD_CARD) {
-              ESP_LOGI(TAG, "Play Previous track");
-              auto& app = Application::GetInstance();
-              auto sd_music = app.GetSdMusic();
-              if (sd_music) {
-                sd_music->Stop();
-                vTaskDelay(pdMS_TO_TICKS(500));
-                sd_music->Prev();
-              }
-              break;
-            }
-            auto& board = Board::GetInstance();
-            auto backlight = board.GetBacklight();
-            int new_brightness = backlight->brightness();
-            
-            // Swipe left - decrease brightness
-            new_brightness -= 5;
-            if (new_brightness <= 0) new_brightness = 0;  // Min 5% to keep visible
-            ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
-            
-            backlight->SetBrightness(new_brightness);
-            auto display = board.GetDisplay();
-            display->ShowNotification("Brightness: " + std::to_string(new_brightness));
-          }
-          break;
-        case TOUCH_GESTURE_SWIPE_DOWN:
-          {
-            auto codec = GetAudioCodec();
-            auto volume = codec->output_volume() - 5;
-            if (volume < 0) {
-              volume = 0;
-            }
-            codec->SetOutputVolume(volume);
-            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
-          }
-          break;
-        case TOUCH_GESTURE_SWIPE_UP:
-          {
-            auto codec = GetAudioCodec();
-            auto volume = codec->output_volume() + 5;
-            if (volume > 100) {
-              volume = 100;
-            }
-            codec->SetOutputVolume(volume);
-            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
-          }
-          break;
-        case TOUCH_GESTURE_TAP:
-          break;
-        case TOUCH_GESTURE_DOUBLE_TAP:
-          {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
-              ResetWifiConfiguration();
-            }
-            app.ToggleChatState();
-          }
-          break;
-        case TOUCH_GESTURE_LONG_PRESS:
-          ESP_LOGW(TAG, "Long Press at (%d, %d)", x, y);
-          {
-            music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
-            ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-            if (source == music::SourceType::NONE) {
-              auto& app = Application::GetInstance();
-              auto sd_music = app.GetSdMusic();
-              if (sd_music) {
-                ESP_LOGI(TAG, "Toggle Play/Pause");
-                sd_music->SetRepeatMode(Esp32SdMusic::RepeatMode::RepeatAll);
-                sd_music->SetShuffleMode(true);
-                sd_music->Play();
-              }
-            } else {
-              GetAudioCodec()->SetOutputVolume(0);
-              GetDisplay()->ShowNotification(Lang::Strings::MUTED);
-            }
-          }
-          break;
-        default:
-            break;
-      } });
-#endif
     ESP_LOGI(TAG, "Touch screen is ready - try touching now...");
   }
 #endif
@@ -529,10 +527,33 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
 
   void InitializeButtons() {
     boot_button_.OnMultipleClick([this]() {
+        if (settings_screen_.visible()) {
+          return;
+        }
         ResetWifiConfiguration();
     }, 5);
 
+    boot_button_.OnPressDown([this]() {
+      HandleSettingsButtonState(true);
+    });
+
+    boot_button_.OnPressUp([this]() {
+      HandleSettingsButtonState(false);
+    });
+
+    boot_button_.OnDoubleClick([this]() {
+      if (file_browser_active_ || settings_screen_.visible()) {
+        return;
+      }
+      ShowSettingsScreen();
+    });
+
     boot_button_.OnLongPress([this]() {
+      if (settings_screen_.visible()) {
+        HandleSettingsCancel();
+        return;
+      }
+
       auto& app = Application::GetInstance();
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
       if (app.GetDeviceState() == kDeviceStateIdle &&
@@ -545,6 +566,10 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     });
 
     boot_button_.OnClick([this]() {
+      if (settings_screen_.visible()) {
+        return;
+      }
+
       if (file_browser_active_) {
         CloseFileBrowserScreen();
         return;

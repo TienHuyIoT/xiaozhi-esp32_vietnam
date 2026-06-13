@@ -113,22 +113,13 @@ void BrightnessVolumeScreen::BuildUi(lv_obj_t* parent) {
     lv_obj_set_flex_flow(footer_row_, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(footer_row_, 0, 0);
 
-    confirm_btn_ = lv_btn_create(footer_row_);
-    lv_obj_set_size(confirm_btn_, LV_PCT(48), LV_SIZE_CONTENT);
-    lv_obj_add_flag(confirm_btn_, LV_OBJ_FLAG_EVENT_BUBBLE);
-    lv_obj_add_event_cb(confirm_btn_, OnButtonClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* confirm_label = lv_label_create(confirm_btn_);
-    lv_label_set_text(confirm_label, "Confirm");
-    lv_obj_center(confirm_label);
-
-    cancel_btn_ = lv_btn_create(footer_row_);
-    lv_obj_set_size(cancel_btn_, LV_PCT(48), LV_SIZE_CONTENT);
-    lv_obj_set_style_margin_left(cancel_btn_, LV_PCT(4), 0);
-    lv_obj_add_flag(cancel_btn_, LV_OBJ_FLAG_EVENT_BUBBLE);
-    lv_obj_add_event_cb(cancel_btn_, OnButtonClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* cancel_label = lv_label_create(cancel_btn_);
-    lv_label_set_text(cancel_label, "Cancel");
-    lv_obj_center(cancel_label);
+    close_btn_ = lv_btn_create(footer_row_);
+    lv_obj_set_size(close_btn_, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_add_flag(close_btn_, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_event_cb(close_btn_, OnButtonClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t* close_label = lv_label_create(close_btn_);
+    lv_label_set_text(close_label, "Close");
+    lv_obj_center(close_label);
 
     backlight_ = Board::GetInstance().GetBacklight();
     codec_ = Board::GetInstance().GetAudioCodec();
@@ -179,7 +170,7 @@ void BrightnessVolumeScreen::SnapshotEntryValues() {
     } else {
         lv_obj_add_flag(volume_row_, LV_OBJ_FLAG_HIDDEN);
         if (focused_ == kFocusVolume) {
-            focused_ = kFocusConfirm;
+            focused_ = kFocusClose;
         }
     }
 
@@ -221,8 +212,7 @@ void BrightnessVolumeScreen::ApplyFocusStyle() {
 
     lv_obj_set_style_bg_opa(brightness_row_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_opa(volume_row_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_opa(confirm_btn_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_opa(cancel_btn_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(close_btn_, LV_OPA_TRANSP, 0);
 
     switch (focused_) {
         case kFocusBrightness:
@@ -233,13 +223,9 @@ void BrightnessVolumeScreen::ApplyFocusStyle() {
             lv_obj_set_style_bg_color(volume_row_, focus_color, 0);
             lv_obj_set_style_bg_opa(volume_row_, focus_opa, 0);
             break;
-        case kFocusConfirm:
-            lv_obj_set_style_bg_color(confirm_btn_, focus_color, 0);
-            lv_obj_set_style_bg_opa(confirm_btn_, focus_opa, 0);
-            break;
-        case kFocusCancel:
-            lv_obj_set_style_bg_color(cancel_btn_, focus_color, 0);
-            lv_obj_set_style_bg_opa(cancel_btn_, focus_opa, 0);
+        case kFocusClose:
+            lv_obj_set_style_bg_color(close_btn_, focus_color, 0);
+            lv_obj_set_style_bg_opa(close_btn_, focus_opa, 0);
             break;
         default:
             break;
@@ -381,10 +367,8 @@ void BrightnessVolumeScreen::HandleAction(SettingsUiAction action, uint8_t step)
             AdjustFocusedValue(-1, step);
             break;
         case SettingsUiAction::kEnter:
-            if (focused_ == kFocusConfirm) {
+            if (focused_ == kFocusClose) {
                 CommitAndClose();
-            } else if (focused_ == kFocusCancel) {
-                CancelAndClose();
             } else {
                 ToggleEditMode();
             }
@@ -438,10 +422,8 @@ void BrightnessVolumeScreen::OnButtonClicked(lv_event_t* event) {
         return;
     }
 
-    if (lv_event_get_target(event) == self->confirm_btn_) {
+    if (lv_event_get_target(event) == self->close_btn_) {
         self->CommitAndClose();
-    } else if (lv_event_get_target(event) == self->cancel_btn_) {
-        self->CancelAndClose();
     }
 }
 

@@ -114,9 +114,9 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
   void OnSettingsScreenClosed(bool confirmed) {
     settings_encoder_map_.Reset();
     if (confirmed) {
-      GetDisplay()->ShowNotification("Settings saved");
+      GetDisplay()->ShowNotification("Settings applied");
     } else {
-      GetDisplay()->ShowNotification("Settings canceled");
+      GetDisplay()->ShowNotification("Settings restored");
     }
   }
 

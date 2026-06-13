@@ -17,7 +17,7 @@ class Backlight;
 class BrightnessVolumeScreen {
 public:
     /**
-     * @brief Callback fired when screen closes; true means confirm/commit, false means cancel.
+     * @brief Callback fired when screen closes; true means applied, false means restored.
      */
     using CloseCallback = std::function<void(bool)>;
 
@@ -40,7 +40,7 @@ public:
     void Hide();
 
     /**
-     * @brief Routes a mapped action into focus/edit/commit/cancel behavior.
+     * @brief Routes a mapped action into focus/edit/close/cancel behavior.
      */
     void HandleAction(SettingsUiAction action, uint8_t step = 1);
 
@@ -63,9 +63,8 @@ private:
     enum FocusIndex : uint8_t {
         kFocusBrightness = 0,
         kFocusVolume = 1,
-        kFocusConfirm = 2,
-        kFocusCancel = 3,
-        kFocusCount = 4,
+        kFocusClose = 2,
+        kFocusCount = 3,
     };
 
     /**
@@ -84,7 +83,7 @@ private:
     static void OnRootLongPressed(lv_event_t* event);
 
     /**
-     * @brief Button event callback handles touch fallback for confirm/cancel.
+     * @brief Button event callback handles touch fallback for close action.
      */
     static void OnButtonClicked(lv_event_t* event);
 
@@ -110,8 +109,7 @@ private:
     lv_obj_t* volume_value_label_ = nullptr;
     lv_obj_t* volume_slider_ = nullptr;
     lv_obj_t* footer_row_ = nullptr;
-    lv_obj_t* confirm_btn_ = nullptr;
-    lv_obj_t* cancel_btn_ = nullptr;
+    lv_obj_t* close_btn_ = nullptr;
 
     Backlight* backlight_ = nullptr;
     AudioCodec* codec_ = nullptr;

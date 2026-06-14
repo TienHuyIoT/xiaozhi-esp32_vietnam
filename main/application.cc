@@ -816,6 +816,17 @@ void Application::SetDeviceState(DeviceState state) {
             // Do nothing
             break;
     }
+
+    // Fire pending media playback when TTS finishes (SPEAKING → IDLE/LISTENING)
+    if (previous_state == kDeviceStateSpeaking &&
+        (state == kDeviceStateIdle || state == kDeviceStateListening) &&
+        !pending_media_url_.empty()) {
+        std::string url   = std::move(pending_media_url_);
+        std::string title = std::move(pending_media_title_);
+        Schedule([this, url, title]() {
+            PlayRadioUrl(url, title);
+        });
+    }
 }
 
 void Application::Reboot() {
@@ -1120,6 +1131,14 @@ bool Application::PlayRadioUrl(const std::string& url, const std::string& statio
     if (!radio_) {
         ESP_LOGW(TAG, "Radio module not available");
         return false;
+    }
+
+    // If TTS is active, queue and play automatically when speaking finishes
+    if (device_state_ == kDeviceStateSpeaking) {
+        ESP_LOGI(TAG, "PlayRadioUrl: deferred (speaking) — queued '%s'", station_name.c_str());
+        pending_media_url_   = url;
+        pending_media_title_ = station_name;
+        return true;
     }
 
     // Stop other media before playing radio URL

@@ -66,17 +66,39 @@ void McpServer::AddCommonTools() {
                 return board.GetDeviceStatusJson();
             });
 
-    AddTool("self.audio_speaker.set_volume", 
+    AddTool("self.audio_speaker.set_volume",
         "Set the volume of the audio speaker. If the current volume is unknown, you must call `self.get_device_status` tool first and then call this tool.",
         PropertyList({
             Property("volume", kPropertyTypeInteger, 0, 100)
-        }), 
+        }),
         [&board](const PropertyList& properties) -> ReturnValue {
             auto codec = board.GetAudioCodec();
             codec->SetOutputVolume(properties["volume"].value<int>());
             return true;
         });
-    
+
+    AddTool("self.audio.play_url",
+        "Phát âm thanh (MP3/AAC) từ một URL trực tiếp.\n"
+        "Dùng tool này sau khi nhận được audio_url từ các tool server (ví dụ: play_story).\n"
+        "Args:\n"
+        "  `url`:   URL trực tiếp tới file audio (MP3 hoặc AAC).\n"
+        "  `title`: Tên hiển thị (tùy chọn).\n"
+        "Return:\n"
+        "  Trạng thái phát.",
+        PropertyList({
+            Property("url",   kPropertyTypeString),
+            Property("title", kPropertyTypeString, std::string(""))
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto url   = properties["url"].value<std::string>();
+            auto title = properties["title"].value<std::string>();
+            auto& app  = Application::GetInstance();
+            if (!app.PlayRadioUrl(url, title)) {
+                return std::string("{\"success\":false,\"message\":\"Failed to play audio URL\"}");
+            }
+            return std::string("{\"success\":true,\"message\":\"Playing audio\"}");
+        });
+
     auto backlight = board.GetBacklight();
     if (backlight) {
         AddTool("self.screen.set_brightness",

@@ -66,8 +66,15 @@ bool SpectrumManager::Start(lv_obj_t* parent) {
         return false;
     }
 
-    // Small delay for LVGL to settle
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // Bail out if Stop() was called concurrently before the task was created
+    if (should_stop_) {
+        if (lvgl_port_lock(1000)) {
+            renderer_->DestroyCanvas();
+            lvgl_port_unlock();
+        }
+        analyzer_->Deinitialize();
+        return false;
+    }
 
     // Spawn the background processing task
     should_stop_ = false;

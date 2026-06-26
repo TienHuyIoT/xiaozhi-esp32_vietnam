@@ -214,6 +214,9 @@ private:
     // OLED spectrum (simple bars, no music UI overlay)
     std::unique_ptr<spectrum::SpectrumManager> oled_spectrum_mgr_;
 
+    std::string pending_media_url_;
+    std::string pending_media_title_;
+
     bool has_server_time_ = false;
     bool aborted_ = false;
     int clock_ticks_ = 0;

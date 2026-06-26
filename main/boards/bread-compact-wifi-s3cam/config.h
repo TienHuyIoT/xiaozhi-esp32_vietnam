@@ -2,6 +2,7 @@
 #define _BOARD_CONFIG_H_
 
 #include <driver/gpio.h>
+#include <driver/ledc.h>
 
 #ifdef CONFIG_SD_CARD_MMC_INTERFACE
 // Define to use 4-bit SDMMC bus width; comment out to use 1-bit bus width
@@ -28,6 +29,14 @@
 #define CARD_SPI_CS_GPIO   GPIO_NUM_46
 #endif // CONFIG_SD_CARD_SPI_INTERFACE
 
+// Media API reachable by the ESP32. Override at build time with
+//   -DMEDIA_SERVER_BASE_URL=\"https://your-production-host\"
+// or via Kconfig. The default below is a development-only LAN address.
+#ifndef MEDIA_SERVER_BASE_URL
+#define MEDIA_SERVER_BASE_URL "http://192.168.100.97:7860"
+#warning "MEDIA_SERVER_BASE_URL is using the default LAN address. Define it explicitly for production builds."
+#endif
+
 #define AUDIO_INPUT_SAMPLE_RATE  16000
 #define AUDIO_OUTPUT_SAMPLE_RATE 24000
 
@@ -53,7 +62,7 @@
 #endif
 
 
-#define BUILTIN_LED_GPIO        GPIO_NUM_48
+#define BUILTIN_LED_GPIO        GPIO_NUM_NC
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 #define TOUCH_BUTTON_GPIO       GPIO_NUM_NC
 #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_NC
@@ -77,7 +86,26 @@
 #define CAMERA_PIN_PWDN GPIO_NUM_NC
 #define CAMERA_PIN_RESET GPIO_NUM_NC
 #define XCLK_FREQ_HZ 20000000
+#define CAMERA_XCLK_LEDC_TIMER LEDC_TIMER_0
+#define CAMERA_XCLK_LEDC_CHANNEL LEDC_CHANNEL_0
 
+#define ARM_SERVO_LEFT_GPIO GPIO_NUM_14
+#define ARM_SERVO_RIGHT_GPIO GPIO_NUM_NC
+#define ARM_SERVO_PWM_FREQ_HZ 50
+// Calibrate these pulse and degree limits to the real SG90 arm linkage.
+#define ARM_SERVO_MIN_PULSE_US 500
+#define ARM_SERVO_MAX_PULSE_US 2500
+#define ARM_SERVO_CENTER_DEGREE 90
+#define ARM_SERVO_MIN_DEGREE 0
+#define ARM_SERVO_MAX_DEGREE 180
+#define ARM_SERVO_PARK_DEGREE 0
+#define ARM_SERVO_LEDC_TIMER LEDC_TIMER_2
+#define ARM_SERVO_LEDC_DUTY_RESOLUTION LEDC_TIMER_14_BIT
+#define ARM_SERVO_LEFT_LEDC_CHANNEL LEDC_CHANNEL_1
+#define ARM_SERVO_RIGHT_LEDC_CHANNEL LEDC_CHANNEL_2
+#define ARM_SERVO_UPDATE_INTERVAL_MS 20
+#define ARM_SERVO_MAX_STEP_DEGREE 4
+#define ARM_SERVO_IDLE_RELEASE_MS 1500
 
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_NC
 #define DISPLAY_MOSI_PIN      GPIO_NUM_20
@@ -328,6 +356,6 @@
 
 
 // A MCP Test: Control a lamp
-#define LAMP_GPIO GPIO_NUM_14
+#define LAMP_GPIO GPIO_NUM_NC
 
 #endif // _BOARD_CONFIG_H_

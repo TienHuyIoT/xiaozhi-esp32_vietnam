@@ -14,6 +14,7 @@
 
 #include <string>
 #include <chrono>
+#include <cstdint>
 
 // Forward declarations for weather structures
 struct IdleCardInfo;
@@ -56,6 +57,12 @@ public:
      */
     virtual void SetMediaOverlayActive(bool active) {}
 
+    // Preview image control: keep visible (no auto-hide) during AI analysis,
+    // and clear when entering listening mode.
+    virtual void SetCameraPreviewRgb565(const uint8_t* data, int src_w, int src_h, int src_stride, bool rotate_180) {}
+    virtual void KeepPreviewVisible(bool keep) {}
+    virtual void ClearPreviewImage() {}
+
     // For rotation display
     virtual bool SetRotation(int rotation_degree, bool save_setting) { return false; }
     
@@ -83,16 +90,20 @@ protected:
 class DisplayLockGuard {
 public:
     DisplayLockGuard(Display *display) : display_(display) {
-        if (!display_->Lock(30000)) {
+        locked_ = display_ != nullptr && display_->Lock(30000);
+        if (!locked_) {
             ESP_LOGE("Display", "Failed to lock display");
         }
     }
     ~DisplayLockGuard() {
-        display_->Unlock();
+        if (locked_) {
+            display_->Unlock();
+        }
     }
 
 private:
     Display *display_;
+    bool locked_ = false;
 };
 
 class NoDisplay : public Display {

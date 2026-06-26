@@ -12,7 +12,7 @@
 #include <atomic>
 #include <memory>
 
-#define PREVIEW_IMAGE_DURATION_MS 5000
+#define PREVIEW_IMAGE_DURATION_MS 10000
 
 // Theme color structure
 struct ThemeColors {
@@ -45,6 +45,7 @@ protected:
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
+    std::atomic_bool preview_keep_visible_{false};  // Disable auto-hide timer for camera preview during AI analysis
 
     // Weather UI component
     std::unique_ptr<WeatherUI> weather_ui_;
@@ -64,12 +65,15 @@ protected:
 protected:
     // Add protected constructor
     LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width, int height);
-    
+
 public:
     ~LcdDisplay();
     virtual void SetEmotion(const char* emotion) override;
-    virtual void SetChatMessage(const char* role, const char* content) override; 
+    virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
+    virtual void SetCameraPreviewRgb565(const uint8_t* data, int src_w, int src_h, int src_stride, bool rotate_180) override;
+    virtual void KeepPreviewVisible(bool keep) override;
+    virtual void ClearPreviewImage() override;
 
     // Theme switching
     virtual void SetTheme(Theme* theme) override;

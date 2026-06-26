@@ -64,6 +64,16 @@ public:
 
 #define TAG "Esp32Camera"
 
+static void LogCameraHeapStats(const char* stage) {
+    ESP_LOGD(TAG,
+             "Heap %s: DMA free=%u largest=%u, PSRAM free=%u largest=%u",
+             stage,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+}
+
 #if defined(CONFIG_CAMERA_SENSOR_SWAP_PIXEL_BYTE_ORDER) || defined(CONFIG_XIAOZHI_ENABLE_CAMERA_ENDIANNESS_SWAP)
 #warning \
     "CAMERA_SENSOR_SWAP_PIXEL_BYTE_ORDER or CONFIG_XIAOZHI_ENABLE_CAMERA_ENDIANNESS_SWAP is enabled, which may cause image corruption in YUV422 format!"
@@ -481,6 +491,7 @@ void Esp32Camera::DeinitHardware() {
     }
 
     ESP_LOGI(TAG, "Deinitializing camera hardware...");
+    LogCameraHeapStats("before camera deinit");
 
     if (use_legacy_) {
         if (streaming_on_) {
@@ -517,6 +528,7 @@ void Esp32Camera::DeinitHardware() {
     }
 
     initialized_ = false;
+    LogCameraHeapStats("after camera deinit");
 }
 
 void Esp32Camera::StartDeinitTimer() {
@@ -551,12 +563,16 @@ bool Esp32Camera::Capture() {
     }
 
     CameraActivityGuard guard(this);
+    LogCameraHeapStats("before camera capture");
 
     if (!InitHardware()) {
+        LogCameraHeapStats("camera init failed");
         return false;
     }
+    LogCameraHeapStats("after camera init");
 
     if (!streaming_on_) {
+        LogCameraHeapStats("camera not streaming");
         return false;
     }
 
@@ -588,6 +604,7 @@ bool Esp32Camera::Capture() {
 
         if (!capture_success) {
             ESP_LOGE(TAG, "Camera capture failed after %d attempts", max_retries);
+            LogCameraHeapStats("capture failed");
             return false;
         }
 
@@ -621,28 +638,10 @@ bool Esp32Camera::Capture() {
                 memcpy(encode_buf_, current_fb_->buf, data_size);
             }
 
-            // Allocate separate buffer for preview display
-            uint8_t *preview_data = (uint8_t *)heap_caps_malloc(data_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (preview_data != nullptr) {
-                memcpy(preview_data, encode_buf_, data_size);
-
-                // Rotate 180 degrees in-place for correct display orientation
-                uint16_t *p = (uint16_t *)preview_data;
-                uint16_t *q = p + pixel_count - 1;
-                while (p < q) {
-                    uint16_t tmp = *p;
-                    *p = *q;
-                    *q = tmp;
-                    ++p;
-                    --q;
-                }
-
-                auto display = dynamic_cast<LvglDisplay *>(Board::GetInstance().GetDisplay());
-                if (display != nullptr) {
-                    display->SetPreviewImage(std::make_unique<LvglAllocatedImage>(preview_data, data_size, current_fb_->width, current_fb_->height, current_fb_->width * 2, LV_COLOR_FORMAT_RGB565));
-                } else {
-                    heap_caps_free(preview_data);
-                }
+            auto display = Board::GetInstance().GetDisplay();
+            if (display != nullptr) {
+                display->SetCameraPreviewRgb565(encode_buf_, current_fb_->width, current_fb_->height,
+                                                current_fb_->width * static_cast<int>(sizeof(uint16_t)), true);
             }
         } else if (current_fb_->format == PIXFORMAT_JPEG) {
             // JPEG format preview usually requires decoding, skip preview display for now, just log
@@ -651,6 +650,7 @@ bool Esp32Camera::Capture() {
 
         ESP_LOGI(TAG, "Captured frame: %dx%d, len=%zu, format=%d",
                  current_fb_->width, current_fb_->height, current_fb_->len, current_fb_->format);
+        LogCameraHeapStats("after capture");
 
         return true;
     }
@@ -1072,6 +1072,7 @@ bool Esp32Camera::Capture() {
         auto image = std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h, stride, color_format);
         display->SetPreviewImage(std::move(image));
     }
+    LogCameraHeapStats("after capture");
     return true;
 }
 
@@ -1331,6 +1332,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
 
         if (!saw_terminator || total_sent == 0) {
             ESP_LOGE(TAG, "JPEG encoder failed or produced empty output");
+            http->Close();
             throw std::runtime_error("Failed to encode image to JPEG");
         }
 
@@ -1343,6 +1345,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
 
         if (http->GetStatusCode() != 200) {
             ESP_LOGE(TAG, "Failed to upload photo, status code: %d", http->GetStatusCode());
+            http->Close();
             throw std::runtime_error("Failed to upload photo");
         }
 
@@ -1352,6 +1355,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
         size_t remain_stack_size = uxTaskGetStackHighWaterMark(nullptr);
         ESP_LOGI(TAG, "Explain image size=%dx%d, compressed size=%d, remain stack size=%d, question=%s\n%s",
                  current_fb_->width, current_fb_->height, (int)total_sent, (int)remain_stack_size, question.c_str(), result.c_str());
+        LogCameraHeapStats("after explain");
         return result;
     }
 
@@ -1371,7 +1375,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
         uint16_t w = frame_.width ? frame_.width : 320;
         uint16_t h = frame_.height ? frame_.height : 240;
         v4l2_pix_fmt_t enc_fmt = frame_.format;
-        image_to_jpeg_cb(
+        bool ok = image_to_jpeg_cb(
             frame_.data, frame_.len, w, h, enc_fmt, 80,
             [](void* arg, size_t index, const void* data, size_t len) -> size_t {
                 auto jpeg_queue = (QueueHandle_t)arg;
@@ -1391,6 +1395,10 @@ std::string Esp32Camera::Explain(const std::string& question) {
                 return len;
             },
             jpeg_queue);
+        if (!ok) {
+            JpegChunk chunk = {.data = nullptr, .len = 0};
+            xQueueSend(jpeg_queue, &chunk, portMAX_DELAY);
+        }
     });
 
     auto network = Board::GetInstance().GetNetwork();
@@ -1443,6 +1451,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
 
     // 第三块：JPEG数据
     size_t total_sent = 0;
+    bool saw_terminator = false;
     while (true) {
         JpegChunk chunk;
         if (xQueueReceive(jpeg_queue, &chunk, portMAX_DELAY) != pdPASS) {
@@ -1450,6 +1459,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
             break;
         }
         if (chunk.data == nullptr) {
+            saw_terminator = true;
             break;  // The last chunk
         }
         http->Write((const char*)chunk.data, chunk.len);
@@ -1460,6 +1470,12 @@ std::string Esp32Camera::Explain(const std::string& question) {
     encoder_thread_.join();
     // 清理队列
     vQueueDelete(jpeg_queue);
+
+    if (!saw_terminator || total_sent == 0) {
+        ESP_LOGE(TAG, "JPEG encoder failed or produced empty output");
+        http->Close();
+        throw std::runtime_error("Failed to encode image to JPEG");
+    }
 
     {
         // 第四块：multipart尾部
@@ -1472,6 +1488,7 @@ std::string Esp32Camera::Explain(const std::string& question) {
 
     if (http->GetStatusCode() != 200) {
         ESP_LOGE(TAG, "Failed to upload photo, status code: %d", http->GetStatusCode());
+        http->Close();
         throw std::runtime_error("Failed to upload photo");
     }
 
@@ -1482,5 +1499,6 @@ std::string Esp32Camera::Explain(const std::string& question) {
     size_t remain_stack_size = uxTaskGetStackHighWaterMark(nullptr);
     ESP_LOGI(TAG, "Explain image size=%d bytes, compressed size=%d, remain stack size=%d, question=%s\n%s",
              (int)frame_.len, (int)total_sent, (int)remain_stack_size, question.c_str(), result.c_str());
+    LogCameraHeapStats("after explain");
     return result;
 }

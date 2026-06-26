@@ -956,17 +956,27 @@ void LcdDisplay::SetupUI() {
     lv_obj_center(emoji_image_);
     lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
 
-    preview_image_ = lv_image_create(content_);
-    lv_obj_set_size(preview_image_, width_ / 2, height_ / 2);
+    preview_image_ = lv_image_create(screen);
+    lv_obj_set_size(preview_image_, width_, height_);
     lv_obj_align(preview_image_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
 
     chat_message_label_ = lv_label_create(content_);
+    lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_FLOATING);
     lv_label_set_text(chat_message_label_, "");
     lv_obj_set_width(chat_message_label_, width_ * 0.9); // Limit width to 90% of screen width
     lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_WRAP); // Set to word-wrap mode
     lv_obj_set_style_text_align(chat_message_label_, LV_TEXT_ALIGN_CENTER, 0); // Set text alignment to center
     lv_obj_set_style_text_color(chat_message_label_, lvgl_theme->text_color(), 0);
+
+    // Set background properties matching the status bar style but transparent by default
+    lv_obj_set_style_bg_color(chat_message_label_, lvgl_theme->background_color(), 0);
+    lv_obj_set_style_bg_opa(chat_message_label_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(chat_message_label_, lvgl_theme->spacing(2), 0);
+    lv_obj_set_style_pad_hor(chat_message_label_, lvgl_theme->spacing(4), 0);
+    lv_obj_set_style_pad_ver(chat_message_label_, lvgl_theme->spacing(2), 0);
+
+    lv_obj_align(chat_message_label_, LV_ALIGN_BOTTOM_MID, 0, -lvgl_theme->spacing(4));
 
     /* Status bar */
     network_label_ = lv_label_create(status_bar_);
@@ -1033,32 +1043,88 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
 
     if (image == nullptr) {
         esp_timer_stop(preview_timer_);
-        lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
         preview_image_cached_.reset();
+
+        // Restore chat message background opacity
+        if (chat_message_label_ != nullptr) {
+            lv_obj_set_style_bg_opa(chat_message_label_, LV_OPA_TRANSP, 0);
+        }
+
+        // Restore container background opacity
+        auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+        if (lvgl_theme != nullptr) {
+            if (lvgl_theme->background_image() != nullptr) {
+                lv_obj_set_style_bg_image_opa(container_, LV_OPA_COVER, 0);
+            } else {
+                lv_obj_set_style_bg_opa(container_, LV_OPA_COVER, 0);
+            }
+        }
+        
+        // Restore emoji state
+        if (emoji_box_ != nullptr) {
+            lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        }
         if (gif_controller_) {
             gif_controller_->Start();
+            if (emoji_image_ != nullptr) {
+                lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+            }
+        } else {
+            const void* src = emoji_image_ != nullptr ? lv_image_get_src(emoji_image_) : nullptr;
+            if (src != nullptr) {
+                lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+            } else if (emoji_label_ != nullptr) {
+                lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+            }
         }
         return;
     }
 
     preview_image_cached_ = std::move(image);
     auto img_dsc = preview_image_cached_->image_dsc();
-    // Set the image source and display the preview image
+    // Set the image source
     lv_image_set_src(preview_image_, img_dsc);
-    if (img_dsc->header.w > 0 && img_dsc->header.h > 0) {
-        // zoom factor 0.5
-        lv_image_set_scale(preview_image_, 128 * width_ / img_dsc->header.w);
-    }
 
-    // Hide emoji_box_
+    // Scale to full screen
+    if (img_dsc->header.w > 0 && img_dsc->header.h > 0) {
+        lv_image_set_scale(preview_image_, 256 * width_ / img_dsc->header.w);
+    }
+    lv_obj_set_size(preview_image_, width_, height_);
+    lv_obj_align(preview_image_, LV_ALIGN_CENTER, 0, 0);
+
+    // Stop emoji GIF
     if (gif_controller_) {
         gif_controller_->Stop();
     }
-    lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    
+    // Hide emoji box
+    if (emoji_box_ != nullptr) {
+        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Move preview image to background so it renders under status bar and chat bubble
+    lv_obj_move_background(preview_image_);
+
+    // Make container background transparent so preview image is visible behind it
+    if (container_ != nullptr) {
+        lv_obj_set_style_bg_opa(container_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_image_opa(container_, LV_OPA_TRANSP, 0);
+    }
+
+    // Add translucent background to chat message label to enhance readability
+    if (chat_message_label_ != nullptr) {
+        lv_obj_set_style_bg_opa(chat_message_label_, LV_OPA_50, 0);
+    }
+    
+    // Show preview image
     lv_obj_remove_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
+
     esp_timer_stop(preview_timer_);
-    ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PREVIEW_IMAGE_DURATION_MS * 1000));
+    // Only start auto-hide timer if preview_keep_visible_ is false
+    if (!preview_keep_visible_.load()) {
+        ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PREVIEW_IMAGE_DURATION_MS * 1000));
+    }
 }
 
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {
@@ -1069,6 +1135,123 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
     lv_label_set_text(chat_message_label_, content);
 }
 #endif
+
+void LcdDisplay::SetCameraPreviewRgb565(const uint8_t* data, int src_w, int src_h, int src_stride, bool rotate_180) {
+    if (data == nullptr || src_w <= 0 || src_h <= 0 || src_stride < src_w * static_cast<int>(sizeof(uint16_t))) {
+        ESP_LOGE(TAG, "Invalid camera preview input: data=%p, size=%dx%d, stride=%d",
+                 data, src_w, src_h, src_stride);
+        return;
+    }
+
+    const int dst_w = display_ != nullptr ? lv_display_get_horizontal_resolution(display_) : width_;
+    const int dst_h = display_ != nullptr ? lv_display_get_vertical_resolution(display_) : height_;
+    if (dst_w <= 0 || dst_h <= 0) {
+        ESP_LOGE(TAG, "Invalid display size for camera preview: %dx%d", dst_w, dst_h);
+        return;
+    }
+
+    const size_t dst_size = static_cast<size_t>(dst_w) * dst_h * sizeof(uint16_t);
+    uint8_t* preview_data = static_cast<uint8_t*>(heap_caps_malloc(dst_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (preview_data == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate %u bytes for camera preview", static_cast<unsigned>(dst_size));
+        return;
+    }
+
+    int crop_x = 0;
+    int crop_y = 0;
+    int visible_w = src_w;
+    int visible_h = src_h;
+    if (static_cast<int64_t>(dst_w) * src_h > static_cast<int64_t>(dst_h) * src_w) {
+        visible_h = static_cast<int>(static_cast<int64_t>(dst_h) * src_w / dst_w);
+        visible_h = std::max(1, std::min(visible_h, src_h));
+        crop_y = (src_h - visible_h) / 2;
+    } else {
+        visible_w = static_cast<int>(static_cast<int64_t>(dst_w) * src_h / dst_h);
+        visible_w = std::max(1, std::min(visible_w, src_w));
+        crop_x = (src_w - visible_w) / 2;
+    }
+
+    auto* dst = reinterpret_cast<uint16_t*>(preview_data);
+    for (int y = 0; y < dst_h; ++y) {
+        int src_y = crop_y + static_cast<int>(static_cast<int64_t>(y) * visible_h / dst_h);
+        src_y = std::min(src_y, src_h - 1);
+        if (rotate_180) {
+            src_y = src_h - 1 - src_y;
+        }
+        const auto* src_row = reinterpret_cast<const uint16_t*>(data + static_cast<size_t>(src_y) * src_stride);
+        for (int x = 0; x < dst_w; ++x) {
+            int src_x = crop_x + static_cast<int>(static_cast<int64_t>(x) * visible_w / dst_w);
+            src_x = std::min(src_x, src_w - 1);
+            if (rotate_180) {
+                src_x = src_w - 1 - src_x;
+            }
+            dst[static_cast<size_t>(y) * dst_w + x] = src_row[src_x];
+        }
+    }
+
+    std::unique_ptr<LvglImage> preview_image;
+    try {
+        preview_image = std::make_unique<LvglAllocatedImage>(
+            preview_data, dst_size, dst_w, dst_h, dst_w * static_cast<int>(sizeof(uint16_t)), LV_COLOR_FORMAT_RGB565);
+    } catch (...) {
+        heap_caps_free(preview_data);
+        ESP_LOGE(TAG, "Failed to create camera preview image");
+        return;
+    }
+
+    DisplayLockGuard lock(this);
+    if (preview_image_ == nullptr) {
+        ESP_LOGE(TAG, "Preview image is not initialized");
+        return;
+    }
+
+    preview_image_cached_ = std::move(preview_image);
+    lv_image_set_src(preview_image_, preview_image_cached_->image_dsc());
+
+    // Scale to full screen
+    lv_image_set_scale(preview_image_, 256 * width_ / dst_w);
+    lv_obj_set_size(preview_image_, width_, height_);
+    lv_obj_align(preview_image_, LV_ALIGN_CENTER, 0, 0);
+
+    if (gif_controller_) {
+        gif_controller_->Stop();
+    }
+    
+    // Hide emoji box
+    if (emoji_box_ != nullptr) {
+        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Move preview image to background
+    lv_obj_move_background(preview_image_);
+
+    // Make container background transparent so preview is visible
+    if (container_ != nullptr) {
+        lv_obj_set_style_bg_opa(container_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_image_opa(container_, LV_OPA_TRANSP, 0);
+    }
+
+    // Add translucent background to chat message label to enhance readability
+    if (chat_message_label_ != nullptr) {
+        lv_obj_set_style_bg_opa(chat_message_label_, LV_OPA_50, 0);
+    }
+
+    lv_obj_remove_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
+
+    esp_timer_stop(preview_timer_);
+    if (!preview_keep_visible_.load()) {
+        ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PREVIEW_IMAGE_DURATION_MS * 1000));
+    }
+}
+
+void LcdDisplay::KeepPreviewVisible(bool keep) {
+    preview_keep_visible_.store(keep);
+}
+
+void LcdDisplay::ClearPreviewImage() {
+    preview_keep_visible_.store(false);
+    SetPreviewImage(nullptr);
+}
 
 void LcdDisplay::SetEmotion(const char* emotion) {
     // Stop any running GIF animation
@@ -1259,6 +1442,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
     // Simple UI mode - just update the main chat message
     if (chat_message_label_ != nullptr) {
         lv_obj_set_style_text_color(chat_message_label_, lvgl_theme->text_color(), 0);
+        lv_obj_set_style_bg_color(chat_message_label_, lvgl_theme->background_color(), 0);
     }
     
     if (emoji_label_ != nullptr) {

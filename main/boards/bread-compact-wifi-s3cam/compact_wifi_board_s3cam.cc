@@ -5,11 +5,13 @@
 #include "application.h"
 #include "button.h"
 #include "config.h"
+#include "device_state_event.h"
 #include "mcp_server.h"
 #include "lamp_controller.h"
 #include "led/single_led.h"
 #include "esp32_camera.h"
 #include "esp_camera.h"
+#include "sd_media_manager.h"
 
 #include <wifi_station.h>
 #include <esp_log.h>
@@ -17,7 +19,14 @@
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
+#include <esp_timer.h>
+#include <driver/ledc.h>
 #include <driver/spi_common.h>
+#include <cJSON.h>
+
+#include <cstddef>
+#include <mutex>
+#include <string>
 
 #ifdef CONFIG_SD_CARD_MMC_INTERFACE
 #include "sdmmc.h"
@@ -68,12 +77,685 @@ static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
  
 #define TAG "CompactWifiBoardS3Cam"
 
+namespace {
+constexpr int kLcdDrawBufferLines = 20;
+constexpr ledc_mode_t kArmServoSpeedMode = LEDC_LOW_SPEED_MODE;
+
+struct ArmServoFrame {
+    int left_degree;
+    int right_degree;
+    int hold_ticks;
+};
+
+constexpr ArmServoFrame kParkFrame = {ARM_SERVO_PARK_DEGREE, ARM_SERVO_PARK_DEGREE, 0};
+constexpr ArmServoFrame kNeutralMotion[] = {kParkFrame};
+constexpr ArmServoFrame kHappyMotion[] = {{160, 20, 3}, {40, 140, 3}, {160, 20, 3}, {90, 90, 0}};
+constexpr ArmServoFrame kLaughingMotion[] = {{170, 10, 2}, {120, 60, 2}, {170, 10, 2}, {120, 60, 2}, {170, 10, 0}};
+constexpr ArmServoFrame kWiggleMotion[] = {{160, 20, 2}, {30, 150, 2}, {160, 20, 2}, {30, 150, 2}, {90, 90, 0}};
+constexpr ArmServoFrame kSadMotion[] = {{120, 60, 5}, {10, 170, 5}, {30, 150, 4}, {0, 180, 0}};
+constexpr ArmServoFrame kCryingMotion[] = {{180, 0, 2}, {140, 40, 2}, {180, 0, 2}, {140, 40, 2}, {180, 0, 4}};
+constexpr ArmServoFrame kAngryMotion[] = {{180, 0, 2}, {10, 170, 2}, {180, 0, 2}, {10, 170, 2}, {90, 90, 0}};
+constexpr ArmServoFrame kEmbarrassedMotion[] = {{140, 40, 10}, {90, 90, 5}};
+constexpr ArmServoFrame kSurprisedMotion[] = {{180, 0, 6}};
+constexpr ArmServoFrame kShockedMotion[] = {{180, 0, 10}};
+constexpr ArmServoFrame kThinkingMotion[] = {{130, 50, 5}, {110, 70, 3}, {130, 50, 3}, {110, 70, 0}};
+constexpr ArmServoFrame kWaveMotion[] = {{180, 0, 3}, {60, 120, 3}, {180, 0, 3}, {60, 120, 3}, {90, 90, 0}};
+constexpr ArmServoFrame kRelaxedMotion[] = {{90, 90, 6}, {30, 150, 6}};
+constexpr ArmServoFrame kSleepyMotion[] = {{60, 120, 8}, {10, 170, 8}};
+constexpr ArmServoFrame kSpeakingMotion[] = {
+    {20, 160, 4},
+    {165, 15, 4},
+    {70, 110, 3},
+    {180, 0, 4},
+    {45, 135, 3},
+};
+constexpr ArmServoFrame kManualParkPose[] = {kParkFrame};
+constexpr ArmServoFrame kManualLeftUpPose[] = {{180, 0, 0}};
+constexpr ArmServoFrame kManualLeftDownPose[] = {{0, 0, 0}};
+constexpr ArmServoFrame kManualBothUpPose[] = {{180, 180, 0}};
+constexpr ArmServoFrame kManualBothDownPose[] = {{0, 0, 0}};
+constexpr ArmServoFrame kManualWavePose[] = {{ARM_SERVO_PARK_DEGREE, ARM_SERVO_PARK_DEGREE, 2}, {180, 180, 4}, kParkFrame};
+
+template <size_t N>
+constexpr size_t FrameCount(const ArmServoFrame (&)[N]) {
+    return N;
+}
+
+struct EmotionMotion {
+    const char* emotion;
+    const ArmServoFrame* frames;
+    size_t frame_count;
+};
+
+constexpr EmotionMotion kEmotionMotions[] = {
+    {"neutral", kNeutralMotion, FrameCount(kNeutralMotion)},
+    {"happy", kHappyMotion, FrameCount(kHappyMotion)},
+    {"loving", kHappyMotion, FrameCount(kHappyMotion)},
+    {"laughing", kLaughingMotion, FrameCount(kLaughingMotion)},
+    {"funny", kWiggleMotion, FrameCount(kWiggleMotion)},
+    {"silly", kWiggleMotion, FrameCount(kWiggleMotion)},
+    {"sad", kSadMotion, FrameCount(kSadMotion)},
+    {"crying", kCryingMotion, FrameCount(kCryingMotion)},
+    {"angry", kAngryMotion, FrameCount(kAngryMotion)},
+    {"embarrassed", kEmbarrassedMotion, FrameCount(kEmbarrassedMotion)},
+    {"surprised", kSurprisedMotion, FrameCount(kSurprisedMotion)},
+    {"shocked", kShockedMotion, FrameCount(kShockedMotion)},
+    {"thinking", kThinkingMotion, FrameCount(kThinkingMotion)},
+    {"confused", kThinkingMotion, FrameCount(kThinkingMotion)},
+    {"winking", kWaveMotion, FrameCount(kWaveMotion)},
+    {"kissy", kWaveMotion, FrameCount(kWaveMotion)},
+    {"delicious", kWaveMotion, FrameCount(kWaveMotion)},
+    {"confident", kWaveMotion, FrameCount(kWaveMotion)},
+    {"cool", kWaveMotion, FrameCount(kWaveMotion)},
+    {"relaxed", kRelaxedMotion, FrameCount(kRelaxedMotion)},
+    {"sleepy", kSleepyMotion, FrameCount(kSleepyMotion)},
+};
+
+constexpr EmotionMotion kManualArmPoses[] = {
+    {"neutral", kNeutralMotion, FrameCount(kNeutralMotion)},
+    {"park", kManualParkPose, FrameCount(kManualParkPose)},
+    {"left_up", kManualLeftUpPose, FrameCount(kManualLeftUpPose)},
+    {"left_down", kManualLeftDownPose, FrameCount(kManualLeftDownPose)},
+    {"both_up", kManualBothUpPose, FrameCount(kManualBothUpPose)},
+    {"both_down", kManualBothDownPose, FrameCount(kManualBothDownPose)},
+    {"wave", kManualWavePose, FrameCount(kManualWavePose)},
+};
+
+enum class TimerState {
+    kIdle,
+    kRunning,
+    kIdleRelease,
+};
+
+enum class ArmTarget {
+    kLeft,
+    kRight,
+    kBoth,
+};
+
+enum class MotionMode {
+    kNone,
+    kEmotion,
+    kManual,
+    kSpeakingLoop,
+};
+
+class ArmServoController {
+public:
+    ArmServoController() {
+        InitializeLedc();
+        CreateTimer();
+    }
+
+    ~ArmServoController() {
+        if (timer_ != nullptr) {
+            esp_timer_stop(timer_);
+            esp_timer_delete(timer_);
+        }
+        StopServo(ARM_SERVO_LEFT_GPIO, ARM_SERVO_LEFT_LEDC_CHANNEL);
+        StopServo(ARM_SERVO_RIGHT_GPIO, ARM_SERVO_RIGHT_LEDC_CHANNEL);
+    }
+
+    void SetEmotion(const char* emotion) {
+        const char* requested_emotion = (emotion != nullptr && emotion[0] != '\0') ? emotion : "neutral";
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (last_emotion_ == requested_emotion && PositionKnown() &&
+                timer_state_ == TimerState::kRunning && motion_mode_ == MotionMode::kEmotion) {
+            return;
+        }
+        last_emotion_ = requested_emotion;
+
+        const EmotionMotion& motion = FindMotion(requested_emotion);
+        StartMotion(motion.frames, motion.frame_count, MotionMode::kEmotion);
+
+        const ArmServoFrame& final_frame = motion.frames[motion.frame_count - 1];
+        ESP_LOGI(TAG, "Arm servo emotion '%s' -> left=%d right=%d",
+                 requested_emotion, final_frame.left_degree, final_frame.right_degree);
+    }
+
+    void SetSpeakingActive(bool active) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (speaking_active_ == active) {
+            return;
+        }
+
+        speaking_active_ = active;
+        last_emotion_.clear();
+        if (speaking_active_) {
+            StartSpeakingLoop();
+            ESP_LOGI(TAG, "Arm servo speaking loop started");
+            return;
+        }
+
+        if (timer_state_ == TimerState::kRunning && motion_mode_ == MotionMode::kSpeakingLoop) {
+            StartMotion(kNeutralMotion, FrameCount(kNeutralMotion), MotionMode::kEmotion);
+        }
+        ESP_LOGI(TAG, "Arm servo speaking loop stopped");
+    }
+
+    void SetManualAngle(const std::string& arm, int degree) {
+        const ArmTarget target = ParseArmTarget(arm);
+        const int clamped_degree = ClampDegree(degree);
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        StopTimer();
+        ClearMotionState();
+        last_emotion_.clear();
+
+        bool wrote_servo = false;
+        if (target == ArmTarget::kLeft || target == ArmTarget::kBoth) {
+            EnsureArmConfigured("left", ARM_SERVO_LEFT_GPIO);
+            current_left_degree_ = clamped_degree;
+            target_left_degree_ = clamped_degree;
+            left_position_known_ = true;
+            WriteServo(ARM_SERVO_LEFT_LEDC_CHANNEL, current_left_degree_);
+            wrote_servo = true;
+        }
+        if (target == ArmTarget::kRight || target == ArmTarget::kBoth) {
+            if (ARM_SERVO_RIGHT_GPIO == GPIO_NUM_NC) {
+                if (target == ArmTarget::kRight) {
+                    throw std::runtime_error("Right arm servo is not configured");
+                }
+            } else {
+                current_right_degree_ = clamped_degree;
+                target_right_degree_ = clamped_degree;
+                right_position_known_ = true;
+                WriteServo(ARM_SERVO_RIGHT_LEDC_CHANNEL, current_right_degree_);
+                wrote_servo = true;
+            }
+        }
+        if (!wrote_servo) {
+            throw std::runtime_error("No arm servo is configured");
+        }
+
+        if (speaking_active_) {
+            StartSpeakingLoop();
+        } else {
+            StartIdleRelease(false);
+        }
+        ESP_LOGI(TAG, "Manual arm angle: arm=%s degree=%d", arm.c_str(), clamped_degree);
+    }
+
+    void SetManualPose(const std::string& pose) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_emotion_.clear();
+
+        const EmotionMotion& motion = FindManualPose(pose);
+        StartMotion(motion.frames, motion.frame_count, MotionMode::kManual);
+        ESP_LOGI(TAG, "Manual arm pose: %s", pose.c_str());
+    }
+
+    void Release() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_emotion_.clear();
+        StopTimer();
+        ClearMotionState();
+        FinishIdleRelease();
+        ESP_LOGI(TAG, "Manual arm release");
+    }
+
+    std::string GetStatusJson() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cJSON* root = cJSON_CreateObject();
+        cJSON_AddNumberToObject(root, "left_gpio", static_cast<int>(ARM_SERVO_LEFT_GPIO));
+        cJSON_AddNumberToObject(root, "right_gpio", static_cast<int>(ARM_SERVO_RIGHT_GPIO));
+        cJSON_AddBoolToObject(root, "left_configured", ARM_SERVO_LEFT_GPIO != GPIO_NUM_NC);
+        cJSON_AddBoolToObject(root, "right_configured", ARM_SERVO_RIGHT_GPIO != GPIO_NUM_NC);
+        cJSON_AddBoolToObject(root, "position_known", PositionKnown());
+        cJSON_AddBoolToObject(root, "left_position_known", left_position_known_);
+        cJSON_AddBoolToObject(root, "right_position_known", right_position_known_);
+        cJSON_AddStringToObject(root, "timer_state", TimerStateName(timer_state_));
+        cJSON_AddStringToObject(root, "motion_mode", MotionModeName(motion_mode_));
+        cJSON_AddBoolToObject(root, "speaking_active", speaking_active_);
+        cJSON_AddNumberToObject(root, "left_degree", current_left_degree_);
+        cJSON_AddNumberToObject(root, "right_degree", current_right_degree_);
+        cJSON_AddStringToObject(root, "last_emotion", last_emotion_.c_str());
+
+        char* json = cJSON_PrintUnformatted(root);
+        std::string result = json ? json : "{}";
+        if (json) {
+            cJSON_free(json);
+        }
+        cJSON_Delete(root);
+        return result;
+    }
+
+private:
+    void InitializeLedc() {
+        if (ARM_SERVO_LEFT_GPIO == GPIO_NUM_NC && ARM_SERVO_RIGHT_GPIO == GPIO_NUM_NC) {
+            ESP_LOGW(TAG, "Arm servo disabled: no GPIO configured");
+            return;
+        }
+        ESP_LOGI(TAG, "Arm servo PWM: left_gpio=%d left_channel=%d right_gpio=%d right_channel=%d timer=%d freq=%d",
+                 static_cast<int>(ARM_SERVO_LEFT_GPIO), static_cast<int>(ARM_SERVO_LEFT_LEDC_CHANNEL),
+                 static_cast<int>(ARM_SERVO_RIGHT_GPIO), static_cast<int>(ARM_SERVO_RIGHT_LEDC_CHANNEL),
+                 static_cast<int>(ARM_SERVO_LEDC_TIMER), ARM_SERVO_PWM_FREQ_HZ);
+        const ledc_timer_config_t servo_timer = {
+            .speed_mode = kArmServoSpeedMode,
+            .duty_resolution = ARM_SERVO_LEDC_DUTY_RESOLUTION,
+            .timer_num = ARM_SERVO_LEDC_TIMER,
+            .freq_hz = ARM_SERVO_PWM_FREQ_HZ,
+            .clk_cfg = LEDC_AUTO_CLK,
+            .deconfigure = false
+        };
+        ESP_ERROR_CHECK(ledc_timer_config(&servo_timer));
+
+        ConfigureChannel(ARM_SERVO_LEFT_GPIO, ARM_SERVO_LEFT_LEDC_CHANNEL);
+        ConfigureChannel(ARM_SERVO_RIGHT_GPIO, ARM_SERVO_RIGHT_LEDC_CHANNEL);
+    }
+
+    void ConfigureChannel(gpio_num_t gpio, ledc_channel_t channel) {
+        if (gpio == GPIO_NUM_NC) {
+            return;
+        }
+        const ledc_channel_config_t servo_channel = {
+            .gpio_num = gpio,
+            .speed_mode = kArmServoSpeedMode,
+            .channel = channel,
+            .intr_type = LEDC_INTR_DISABLE,
+            .timer_sel = ARM_SERVO_LEDC_TIMER,
+            .duty = 0,
+            .hpoint = ServoHpoint(channel),
+            .flags = {
+                .output_invert = 0,
+            }
+        };
+        ESP_ERROR_CHECK(ledc_channel_config(&servo_channel));
+    }
+
+    void CreateTimer() {
+        const esp_timer_create_args_t timer_args = {
+            .callback = [](void* arg) {
+                static_cast<ArmServoController*>(arg)->OnTimer();
+            },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "arm_servo_timer",
+            .skip_unhandled_events = true,
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer_));
+    }
+
+    int ServoHpoint(ledc_channel_t channel) const {
+        if (ARM_SERVO_LEFT_GPIO != GPIO_NUM_NC &&
+                ARM_SERVO_RIGHT_GPIO != GPIO_NUM_NC &&
+                channel == ARM_SERVO_RIGHT_LEDC_CHANNEL) {
+            return 1 << (ARM_SERVO_LEDC_DUTY_RESOLUTION - 1);
+        }
+        return 0;
+    }
+
+    ArmTarget ParseArmTarget(const std::string& arm) const {
+        if (arm == "left") {
+            return ArmTarget::kLeft;
+        }
+        if (arm == "right") {
+            return ArmTarget::kRight;
+        }
+        if (arm == "both") {
+            return ArmTarget::kBoth;
+        }
+        throw std::runtime_error("Invalid arm. Use left, right, or both");
+    }
+
+    void EnsureArmConfigured(const char* arm_name, gpio_num_t gpio) const {
+        if (gpio == GPIO_NUM_NC) {
+            throw std::runtime_error(std::string(arm_name) + " arm servo is not configured");
+        }
+    }
+
+    const char* MotionModeName(MotionMode mode) const {
+        switch (mode) {
+        case MotionMode::kEmotion:
+            return "emotion";
+        case MotionMode::kManual:
+            return "manual";
+        case MotionMode::kSpeakingLoop:
+            return "speaking_loop";
+        case MotionMode::kNone:
+        default:
+            return "none";
+        }
+    }
+
+    const EmotionMotion& FindManualPose(const std::string& pose) const {
+        for (const auto& motion : kManualArmPoses) {
+            if (pose == motion.emotion) {
+                return motion;
+            }
+        }
+        throw std::runtime_error("Invalid pose. Use neutral, park, left_up, left_down, both_up, both_down, or wave");
+    }
+
+    const char* TimerStateName(TimerState state) const {
+        switch (state) {
+        case TimerState::kRunning:
+            return "running";
+        case TimerState::kIdleRelease:
+            return "idle_release";
+        case TimerState::kIdle:
+        default:
+            return "idle";
+        }
+    }
+
+    bool PositionKnown() const {
+        const bool left_known = (ARM_SERVO_LEFT_GPIO == GPIO_NUM_NC) || left_position_known_;
+        const bool right_known = (ARM_SERVO_RIGHT_GPIO == GPIO_NUM_NC) || right_position_known_;
+        return left_known && right_known;
+    }
+
+    void StopTimer() {
+        if (timer_ != nullptr) {
+            esp_timer_stop(timer_);
+        }
+    }
+
+    void ClearMotionState() {
+        frames_ = nullptr;
+        frame_count_ = 0;
+        frame_index_ = 0;
+        parking_ = false;
+        hold_ticks_ = 0;
+        idle_ticks_remaining_ = 0;
+        timer_state_ = TimerState::kIdle;
+        motion_mode_ = MotionMode::kNone;
+    }
+
+    void StartMotion(const ArmServoFrame* frames, size_t frame_count, MotionMode motion_mode,
+                     bool timer_running = false) {
+        if (!timer_running) {
+            StopTimer();
+        }
+        frames_ = frames;
+        frame_count_ = frame_count;
+        frame_index_ = 0;
+        parking_ = false;
+        idle_ticks_remaining_ = 0;
+        timer_state_ = TimerState::kRunning;
+        motion_mode_ = motion_mode;
+
+        if (frames_ == nullptr || frame_count_ == 0) {
+            timer_state_ = TimerState::kIdle;
+            motion_mode_ = MotionMode::kNone;
+            return;
+        }
+
+        SetTargetFrame(frames_[frame_index_]);
+        if (ARM_SERVO_LEFT_GPIO != GPIO_NUM_NC && !left_position_known_) {
+            current_left_degree_ = target_left_degree_;
+            WriteServo(ARM_SERVO_LEFT_LEDC_CHANNEL, current_left_degree_);
+            left_position_known_ = true;
+        }
+        if (ARM_SERVO_RIGHT_GPIO != GPIO_NUM_NC && !right_position_known_) {
+            current_right_degree_ = target_right_degree_;
+            WriteServo(ARM_SERVO_RIGHT_LEDC_CHANNEL, current_right_degree_);
+            right_position_known_ = true;
+        }
+
+        if (!timer_running && timer_ != nullptr) {
+            ESP_ERROR_CHECK(esp_timer_start_periodic(timer_, ARM_SERVO_UPDATE_INTERVAL_MS * 1000));
+        }
+    }
+
+    void StartSpeakingLoop(bool timer_running = false) {
+        StartMotion(kSpeakingMotion, FrameCount(kSpeakingMotion), MotionMode::kSpeakingLoop, timer_running);
+    }
+
+    const EmotionMotion& FindMotion(const char* emotion) const {
+        for (const auto& motion : kEmotionMotions) {
+            if (strcmp(motion.emotion, emotion) == 0) {
+                return motion;
+            }
+        }
+        return kEmotionMotions[0];
+    }
+
+    void SetTargetFrame(const ArmServoFrame& frame) {
+        target_left_degree_ = ClampDegree(frame.left_degree);
+        target_right_degree_ = ClampDegree(frame.right_degree);
+        hold_ticks_ = frame.hold_ticks;
+    }
+
+    void OnTimer() {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        if (timer_state_ == TimerState::kIdleRelease) {
+            HandleIdleReleaseTick();
+            return;
+        }
+
+        if (timer_state_ != TimerState::kRunning || frames_ == nullptr || frame_count_ == 0) {
+            return;
+        }
+
+        const bool moved_left = (ARM_SERVO_LEFT_GPIO != GPIO_NUM_NC) &&
+            StepToward(current_left_degree_, target_left_degree_);
+        const bool moved_right = (ARM_SERVO_RIGHT_GPIO != GPIO_NUM_NC) &&
+            StepToward(current_right_degree_, target_right_degree_);
+        if (moved_left || moved_right) {
+            WriteMovedServos(moved_left, moved_right);
+            return;
+        }
+
+        if (hold_ticks_ > 0) {
+            --hold_ticks_;
+            return;
+        }
+
+        if (frame_index_ + 1 < frame_count_) {
+            ++frame_index_;
+            SetTargetFrame(frames_[frame_index_]);
+            return;
+        }
+
+        if (motion_mode_ == MotionMode::kSpeakingLoop) {
+            frame_index_ = 0;
+            SetTargetFrame(frames_[frame_index_]);
+            return;
+        }
+
+        if (speaking_active_) {
+            StartSpeakingLoop(true);
+            return;
+        }
+
+        if (!parking_ && NeedsPark()) {
+            parking_ = true;
+            SetTargetFrame(kParkFrame);
+            return;
+        }
+
+        StartIdleRelease();
+    }
+
+    void StartIdleRelease(bool timer_running = true) {
+        frames_ = nullptr;
+        frame_count_ = 0;
+        frame_index_ = 0;
+        parking_ = false;
+        hold_ticks_ = 0;
+        idle_ticks_remaining_ =
+            (ARM_SERVO_IDLE_RELEASE_MS + ARM_SERVO_UPDATE_INTERVAL_MS - 1) / ARM_SERVO_UPDATE_INTERVAL_MS;
+        timer_state_ = TimerState::kIdleRelease;
+        motion_mode_ = MotionMode::kNone;
+
+        if (idle_ticks_remaining_ <= 0) {
+            FinishIdleRelease();
+            return;
+        }
+
+        if (!timer_running && timer_ != nullptr) {
+            ESP_ERROR_CHECK(esp_timer_start_periodic(timer_, ARM_SERVO_UPDATE_INTERVAL_MS * 1000));
+        }
+    }
+
+    void HandleIdleReleaseTick() {
+        if (idle_ticks_remaining_ > 0) {
+            --idle_ticks_remaining_;
+        }
+
+        if (idle_ticks_remaining_ <= 0) {
+            FinishIdleRelease();
+        }
+    }
+
+    void FinishIdleRelease() {
+        StopServo(ARM_SERVO_LEFT_GPIO, ARM_SERVO_LEFT_LEDC_CHANNEL);
+        StopServo(ARM_SERVO_RIGHT_GPIO, ARM_SERVO_RIGHT_LEDC_CHANNEL);
+        left_position_known_ = false;
+        right_position_known_ = false;
+        timer_state_ = TimerState::kIdle;
+        parking_ = false;
+        idle_ticks_remaining_ = 0;
+        StopTimer();
+    }
+
+    bool StepToward(int& current_degree, int target_degree) const {
+        if (current_degree == target_degree) {
+            return false;
+        }
+
+        const int delta = target_degree - current_degree;
+        const int step_limit = ARM_SERVO_MAX_STEP_DEGREE;
+        if (delta > 0) {
+            current_degree += (delta > step_limit) ? step_limit : delta;
+        } else {
+            current_degree += (delta < -step_limit) ? -step_limit : delta;
+        }
+        return true;
+    }
+
+    int ClampDegree(int degree) const {
+        if (degree < ARM_SERVO_MIN_DEGREE) {
+            return ARM_SERVO_MIN_DEGREE;
+        }
+        if (degree > ARM_SERVO_MAX_DEGREE) {
+            return ARM_SERVO_MAX_DEGREE;
+        }
+        return degree;
+    }
+
+    uint32_t DegreeToDuty(int degree) const {
+        const uint32_t period_us = 1000000 / ARM_SERVO_PWM_FREQ_HZ;
+        const uint32_t max_duty = (1UL << ARM_SERVO_LEDC_DUTY_RESOLUTION) - 1;
+        return (DegreeToPulseUs(degree) * max_duty) / period_us;
+    }
+
+    uint32_t DegreeToPulseUs(int degree) const {
+        const int clamped_degree = ClampDegree(degree);
+        return ARM_SERVO_MIN_PULSE_US +
+            ((ARM_SERVO_MAX_PULSE_US - ARM_SERVO_MIN_PULSE_US) * clamped_degree) /
+            (ARM_SERVO_MAX_DEGREE - ARM_SERVO_MIN_DEGREE);
+    }
+
+    bool NeedsPark() const {
+        const bool left_needs_park = (ARM_SERVO_LEFT_GPIO != GPIO_NUM_NC) &&
+            current_left_degree_ != ARM_SERVO_PARK_DEGREE;
+        const bool right_needs_park = (ARM_SERVO_RIGHT_GPIO != GPIO_NUM_NC) &&
+            current_right_degree_ != ARM_SERVO_PARK_DEGREE;
+        return left_needs_park || right_needs_park;
+    }
+
+    void WriteMovedServos(bool moved_left, bool moved_right) {
+        if (moved_left) {
+            WriteServo(ARM_SERVO_LEFT_LEDC_CHANNEL, current_left_degree_);
+        }
+        if (moved_right) {
+            WriteServo(ARM_SERVO_RIGHT_LEDC_CHANNEL, current_right_degree_);
+        }
+    }
+
+    void WriteServo(ledc_channel_t channel, int degree) {
+        if (channel == ARM_SERVO_LEFT_LEDC_CHANNEL && ARM_SERVO_LEFT_GPIO == GPIO_NUM_NC) {
+            return;
+        }
+        if (channel == ARM_SERVO_RIGHT_LEDC_CHANNEL && ARM_SERVO_RIGHT_GPIO == GPIO_NUM_NC) {
+            return;
+        }
+        const uint32_t duty = DegreeToDuty(degree);
+        ESP_ERROR_CHECK(ledc_set_duty(kArmServoSpeedMode, channel, duty));
+        ESP_ERROR_CHECK(ledc_update_duty(kArmServoSpeedMode, channel));
+    }
+
+    const char* ServoName(ledc_channel_t channel) const {
+        if (channel == ARM_SERVO_LEFT_LEDC_CHANNEL) {
+            return "left";
+        }
+        if (channel == ARM_SERVO_RIGHT_LEDC_CHANNEL) {
+            return "right";
+        }
+        return "unknown";
+    }
+
+    int ServoGpio(ledc_channel_t channel) const {
+        if (channel == ARM_SERVO_LEFT_LEDC_CHANNEL) {
+            return static_cast<int>(ARM_SERVO_LEFT_GPIO);
+        }
+        if (channel == ARM_SERVO_RIGHT_LEDC_CHANNEL) {
+            return static_cast<int>(ARM_SERVO_RIGHT_GPIO);
+        }
+        return static_cast<int>(GPIO_NUM_NC);
+    }
+
+    void StopServo(gpio_num_t gpio, ledc_channel_t channel) {
+        if (gpio == GPIO_NUM_NC) {
+            return;
+        }
+        ESP_ERROR_CHECK(ledc_stop(kArmServoSpeedMode, channel, 0));
+    }
+
+    esp_timer_handle_t timer_ = nullptr;
+    std::mutex mutex_;
+    std::string last_emotion_;
+    const ArmServoFrame* frames_ = nullptr;
+    size_t frame_count_ = 0;
+    size_t frame_index_ = 0;
+    TimerState timer_state_ = TimerState::kIdle;
+    MotionMode motion_mode_ = MotionMode::kNone;
+    bool parking_ = false;
+    bool speaking_active_ = false;
+    bool left_position_known_ = false;
+    bool right_position_known_ = false;
+    int hold_ticks_ = 0;
+    int idle_ticks_remaining_ = 0;
+    int current_left_degree_ = ARM_SERVO_CENTER_DEGREE;
+    int current_right_degree_ = ARM_SERVO_CENTER_DEGREE;
+    int target_left_degree_ = ARM_SERVO_CENTER_DEGREE;
+    int target_right_degree_ = ARM_SERVO_CENTER_DEGREE;
+};
+
+class EmojiArmLcdDisplay : public SpiLcdDisplay {
+public:
+    EmojiArmLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                       int width, int height, int offset_x, int offset_y,
+                       bool mirror_x, bool mirror_y, bool swap_xy,
+                       ArmServoController* arm_servo)
+        : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy),
+          arm_servo_(arm_servo) {
+    }
+
+    void SetEmotion(const char* emotion) override {
+        LcdDisplay::SetEmotion(emotion);
+        if (arm_servo_ != nullptr) {
+            arm_servo_->SetEmotion(emotion);
+        }
+    }
+
+private:
+    ArmServoController* arm_servo_ = nullptr;
+};
+}
+
 class CompactWifiBoardS3Cam : public WifiBoard {
 private:
- 
+
     Button boot_button_;
+    ArmServoController arm_servos_;
+    SdMediaManager sd_media_manager_;
     LcdDisplay* display_;
-     Esp32Camera* camera_;
+    Esp32Camera* camera_;
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -82,7 +764,7 @@ private:
         buscfg.sclk_io_num = DISPLAY_CLK_PIN;
         buscfg.quadwp_io_num = GPIO_NUM_NC;
         buscfg.quadhd_io_num = GPIO_NUM_NC;
-        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
+        buscfg.max_transfer_sz = DISPLAY_WIDTH * kLcdDrawBufferLines * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
@@ -128,8 +810,9 @@ private:
 #ifdef  LCD_TYPE_GC9A01_SERIAL
         panel_config.vendor_config = &gc9107_vendor_config;
 #endif
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new EmojiArmLcdDisplay(panel_io, panel,
+                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY,
+                                    &arm_servos_);
     }
 
     void InitializeCamera() {
@@ -152,6 +835,8 @@ private:
         config.pin_pwdn = CAMERA_PIN_PWDN;
         config.pin_reset = CAMERA_PIN_RESET;
         config.xclk_freq_hz = XCLK_FREQ_HZ;
+        config.ledc_timer = CAMERA_XCLK_LEDC_TIMER;
+        config.ledc_channel = CAMERA_XCLK_LEDC_CHANNEL;
         config.pixel_format = PIXFORMAT_RGB565;
         config.frame_size = FRAMESIZE_VGA;
         config.jpeg_quality = 12;
@@ -176,6 +861,97 @@ private:
         });
     }
 
+    void InitializeTools() {
+        auto& mcp_server = McpServer::GetInstance();
+
+#ifdef CONFIG_SD_CARD_ENABLE
+        sd_media_manager_.Start(GetSdCard(), display_);
+
+        mcp_server.AddTool("self.media.prepare_download",
+            "Prepare a one-time media download ticket for the robot SD card from the media server. "
+            "GỌI TOOL NÀY KHI người dùng muốn TẢI, LƯU, COPY hoặc ĐƯA một media (ảnh, nhạc, video) "
+            "từ server về robot/thẻ SD. Ví dụ: 'tải ảnh gia đình về robot', 'lưu bài nhạc ABC vào thẻ nhớ'. "
+            "Nếu người dùng nói chung chung như 'Tải hình ảnh từ server' hoặc 'tải nhạc từ server', "
+            "hãy dùng query='image' hoặc query='music' hoặc query='video' để tìm kiếm/liệt kê danh sách file có sẵn. "
+            "⚠️ TUYỆT ĐỐI KHÔNG HỎI NGƯỜI DÙNG LINK/URL CỦA FILE. Máy chủ tự động biết URL của các tệp này. "
+            "⚠️ NẾU NGƯỜI DÙNG YÊU CẦU 'TẢI TẤT CẢ' (ví dụ: 'tải tất cả hình ảnh'): "
+            "Hãy giải thích với người dùng rằng thiết bị chỉ có thể tải lần lượt từng tệp một. "
+            "Sau đó, gọi ngay tool này với query='image' (hoặc query='music', query='video') để nhận danh sách tất cả các file có sẵn dưới dạng candidates, và hỏi người dùng muốn bắt đầu tải tệp nào trước trong danh sách đó. "
+            "Quy trình: 1. Gọi self.media.prepare_download. 2. Nếu trả về success=true, gọi ngay self.sdcard.download_file với các tham số nhận được. 3. Dùng self.sdcard.download_status để kiểm tra tiến độ.",
+            PropertyList({
+                Property("query", kPropertyTypeString)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                return sd_media_manager_.PrepareDownload(properties["query"].value<std::string>());
+            });
+
+        mcp_server.AddTool("self.sdcard.download_file",
+            "Internal second step of the server-to-SD media download workflow. DO NOT call this tool directly "
+            "with a URL or user-supplied link. You MUST first call `self.media.prepare_download` "
+            "to search/resolve the file and get a verified download ticket. Then, pass all returned ticket arguments "
+            "exactly as-is to this tool. Never invent a URL, path, size, SHA-256, transfer ID, or ACK token. "
+            "Supported destinations are /sdcard/images/*.png, /sdcard/music/*.mp3, and /sdcard/videos/*.avi. "
+            "This tool only queues one background job and normally returns status=queued; queued does NOT mean completed. "
+            "Do not call this tool again while a job is active. Use self.sdcard.download_status to check progress. "
+            "The robot verifies byte count and SHA-256 before making the file visible and then ACKs the server.",
+            PropertyList({
+                Property("url", kPropertyTypeString),
+                Property("dest_path", kPropertyTypeString),
+                Property("expected_size", kPropertyTypeInteger, 1, 100 * 1024 * 1024),
+                Property("sha256", kPropertyTypeString),
+                Property("transfer_id", kPropertyTypeString),
+                Property("ack_url", kPropertyTypeString),
+                Property("ack_token", kPropertyTypeString)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                return sd_media_manager_.EnqueueDownload(
+                    properties["url"].value<std::string>(),
+                    properties["dest_path"].value<std::string>(),
+                    static_cast<uint64_t>(properties["expected_size"].value<int>()),
+                    properties["sha256"].value<std::string>(),
+                    properties["transfer_id"].value<std::string>(),
+                    properties["ack_url"].value<std::string>(),
+                    properties["ack_token"].value<std::string>());
+            });
+
+        mcp_server.AddTool("self.sdcard.download_status",
+            "Check the single SD media download job after self.sdcard.download_file returns queued, or when "
+            "the user asks for download progress. Interpret active=true with status=queued, validating, or "
+            "downloading as still in progress; report bytes_written/expected_size and do not enqueue a duplicate. "
+            "status=success means the file is fully written, fsynced, SHA-256 verified, renamed, indexed, and "
+            "ACKed. status=success_ack_pending means the local file is valid but server cleanup ACK failed. "
+            "status=failed means the download is unusable; explain the error field briefly in Vietnamese. "
+            "Only tell the user 'download completed' for success or success_ack_pending.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                return sd_media_manager_.GetStatusJson();
+            });
+
+        mcp_server.AddTool("self.sdimage.show",
+            "Display a PNG that already exists in /sdcard/images. Call when the user says xem, mở, hiển thị, "
+            "or cho xem an image already downloaded to the robot. query should contain only the image title "
+            "or filename keyword, for example query='ảnh gia đình'. Do not use this tool to download media and "
+            "do not call it before self.sdcard.download_status reports completion. If error=ambiguous, ask the "
+            "user in Vietnamese to choose one candidate; if image not found, suggest downloading it first. "
+            "On success the PNG stays visible until the next user interaction.",
+            PropertyList({Property("query", kPropertyTypeString)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                return sd_media_manager_.ShowImage(properties["query"].value<std::string>());
+            });
+#endif
+    }
+
+    void InitializeStateCallbacks() {
+        DeviceStateEventManager::GetInstance().RegisterStateChangeCallback(
+            [this](DeviceState previous_state, DeviceState current_state) {
+                if (current_state == kDeviceStateSpeaking) {
+                    arm_servos_.SetSpeakingActive(true);
+                } else if (previous_state == kDeviceStateSpeaking) {
+                    arm_servos_.SetSpeakingActive(false);
+                }
+            });
+    }
+
 public:
     CompactWifiBoardS3Cam() :
         boot_button_(BOOT_BUTTON_GPIO) {
@@ -183,13 +959,19 @@ public:
         InitializeLcdDisplay();
         InitializeButtons();
         InitializeCamera();
+        InitializeTools();
+        InitializeStateCallbacks();
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
-        
+
     }
 
     virtual Led* GetLed() override {
+        if (BUILTIN_LED_GPIO == GPIO_NUM_NC) {
+            static NoLed no_led;
+            return &no_led;
+        }
         static SingleLed led(BUILTIN_LED_GPIO);
         return &led;
     }

@@ -6,6 +6,7 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
+
 choice
     prompt "Flash Assets"
     default FLASH_DEFAULT_ASSETS

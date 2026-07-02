@@ -23,6 +23,8 @@
 #include "features/video/video_player.h"
 #include "features/QRCode/qrcode_display.h"
 #include "features/alarm_clock/alarm_manager.h"
+#include "features/why_questions/image_display.h"
+#include "display/lvgl_display/lvgl_display.h"
 #include <esp_lvgl_port.h>
 #include <cmath>
 #include <cstring>
@@ -544,8 +546,74 @@ void Application::Start() {
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
-                    ESP_LOGI(TAG, "<< %s", text->valuestring);
-                    Schedule([this, display, message = std::string(text->valuestring)]() {
+                    std::string msg = text->valuestring;
+                    ESP_LOGI(TAG, "<< %s", msg.c_str());
+                    // DEBUG: print full JSON when a tool notification arrives
+                    if (msg.rfind("% ", 0) == 0) {
+                        char* dbg = cJSON_PrintUnformatted(root);
+                        if (dbg) { ESP_LOGI(TAG, "TOOL_MSG: %s", dbg); cJSON_free(dbg); }
+                    }
+
+                    // Detect why-image tool-call notifications sent by the broker.
+                    // The broker sends `% show_why_image({"image_url":"..."})` as
+                    // sentence_start text (not TTS).  Terminal output may truncate
+                    // it but text->valuestring always holds the full string.
+                    if (msg.rfind("% show_why_image", 0) == 0) {
+                        auto* lvgl_disp = dynamic_cast<LvglDisplay*>(display);
+                        if (lvgl_disp) {
+                            // Parse image_url directly — no server URL needed.
+                            static const char kKey1[] = "\"image_url\": \"";
+                            static const char kKey2[] = "\"image_url\":\"";
+                            size_t kp = msg.find(kKey1);
+                            size_t klen = sizeof(kKey1) - 1;
+                            if (kp == std::string::npos) {
+                                kp = msg.find(kKey2);
+                                klen = sizeof(kKey2) - 1;
+                            }
+                            if (kp != std::string::npos) {
+                                size_t us = kp + klen;
+                                size_t ue = msg.find('"', us);
+                                if (ue != std::string::npos) {
+                                    std::string orig = msg.substr(us, ue - us);
+                                    // Percent-encode for wsrv.nl (ESP32 needs baseline JPEG)
+                                    std::string encoded;
+                                    encoded.reserve(orig.size() * 3);
+                                    for (unsigned char c : orig) {
+                                        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                                            (c >= '0' && c <= '9') ||
+                                            c == '-' || c == '_' || c == '.' || c == '~') {
+                                            encoded += static_cast<char>(c);
+                                        } else {
+                                            char hex[4];
+                                            snprintf(hex, sizeof(hex), "%%%02X", c);
+                                            encoded += hex;
+                                        }
+                                    }
+                                    std::string wsrv =
+                                        "https://wsrv.nl/?url=" + encoded +
+                                        "&output=jpg&q=75&w=400";
+                                    ESP_LOGI(TAG, "why_image: %s", wsrv.c_str());
+                                    StartImageDisplayTask(lvgl_disp, {wsrv});
+                                }
+                            } else {
+                                // Fallback: broker didn't include args — poll NVS-configured server
+                                Settings fb("system");
+                                std::string srv = fb.GetString("img_srv", "");
+                                if (!srv.empty()) {
+                                    StartImagePollingTask(lvgl_disp, srv);
+                                } else {
+                                    ESP_LOGW(TAG, "show_why_image: no image_url in text");
+                                }
+                            }
+                        }
+                    } else if (msg.rfind("% hide_why_image", 0) == 0) {
+                        auto* lvgl_disp = dynamic_cast<LvglDisplay*>(display);
+                        if (lvgl_disp) {
+                            StartImageDisplayTask(lvgl_disp, {""});
+                        }
+                    }
+
+                    Schedule([this, display, message = msg]() {
                         display->SetChatMessage("assistant", message.c_str());
                     });
                 }
@@ -604,6 +672,27 @@ void Application::Start() {
                 ESP_LOGW(TAG, "Invalid custom message format: missing payload");
             }
 #endif
+        } else if (strcmp(type->valuestring, "display_images") == 0) {
+            auto urls_arr    = cJSON_GetObjectItem(root, "urls");
+            auto duration_ms = cJSON_GetObjectItem(root, "duration_ms");
+            int  dur = cJSON_IsNumber(duration_ms) ? duration_ms->valueint : 5000;
+            std::vector<std::string> urls;
+            if (cJSON_IsArray(urls_arr)) {
+                cJSON* item;
+                cJSON_ArrayForEach(item, urls_arr) {
+                    if (cJSON_IsString(item) && item->valuestring[0] != '\0') {
+                        urls.emplace_back(item->valuestring);
+                    }
+                }
+            }
+            if (!urls.empty()) {
+                auto* lvgl = dynamic_cast<LvglDisplay*>(display);
+                if (lvgl) {
+                    StartImageDisplayTask(lvgl, std::move(urls), dur);
+                } else {
+                    ESP_LOGW(TAG, "display_images: not LvglDisplay");
+                }
+            }
         } else {
             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
         }

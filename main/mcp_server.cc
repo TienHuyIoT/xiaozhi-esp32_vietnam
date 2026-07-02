@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#include "features/why_questions/image_display.h"
 
 #define TAG "MCP"
 
@@ -144,8 +145,50 @@ void McpServer::AddCommonTools() {
                     return display->SetRotation(rotation_degree, true);
                 }
                 return false;
-            });  
+            });
+
     }
+
+    // Register preview_image early (in AddCommonTools) so it is within the
+    // broker's 32-tool limit and visible to the LLM.
+    {
+        auto* lvgl_disp = dynamic_cast<LvglDisplay*>(board.GetDisplay());
+        if (lvgl_disp) {
+            AddUserOnlyTool("self.screen.preview_image", "Preview an image on the screen",
+                PropertyList({
+                    Property("url", kPropertyTypeString)
+                }),
+                [lvgl_disp](const PropertyList& properties) -> ReturnValue {
+                    auto url = properties["url"].value<std::string>();
+                    StartImageDisplayTask(lvgl_disp, {url});
+                    return true;
+                });
+        }
+    }
+
+    // Persist the image-server URL in NVS so the firmware can poll it when
+    // show_why_image is called (cloud mode, no LAN).
+    AddTool("system.set_why_image_server",
+        "Lưu URL server ảnh vào bộ nhớ thiết bị (NVS). Chỉ cần gọi một lần — thiết bị ghi nhớ sau khi khởi động lại.\n"
+        "Gọi khi người dùng nói:\n"
+        "  - 'nhớ server ảnh của tôi là https://...'\n"
+        "  - 'cấu hình server hiển thị ảnh'\n"
+        "  - 'set image server url'\n"
+        "  - 'xóa server ảnh' (truyền url='' để xóa)\n"
+        "Sau khi lưu, thiết bị tự động hiển thị ảnh mỗi khi đọc câu hỏi vì sao.",
+        PropertyList({
+            Property("url", kPropertyTypeString, std::string(""))
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto url = properties["url"].value<std::string>();
+            Settings settings("system", true);
+            settings.SetString("img_srv", url);
+            ESP_LOGI(TAG, "set_why_image_server: '%s'", url.c_str());
+            if (url.empty()) {
+                return std::string("Đã xóa cấu hình server ảnh.");
+            }
+            return std::string("Đã lưu server ảnh: ") + url;
+        });
 
     auto camera = board.GetCamera();
     if (camera) {
@@ -304,45 +347,6 @@ void McpServer::AddUserOnlyTools() {
                 return true;
             });
         
-        AddUserOnlyTool("self.screen.preview_image", "Preview an image on the screen",
-            PropertyList({
-                Property("url", kPropertyTypeString)
-            }),
-            [display](const PropertyList& properties) -> ReturnValue {
-                auto url = properties["url"].value<std::string>();
-                auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
-
-                if (!http->Open("GET", url)) {
-                    throw std::runtime_error("Failed to open URL: " + url);
-                }
-                int status_code = http->GetStatusCode();
-                if (status_code != 200) {
-                    throw std::runtime_error("Unexpected status code: " + std::to_string(status_code));
-                }
-
-                size_t content_length = http->GetBodyLength();
-                char* data = (char*)heap_caps_malloc(content_length, MALLOC_CAP_8BIT);
-                if (data == nullptr) {
-                    throw std::runtime_error("Failed to allocate memory for image: " + url);
-                }
-                size_t total_read = 0;
-                while (total_read < content_length) {
-                    int ret = http->Read(data + total_read, content_length - total_read);
-                    if (ret < 0) {
-                        heap_caps_free(data);
-                        throw std::runtime_error("Failed to download image: " + url);
-                    }
-                    if (ret == 0) {
-                        break;
-                    }
-                    total_read += ret;
-                }
-                http->Close();
-
-                auto image = std::make_unique<LvglAllocatedImage>(data, content_length);
-                display->SetPreviewImage(std::move(image));
-                return true;
-            });
 #endif // CONFIG_LV_USE_SNAPSHOT
     }
 #endif // HAVE_LVGL

@@ -43,6 +43,9 @@ class OtaServer {
   // HTTP handler for POST /assets_upload - processes assets upload.
   static esp_err_t HandleAssetsUpload(httpd_req_t* req);
 
+  // HTTP handler for POST /api/display_image - displays an image URL on the LCD.
+  static esp_err_t HandleDisplayImage(httpd_req_t* req);
+
   httpd_handle_t server_handle_ = nullptr;
 };
 

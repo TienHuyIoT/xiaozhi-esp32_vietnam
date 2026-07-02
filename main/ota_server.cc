@@ -12,6 +12,9 @@
 #include "assets/lang_config.h"
 #include "board.h"
 #include "display.h"
+#include "display/lvgl_display/lvgl_display.h"
+#include "features/why_questions/image_display.h"
+#include <cJSON.h>
 
 namespace ota {
 namespace {
@@ -78,6 +81,13 @@ esp_err_t OtaServer::Start(int port) {
       .handler = HandleAssetsUpload,
       .user_ctx = nullptr};
   httpd_register_uri_handler(server_handle_, &assets_upload);
+
+  httpd_uri_t display_image = {
+      .uri = "/api/display_image",
+      .method = HTTP_POST,
+      .handler = HandleDisplayImage,
+      .user_ctx = nullptr};
+  httpd_register_uri_handler(server_handle_, &display_image);
 
   ESP_LOGI(kTag, "OTA Webserver started");
   return ESP_OK;
@@ -907,6 +917,50 @@ esp_err_t OtaServer::HandleAssetsUpload(httpd_req_t* req) {
   vTaskDelay(pdMS_TO_TICKS(1000));
   esp_restart();
 
+  return ESP_OK;
+}
+
+esp_err_t OtaServer::HandleDisplayImage(httpd_req_t* req) {
+  char body[512];
+  int len = httpd_req_recv(req, body, sizeof(body) - 1);
+  if (len <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+    return ESP_FAIL;
+  }
+  body[len] = '\0';
+
+  cJSON* json = cJSON_Parse(body);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  auto* display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
+  cJSON* url_item = cJSON_GetObjectItem(json, "url");
+
+  // null / missing / empty url → clear (hide) the preview image
+  if (cJSON_IsNull(url_item) || !cJSON_IsString(url_item) ||
+      url_item->valuestring[0] == '\0') {
+    cJSON_Delete(json);
+    if (display) {
+      display->ClearPreviewImage();
+      ESP_LOGI(kTag, "display_image: cleared");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+  }
+
+  std::string url = url_item->valuestring;
+  cJSON_Delete(json);
+
+  ESP_LOGI(kTag, "display_image: %s", url.c_str());
+  if (display) {
+    StartImageDisplayTask(display, {url});
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, "{\"ok\":true}");
   return ESP_OK;
 }
 

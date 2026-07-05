@@ -212,9 +212,23 @@ void McpServer::AddCommonTools() {
             PropertyList({
                 Property("question", kPropertyTypeString)
             }),
-            [camera](const PropertyList& properties) -> ReturnValue {
+            [camera, display](const PropertyList& properties) -> ReturnValue {
                 // Lower the priority to do the camera capture
                 TaskPriorityReset priority_reset(1);
+
+                struct PreviewVisibilityGuard {
+                    Display* display;
+                    explicit PreviewVisibilityGuard(Display* display) : display(display) {
+                        if (display) {
+                            display->KeepPreviewVisible(true);
+                        }
+                    }
+                    ~PreviewVisibilityGuard() {
+                        if (display) {
+                            display->KeepPreviewVisible(false);
+                        }
+                    }
+                } preview_guard(display);
 
                 if (!camera->Capture()) {
                     throw std::runtime_error("Failed to capture photo");

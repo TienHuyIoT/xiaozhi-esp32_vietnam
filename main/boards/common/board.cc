@@ -118,7 +118,7 @@ std::string Board::GetSystemInfoJson() {
     json += R"("flash_size":)" + std::to_string(SystemInfo::GetFlashSize()) + R"(,)";
     json += R"("minimum_free_heap_size":")" + std::to_string(SystemInfo::GetMinimumFreeHeapSize()) + R"(",)";
     json += R"("mac_address":")" + SystemInfo::GetMacAddress() + R"(",)";
-    json += R"("uuid":")" + uuid_ + R"(",)";
+    json += R"("uuid":")" + GetUuid() + R"(",)";
     json += R"("chip_model_name":")" + SystemInfo::GetChipModelName() + R"(",)";
 
     esp_chip_info_t chip_info;

@@ -216,7 +216,7 @@ bool Ota::CheckVersion(std::string& url) {
 
     std::string data = board.GetSystemInfoJson();
     ESP_LOGI(TAG, "Check version URL: %s", url.c_str());
-    // ESP_LOGI(TAG, "Check version request data: %s", data.c_str());
+    ESP_LOGI(TAG, "Check version request data: %s", data.c_str());
     std::string method = data.length() > 0 ? "POST" : "GET";
     http->SetContent(std::move(data));
 
@@ -237,9 +237,7 @@ bool Ota::CheckVersion(std::string& url) {
     // Response: { "firmware": { "version": "1.0.0", "url": "http://", "force": 0 } }
     // Parse the JSON response and check if the version is newer
     // If it is, set has_new_version_ to true and store the new version and URL
-    if (url != CONFIG_OTA_URL) {
-        ESP_LOGI(TAG, "JSON response  %s", data.c_str());
-    }
+    ESP_LOGI(TAG, "JSON response: %s", data.c_str());
     cJSON *root = cJSON_Parse(data.c_str());
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");

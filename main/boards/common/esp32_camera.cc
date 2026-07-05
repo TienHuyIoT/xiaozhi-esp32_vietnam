@@ -65,7 +65,7 @@ public:
 #define TAG "Esp32Camera"
 
 static void LogCameraHeapStats(const char* stage) {
-    ESP_LOGD(TAG,
+    ESP_LOGI(TAG,
              "Heap %s: DMA free=%u largest=%u, PSRAM free=%u largest=%u",
              stage,
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)),

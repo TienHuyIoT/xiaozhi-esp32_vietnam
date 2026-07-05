@@ -155,6 +155,7 @@ bool MqttProtocol::SendText(const std::string& text) {
 bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     std::lock_guard<std::mutex> lock(channel_mutex_);
     if (udp_ == nullptr) {
+        ESP_LOGW(TAG, "SendAudio failed: UDP is not initialized");
         return false;
     }
 
@@ -175,7 +176,10 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         return false;
     }
 
-    return udp_->Send(encrypted) > 0;
+    bool success = udp_->Send(encrypted) > 0;
+    ESP_LOGI(TAG, "Audio Sent (UDP): seq=%lu, timestamp=%lu, bytes=%zu, status=%s",
+             (unsigned long)local_sequence_, (unsigned long)packet->timestamp, packet->payload.size(), success ? "OK" : "FAIL");
+    return success;
 }
 
 void MqttProtocol::CloseAudioChannel() {

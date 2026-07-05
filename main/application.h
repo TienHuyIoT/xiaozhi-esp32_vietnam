@@ -31,6 +31,7 @@ namespace spectrum { class SpectrumManager; }
 #include "features/weather/weather_service.h"
 #include "features/weather/weather_model.h"
 // ---------------------
+#include "features/sd_media_manager.h"
 
 #define MAIN_EVENT_SCHEDULE (1 << 0)
 #define MAIN_EVENT_SEND_AUDIO (1 << 1)
@@ -84,6 +85,7 @@ public:
 	Esp32Radio* GetRadio() { return radio_; }
 	Esp32SdMusic* GetSdMusic() { return sd_music_; }
 	VideoPlayer* GetVideo() { return sd_video_; }
+    SdMediaManager* GetSdMediaManager() { return sd_media_manager_; }
 
     /** Get the music visualizer (owned by Application). */
     music::MusicVisualizer* GetMusicVisualizer() { return music_visualizer_.get(); }
@@ -182,6 +184,9 @@ public:
     /** Initialize SD card video player and register MCP tools. */
     bool InitVideo();
 
+    /** Initialize SD media manager and register MCP tools. */
+    bool InitSdMediaManager();
+
     /** Initialize alarm clock manager and register MCP tools. */
     bool InitAlarm();
 
@@ -206,6 +211,7 @@ private:
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
     VideoPlayer* sd_video_ = nullptr;
+    SdMediaManager* sd_media_manager_ = nullptr;
     AlarmManager* alarm_manager_ = nullptr;
 
     // Music spectrum visualizer (owned by Application, not Display)

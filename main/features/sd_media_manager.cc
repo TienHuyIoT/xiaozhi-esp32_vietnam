@@ -2,7 +2,6 @@
 
 #include "application.h"
 #include "board.h"
-#include "config.h"
 #include "display/lcd_display.h"
 #include "display/lvgl_display/lvgl_image.h"
 #include "features/music/esp32_sd_music.h"
@@ -12,6 +11,10 @@
 #include <cJSON.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+
+#ifndef MEDIA_SERVER_BASE_URL
+#define MEDIA_SERVER_BASE_URL "http://192.168.100.97:7860"
+#endif
 #include <esp_vfs_fat.h>
 #include <mbedtls/sha256.h>
 
@@ -21,7 +24,6 @@
 #include <cstring>
 #include <dirent.h>
 #include <memory>
-#include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>

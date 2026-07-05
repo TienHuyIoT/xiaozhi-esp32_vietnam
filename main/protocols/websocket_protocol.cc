@@ -27,8 +27,12 @@ bool WebsocketProtocol::Start() {
 
 bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     if (websocket_ == nullptr || !websocket_->IsConnected()) {
+        ESP_LOGW(TAG, "SendAudio failed: WebSocket not connected");
         return false;
     }
+
+    bool success = false;
+    packets_sent_++;
 
     if (version_ == 2) {
         std::string serialized;
@@ -41,7 +45,7 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         bp2->payload_size = htonl(packet->payload.size());
         memcpy(bp2->payload, packet->payload.data(), packet->payload.size());
 
-        return websocket_->Send(serialized.data(), serialized.size(), true);
+        success = websocket_->Send(serialized.data(), serialized.size(), true);
     } else if (version_ == 3) {
         std::string serialized;
         serialized.resize(sizeof(BinaryProtocol3) + packet->payload.size());
@@ -51,10 +55,14 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         bp3->payload_size = htons(packet->payload.size());
         memcpy(bp3->payload, packet->payload.data(), packet->payload.size());
 
-        return websocket_->Send(serialized.data(), serialized.size(), true);
+        success = websocket_->Send(serialized.data(), serialized.size(), true);
     } else {
-        return websocket_->Send(packet->payload.data(), packet->payload.size(), true);
+        success = websocket_->Send(packet->payload.data(), packet->payload.size(), true);
     }
+
+    ESP_LOGI(TAG, "Audio Sent: pkt_idx=%lu, ver=%d, timestamp=%lu, bytes=%zu, status=%s",
+             (unsigned long)packets_sent_, version_, (unsigned long)packet->timestamp, packet->payload.size(), success ? "OK" : "FAIL");
+    return success;
 }
 
 bool WebsocketProtocol::SendText(const std::string& text) {
@@ -89,6 +97,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
     }
 
     error_occurred_ = false;
+    packets_sent_ = 0;
 
     auto network = Board::GetInstance().GetNetwork();
     websocket_ = network->CreateWebSocket(1);

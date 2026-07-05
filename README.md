@@ -246,6 +246,9 @@ idf.py -p COM_PORT flash monitor
 idf.py merge-bin
 ```
 
+> [!IMPORTANT]
+> **Lưu ý cho AI Assistant (antigravity / Cursor):** Sau mỗi lần sửa xong code nhúng esp-idf, bạn phải sử dụng lệnh `& 'C:\Espressif\tools\Microsoft.v5.5.3.PowerShell_profile.ps1'` và chạy `idf.py build` trên PowerShell terminal để xác thực lại code đã đúng hay chưa và có lỗi không. Luôn nhớ thực hiện điều này!
+
 ---
 
 ## 📚 Tài Liệu

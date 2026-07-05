@@ -445,6 +445,7 @@ void Application::Start() {
             ESP_LOGI(TAG, "SD card mounted successfully");
             InitSdMusic();
             InitVideo();
+            InitSdMediaManager();
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
@@ -484,10 +485,10 @@ void Application::Start() {
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
 
-    if (ota.HasMqttConfig()) {
-        protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota.HasWebsocketConfig()) {
+if (ota.HasWebsocketConfig()) {
         protocol_ = std::make_unique<WebsocketProtocol>();
+    } else if (ota.HasMqttConfig()) {
+        protocol_ = std::make_unique<MqttProtocol>();
     } else {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
@@ -1676,6 +1677,32 @@ bool Application::InitSdMusic() {
 
     McpFeatureTools::RegisterSdMusicTools(sd_music_);
     ESP_LOGI(TAG, "InitSdMusic: SD card music player ready");
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool Application::InitSdMediaManager() {
+#ifdef CONFIG_SD_CARD_ENABLE
+    auto sd_card = Board::GetInstance().GetSdCard();
+    if (!sd_card) {
+        ESP_LOGW(TAG, "InitSdMediaManager: no SD card available");
+        return false;
+    }
+
+    sd_media_manager_ = new SdMediaManager();
+    if (!sd_media_manager_) {
+        ESP_LOGE(TAG, "InitSdMediaManager: allocation failed");
+        return false;
+    }
+
+    auto display = Board::GetInstance().GetDisplay();
+    auto lcd = dynamic_cast<LcdDisplay*>(display);
+    sd_media_manager_->Start(sd_card, lcd);
+
+    McpFeatureTools::RegisterSdMediaManagerTools(sd_media_manager_);
+    ESP_LOGI(TAG, "InitSdMediaManager: SD media manager ready");
     return true;
 #else
     return false;

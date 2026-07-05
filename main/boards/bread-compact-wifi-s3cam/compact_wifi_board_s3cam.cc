@@ -11,7 +11,6 @@
 #include "led/single_led.h"
 #include "esp32_camera.h"
 #include "esp_camera.h"
-#include "sd_media_manager.h"
 
 #include <wifi_station.h>
 #include <esp_log.h>
@@ -28,11 +27,7 @@
 #include <mutex>
 #include <string>
 
-#ifdef CONFIG_SD_CARD_MMC_INTERFACE
-#include "sdmmc.h"
-#elif defined(CONFIG_SD_CARD_SPI_INTERFACE)
-#include "sdspi.h"
-#endif
+#include "flash_fatfs.h"
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
 #include "esp_lcd_ili9341.h"
@@ -753,7 +748,6 @@ private:
 
     Button boot_button_;
     ArmServoController arm_servos_;
-    SdMediaManager sd_media_manager_;
     LcdDisplay* display_;
     Esp32Camera* camera_;
 
@@ -862,83 +856,6 @@ private:
     }
 
     void InitializeTools() {
-        auto& mcp_server = McpServer::GetInstance();
-
-#ifdef CONFIG_SD_CARD_ENABLE
-        sd_media_manager_.Start(GetSdCard(), display_);
-
-        mcp_server.AddTool("self.media.prepare_download",
-            "Prepare a one-time media download ticket for the robot SD card from the media server. "
-            "GỌI TOOL NÀY KHI người dùng muốn TẢI, LƯU, COPY hoặc ĐƯA một media (ảnh, nhạc, video) "
-            "từ server về robot/thẻ SD. Ví dụ: 'tải ảnh gia đình về robot', 'lưu bài nhạc ABC vào thẻ nhớ'. "
-            "Nếu người dùng nói chung chung như 'Tải hình ảnh từ server' hoặc 'tải nhạc từ server', "
-            "hãy dùng query='image' hoặc query='music' hoặc query='video' để tìm kiếm/liệt kê danh sách file có sẵn. "
-            "⚠️ TUYỆT ĐỐI KHÔNG HỎI NGƯỜI DÙNG LINK/URL CỦA FILE. Máy chủ tự động biết URL của các tệp này. "
-            "⚠️ NẾU NGƯỜI DÙNG YÊU CẦU 'TẢI TẤT CẢ' (ví dụ: 'tải tất cả hình ảnh'): "
-            "Hãy giải thích với người dùng rằng thiết bị chỉ có thể tải lần lượt từng tệp một. "
-            "Sau đó, gọi ngay tool này với query='image' (hoặc query='music', query='video') để nhận danh sách tất cả các file có sẵn dưới dạng candidates, và hỏi người dùng muốn bắt đầu tải tệp nào trước trong danh sách đó. "
-            "Quy trình: 1. Gọi self.media.prepare_download. 2. Nếu trả về success=true, gọi ngay self.sdcard.download_file với các tham số nhận được. 3. Dùng self.sdcard.download_status để kiểm tra tiến độ.",
-            PropertyList({
-                Property("query", kPropertyTypeString)
-            }),
-            [this](const PropertyList& properties) -> ReturnValue {
-                return sd_media_manager_.PrepareDownload(properties["query"].value<std::string>());
-            });
-
-        mcp_server.AddTool("self.sdcard.download_file",
-            "Internal second step of the server-to-SD media download workflow. DO NOT call this tool directly "
-            "with a URL or user-supplied link. You MUST first call `self.media.prepare_download` "
-            "to search/resolve the file and get a verified download ticket. Then, pass all returned ticket arguments "
-            "exactly as-is to this tool. Never invent a URL, path, size, SHA-256, transfer ID, or ACK token. "
-            "Supported destinations are /sdcard/images/*.png, /sdcard/music/*.mp3, and /sdcard/videos/*.avi. "
-            "This tool only queues one background job and normally returns status=queued; queued does NOT mean completed. "
-            "Do not call this tool again while a job is active. Use self.sdcard.download_status to check progress. "
-            "The robot verifies byte count and SHA-256 before making the file visible and then ACKs the server.",
-            PropertyList({
-                Property("url", kPropertyTypeString),
-                Property("dest_path", kPropertyTypeString),
-                Property("expected_size", kPropertyTypeInteger, 1, 100 * 1024 * 1024),
-                Property("sha256", kPropertyTypeString),
-                Property("transfer_id", kPropertyTypeString),
-                Property("ack_url", kPropertyTypeString),
-                Property("ack_token", kPropertyTypeString)
-            }),
-            [this](const PropertyList& properties) -> ReturnValue {
-                return sd_media_manager_.EnqueueDownload(
-                    properties["url"].value<std::string>(),
-                    properties["dest_path"].value<std::string>(),
-                    static_cast<uint64_t>(properties["expected_size"].value<int>()),
-                    properties["sha256"].value<std::string>(),
-                    properties["transfer_id"].value<std::string>(),
-                    properties["ack_url"].value<std::string>(),
-                    properties["ack_token"].value<std::string>());
-            });
-
-        mcp_server.AddTool("self.sdcard.download_status",
-            "Check the single SD media download job after self.sdcard.download_file returns queued, or when "
-            "the user asks for download progress. Interpret active=true with status=queued, validating, or "
-            "downloading as still in progress; report bytes_written/expected_size and do not enqueue a duplicate. "
-            "status=success means the file is fully written, fsynced, SHA-256 verified, renamed, indexed, and "
-            "ACKed. status=success_ack_pending means the local file is valid but server cleanup ACK failed. "
-            "status=failed means the download is unusable; explain the error field briefly in Vietnamese. "
-            "Only tell the user 'download completed' for success or success_ack_pending.",
-            PropertyList(),
-            [this](const PropertyList&) -> ReturnValue {
-                return sd_media_manager_.GetStatusJson();
-            });
-
-        mcp_server.AddTool("self.sdimage.show",
-            "Display a PNG that already exists in /sdcard/images. Call when the user says xem, mở, hiển thị, "
-            "or cho xem an image already downloaded to the robot. query should contain only the image title "
-            "or filename keyword, for example query='ảnh gia đình'. Do not use this tool to download media and "
-            "do not call it before self.sdcard.download_status reports completion. If error=ambiguous, ask the "
-            "user in Vietnamese to choose one candidate; if image not found, suggest downloading it first. "
-            "On success the PNG stays visible until the next user interaction.",
-            PropertyList({Property("query", kPropertyTypeString)}),
-            [this](const PropertyList& properties) -> ReturnValue {
-                return sd_media_manager_.ShowImage(properties["query"].value<std::string>());
-            });
-#endif
     }
 
     void InitializeStateCallbacks() {
@@ -1003,32 +920,10 @@ public:
         return camera_;
     }
 
-#ifdef CONFIG_SD_CARD_MMC_INTERFACE
     virtual SdCard* GetSdCard() override {
-#ifdef CARD_SDMMC_BUS_WIDTH_4BIT
-        static SdMMC sdmmc(CARD_SDMMC_CLK_GPIO,
-                           CARD_SDMMC_CMD_GPIO,
-                           CARD_SDMMC_D0_GPIO,
-                           CARD_SDMMC_D1_GPIO,
-                           CARD_SDMMC_D2_GPIO,
-                           CARD_SDMMC_D3_GPIO);
-#else
-        static SdMMC sdmmc(CARD_SDMMC_CLK_GPIO,
-                           CARD_SDMMC_CMD_GPIO,
-                           CARD_SDMMC_D0_GPIO);
-#endif
-        return &sdmmc;
+        static FlashFatFs flash_fatfs;
+        return &flash_fatfs;
     }
-#endif
-#ifdef CONFIG_SD_CARD_SPI_INTERFACE
-    virtual SdCard* GetSdCard() override {
-        static SdSPI sdspi(CARD_SPI_MISO_GPIO,
-                           CARD_SPI_MOSI_GPIO,
-                           CARD_SPI_SCLK_GPIO,
-                           CARD_SPI_CS_GPIO);
-        return &sdspi;
-    }
-#endif
 };
 
 DECLARE_BOARD(CompactWifiBoardS3Cam);

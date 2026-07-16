@@ -7,6 +7,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "media_lib_adapter.h"
 #include "application.h"
 #include "system_info.h"
 
@@ -54,6 +55,14 @@ void task_monitor(void *pvParameters)
 
 extern "C" void app_main(void)
 {
+    // av_render/media_lib components require OS+memory adapters before any media allocation.
+    esp_err_t media_ret = media_lib_add_default_adapter();
+    if (media_ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize media_lib adapter: %s", esp_err_to_name(media_ret));
+    } else {
+        ESP_LOGI(TAG, "media_lib adapter initialized");
+    }
+
     // Initialize the default event loop
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 

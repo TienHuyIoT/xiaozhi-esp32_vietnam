@@ -21,6 +21,7 @@
 class AudioStreamPlayer;
 class VideoPlayer;
 class AlarmManager;
+class Mp4Player;
 
 // Forward declaration for MusicVisualizer (owned by Application)
 namespace music { class MusicVisualizer; struct MusicInfo; }
@@ -84,6 +85,7 @@ public:
 	Esp32Radio* GetRadio() { return radio_; }
 	Esp32SdMusic* GetSdMusic() { return sd_music_; }
 	VideoPlayer* GetVideo() { return sd_video_; }
+	Mp4Player* GetMp4Video() { return mp4_video_; }
 
     /** Get the music visualizer (owned by Application). */
     music::MusicVisualizer* GetMusicVisualizer() { return music_visualizer_.get(); }
@@ -122,6 +124,13 @@ public:
      * @return true if playback started
      */
     bool PlaySdMedia(const std::string& keyword, bool is_video = false);
+
+    /**
+     * @brief Play MP4 video from SD card by full path.
+     * @param file_path Absolute path to MP4 file
+     * @return true if playback started
+     */
+    bool PlayMp4Video(const std::string& file_path);
 
     /**
      * @brief Play AVI video from SD card by full path.
@@ -188,6 +197,9 @@ public:
     /** Get the alarm manager instance. */
     AlarmManager* GetAlarmManager() const { return alarm_manager_; }
 
+    /** Initialize SD card MP4 video player. */
+    bool InitMp4Video();
+
 private:
     Application();
     ~Application();
@@ -207,6 +219,7 @@ private:
     Esp32SdMusic* sd_music_ = nullptr;
     VideoPlayer* sd_video_ = nullptr;
     AlarmManager* alarm_manager_ = nullptr;
+    Mp4Player* mp4_video_ = nullptr;
 
     // Music spectrum visualizer (owned by Application, not Display)
     std::unique_ptr<music::MusicVisualizer> music_visualizer_;
@@ -236,6 +249,7 @@ private:
         kRadio    = 2,   ///< Keep radio, stop everything else
         kSdMusic  = 3,   ///< Keep SD music, stop everything else
         kVideo    = 4,   ///< Keep video, stop everything else
+        kMp4Video = 5,   ///< Keep MP4 video, stop everything else
     };
 
     /**

@@ -21,6 +21,7 @@
 #include "features/music/music_visualizer.h"
 #include "features/spectrum/spectrum_manager.h"
 #include "features/video/video_player.h"
+#include "features/mp4/mp4_player.h"
 #include "features/QRCode/qrcode_display.h"
 #include "features/alarm_clock/alarm_manager.h"
 #include "features/why_questions/image_display.h"
@@ -444,7 +445,21 @@ void Application::Start() {
         if (sd_card->Initialize() == ESP_OK) {
             ESP_LOGI(TAG, "SD card mounted successfully");
             InitSdMusic();
+
+#if (0) // Test video playback avi video from SD card
             InitVideo();
+            PlayVideo("/sdcard/videos/video_15s.avi");
+            vTaskDelay(pdMS_TO_TICKS(16000)); // Play for 15 seconds
+#endif
+#if (0) // Test video playback mp4 video from SD card
+            InitMp4Video();
+            if (PlayMp4Video("/sdcard/videos/video_30s.mp4")) {
+                ESP_LOGI(TAG, "Playing MP4 video");
+                vTaskDelay(pdMS_TO_TICKS(31000)); // Play for 31 seconds
+            } else {
+                ESP_LOGE(TAG, "Failed to play MP4 video");
+            }
+#endif
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
@@ -1340,6 +1355,7 @@ bool Application::IsMediaPlaying() const {
     if (sd_music_ && sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing) return true;
 #ifdef CONFIG_SD_CARD_ENABLE
     if (sd_video_ && sd_video_->GetState() == VideoPlayerState::Playing) return true;
+    if (mp4_video_ && mp4_video_->GetState() == Mp4PlayerState::Playing) return true;
 #endif
     return false;
 }
@@ -1409,6 +1425,13 @@ void Application::StopOtherMedia(MediaComponent except) {
         if (state == VideoPlayerState::Playing || state == VideoPlayerState::Paused) {
             ESP_LOGI(TAG, "StopOtherMedia: stopping video");
             sd_video_->Stop();
+        }
+    }
+    if (except != MediaComponent::kMp4Video && mp4_video_) {
+        auto state = mp4_video_->GetState();
+        if (state == Mp4PlayerState::Playing || state == Mp4PlayerState::Paused) {
+            ESP_LOGI(TAG, "StopOtherMedia: stopping MP4 video");
+            mp4_video_->Stop();
         }
     }
 #endif
@@ -1773,6 +1796,84 @@ bool Application::InitAlarm() {
     McpFeatureTools::RegisterAlarmTools(alarm_manager_);
     ESP_LOGI(TAG, "InitAlarm: alarm manager ready");
     return true;
+}
+
+bool Application::PlayMp4Video(const std::string& file_path) {
+#ifdef CONFIG_SD_CARD_ENABLE
+    if (!mp4_video_) {
+        ESP_LOGE(TAG, "PlayMp4Video: MP4 player not initialized");
+        return false;
+    }
+    if (mp4_video_->GetState() == Mp4PlayerState::Error) {
+        ESP_LOGE(TAG, "PlayMp4Video: MP4 player in error state");
+        return false;
+    }
+
+    StopOtherMedia(MediaComponent::kMp4Video);
+    EnsureIdleForMedia();
+
+    ESP_LOGI(TAG, "PlayMp4Video: path='%s'", file_path.c_str());
+    return mp4_video_->Play(file_path);
+#else
+    ESP_LOGW(TAG, "SD card support not enabled");
+    return false;
+#endif
+}
+
+bool Application::InitMp4Video() {
+#ifdef CONFIG_SD_CARD_ENABLE
+    auto& board = Board::GetInstance();
+    auto sd_card = board.GetSdCard();
+    if (!sd_card) {
+        ESP_LOGW(TAG, "InitMp4Video: no SD card");
+        return false;
+    }
+    auto display = board.GetDisplay();
+    auto codec = board.GetAudioCodec();
+    auto* lcd = dynamic_cast<LcdDisplay*>(display);
+    if (lcd != nullptr) {
+        mp4_video_ = &Mp4Player::GetInstance();
+        bool ok = mp4_video_->Initialize(
+            lcd->GetPanelHandle(),
+            static_cast<uint16_t>(lcd->width()),
+            static_cast<uint16_t>(lcd->height()),
+            codec,
+            sd_card,
+            display,
+            Mp4RenderMode::LvglCanvas);
+        if (ok) {
+            size_t found = mp4_video_->ScanDirectory();
+            ESP_LOGI(TAG, "InitMp4Video: found %zu MP4 files", found);
+
+            mp4_video_->SetStateCallback([](Mp4PlayerState old_state,
+                                            Mp4PlayerState new_state) {
+                auto display = Board::GetInstance().GetDisplay();
+                if (!display) return;
+                if (new_state == Mp4PlayerState::Playing) {
+                    display->SetMediaOverlayActive(true);
+                    ESP_LOGI(TAG, "MP4 playing: UI hidden");
+                } else if (old_state == Mp4PlayerState::Playing &&
+                           (new_state == Mp4PlayerState::Idle ||
+                            new_state == Mp4PlayerState::Stopping)) {
+                    display->SetMediaOverlayActive(false);
+                    ESP_LOGI(TAG, "MP4 stopped: UI restored");
+                }
+            });
+
+            mp4_video_->SetAudioCallback([this](int16_t* pcm, size_t samples, int channels) {
+                audio_service_.UpdateOutputTimestamp();
+            });
+        } else {
+            ESP_LOGW(TAG, "InitMp4Video: Initialize failed");
+            mp4_video_ = nullptr;
+        }
+    } else {
+        ESP_LOGW(TAG, "InitMp4Video: display is not LCD");
+    }
+    return true;
+#else
+    return false;
+#endif
 }
 
 // --- [DienBien Mod]- WEATHER SCREEN UPDATE----

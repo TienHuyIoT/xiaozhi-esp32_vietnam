@@ -28,6 +28,7 @@ extern const uint8_t assets_index_html_end[] asm("_binary_assets_index_html_end"
 
 const char* kOtaIndexHtml = reinterpret_cast<const char*>(ota_index_html_start);
 const char* kAssetIndexHtml = reinterpret_cast<const char*>(assets_index_html_start);
+constexpr size_t kMaxDisplayImageBodyBytes = 8 * 1024;
 }  // namespace
 
 // Singleton implementation
@@ -921,15 +922,33 @@ esp_err_t OtaServer::HandleAssetsUpload(httpd_req_t* req) {
 }
 
 esp_err_t OtaServer::HandleDisplayImage(httpd_req_t* req) {
-  char body[512];
-  int len = httpd_req_recv(req, body, sizeof(body) - 1);
-  if (len <= 0) {
+  if (req->content_len == 0) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
     return ESP_FAIL;
   }
-  body[len] = '\0';
 
-  cJSON* json = cJSON_Parse(body);
+  if (req->content_len > kMaxDisplayImageBodyBytes) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large");
+    return ESP_FAIL;
+  }
+
+  std::string body;
+  body.resize(req->content_len);
+
+  size_t received = 0;
+  while (received < body.size()) {
+    int len = httpd_req_recv(req, &body[received], body.size() - received);
+    if (len <= 0) {
+      if (len == HTTPD_SOCK_ERR_TIMEOUT) {
+        continue;
+      }
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Receive failed");
+      return ESP_FAIL;
+    }
+    received += len;
+  }
+
+  cJSON* json = cJSON_Parse(body.c_str());
   if (!json) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
     return ESP_FAIL;

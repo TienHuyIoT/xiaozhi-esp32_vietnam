@@ -554,11 +554,14 @@ void Application::Start() {
                         if (dbg) { ESP_LOGI(TAG, "TOOL_MSG: %s", dbg); cJSON_free(dbg); }
                     }
 
+                    bool internal_tool_message = false;
+
                     // Detect why-image tool-call notifications sent by the broker.
                     // The broker sends `% show_why_image({"image_url":"..."})` as
                     // sentence_start text (not TTS).  Terminal output may truncate
                     // it but text->valuestring always holds the full string.
                     if (msg.rfind("% show_why_image", 0) == 0) {
+                        internal_tool_message = true;
                         auto* lvgl_disp = dynamic_cast<LvglDisplay*>(display);
                         if (lvgl_disp) {
                             // Parse image_url directly — no server URL needed.
@@ -607,15 +610,18 @@ void Application::Start() {
                             }
                         }
                     } else if (msg.rfind("% hide_why_image", 0) == 0) {
+                        internal_tool_message = true;
                         auto* lvgl_disp = dynamic_cast<LvglDisplay*>(display);
                         if (lvgl_disp) {
                             StartImageDisplayTask(lvgl_disp, {""});
                         }
                     }
 
-                    Schedule([this, display, message = msg]() {
-                        display->SetChatMessage("assistant", message.c_str());
-                    });
+                    if (!internal_tool_message) {
+                        Schedule([this, display, message = msg]() {
+                            display->SetChatMessage("assistant", message.c_str());
+                        });
+                    }
                 }
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {

@@ -15,15 +15,73 @@ extern "C" {
 #include <freertos/task.h>
 #include <cstring>
 #include <cJSON.h>
+#include <mutex>
+#include <new>
 
 static const char* TAG = "ImageDisplay";
 static constexpr size_t kMaxJpegBytes = 300 * 1024;
+static constexpr size_t kMaxRgbBytes = 512 * 1024;
+static constexpr int kMaxDecodedDimension = 1024;
+static constexpr int kMaxImageDurationMs = 30000;
 
-struct ImageDisplayCtx {
+struct ImageDisplayRequest {
     LvglDisplay* display;
     std::vector<std::string> urls;
     int duration_ms;
 };
+
+static std::mutex s_image_worker_mutex;
+static TaskHandle_t s_image_worker_task = nullptr;
+static ImageDisplayRequest* s_pending_request = nullptr;
+
+static void ImageDisplayWorkerTaskFn(void* arg);
+
+static bool EnsureImageDisplayWorkerStarted() {
+    std::lock_guard<std::mutex> lock(s_image_worker_mutex);
+    if (s_image_worker_task != nullptr) {
+        return true;
+    }
+
+    TaskHandle_t worker = nullptr;
+    BaseType_t ret = xTaskCreate(
+        ImageDisplayWorkerTaskFn, "img_disp",
+        8 * 1024, nullptr,
+        3, &worker);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create image display worker");
+        return false;
+    }
+
+    s_image_worker_task = worker;
+    return true;
+}
+
+static ImageDisplayRequest* TakePendingImageRequest() {
+    std::lock_guard<std::mutex> lock(s_image_worker_mutex);
+    auto* request = s_pending_request;
+    s_pending_request = nullptr;
+    return request;
+}
+
+static bool WaitForDurationOrNewRequest(int duration_ms) {
+    if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
+        return true;
+    }
+
+    if (duration_ms <= 0) {
+        return false;
+    }
+
+    int remaining_ms = duration_ms;
+    while (remaining_ms > 0) {
+        int step_ms = remaining_ms > 100 ? 100 : remaining_ms;
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(step_ms)) > 0) {
+            return true;
+        }
+        remaining_ms -= step_ms;
+    }
+    return false;
+}
 
 static void FetchAndShow(LvglDisplay* display, const std::string& url) {
     // --- Download JPEG ---
@@ -44,7 +102,12 @@ static void FetchAndShow(LvglDisplay* display, const std::string& url) {
     }
 
     size_t content_length = http->GetBodyLength();
-    if (content_length == 0 || content_length > kMaxJpegBytes) {
+    if (content_length > kMaxJpegBytes) {
+        ESP_LOGW(TAG, "JPEG too large: %zu B > %zu B", content_length, kMaxJpegBytes);
+        http->Close();
+        return;
+    }
+    if (content_length == 0) {
         content_length = kMaxJpegBytes;
     }
 
@@ -116,8 +179,33 @@ static void FetchAndShow(LvglDisplay* display, const std::string& url) {
 
     int w      = hdr.width;
     int h      = hdr.height;
+    if (w <= 0 || h <= 0 || w > kMaxDecodedDimension || h > kMaxDecodedDimension) {
+        ESP_LOGW(TAG, "Invalid JPEG dimensions: %dx%d", w, h);
+        jpeg_dec_close(dec);
+        heap_caps_free(jpeg_buf);
+        return;
+    }
+
+    size_t width = static_cast<size_t>(w);
+    size_t height = static_cast<size_t>(h);
+    size_t max_pixels = kMaxRgbBytes / sizeof(uint16_t);
+    if (width > max_pixels / height) {
+        ESP_LOGW(TAG, "Decoded image too large: %dx%d", w, h);
+        jpeg_dec_close(dec);
+        heap_caps_free(jpeg_buf);
+        return;
+    }
+
+    size_t pixel_count = width * height;
+    size_t rgb_size = pixel_count * sizeof(uint16_t);
+    if (rgb_size > kMaxRgbBytes) {
+        ESP_LOGW(TAG, "Decoded image too large: %dx%d -> %zu B", w, h, rgb_size);
+        jpeg_dec_close(dec);
+        heap_caps_free(jpeg_buf);
+        return;
+    }
+
     int stride = w * 2;
-    size_t rgb_size = (size_t)stride * h;
 
     // 16-byte aligned output buffer in PSRAM (required by esp_jpeg_dec DMA path)
     uint8_t* rgb_buf = (uint8_t*)heap_caps_aligned_alloc(
@@ -166,20 +254,38 @@ static void FetchAndShow(LvglDisplay* display, const std::string& url) {
     // rgb_buf ownership is now held by LvglAllocatedImage; freed by its destructor
 }
 
-static void ImageDisplayTaskFn(void* arg) {
-    auto* ctx = static_cast<ImageDisplayCtx*>(arg);
-    for (const auto& url : ctx->urls) {
+static void ProcessImageDisplayRequest(const ImageDisplayRequest& request) {
+    ulTaskNotifyTake(pdTRUE, 0);
+
+    for (const auto& url : request.urls) {
         if (url.empty()) {
-            // Empty URL = clear / hide the preview image
-            DisplayLockGuard lock(ctx->display);
-            ctx->display->ClearPreviewImage();
-            continue;
+            request.display->ClearPreviewImage();
+        } else {
+            FetchAndShow(request.display, url);
         }
-        FetchAndShow(ctx->display, url);
-        vTaskDelay(pdMS_TO_TICKS(ctx->duration_ms));
+
+        if (WaitForDurationOrNewRequest(request.duration_ms)) {
+            break;
+        }
     }
-    delete ctx;
-    vTaskDelete(nullptr);
+}
+
+static void ImageDisplayWorkerTaskFn(void* arg) {
+    (void)arg;
+
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        for (;;) {
+            auto* request = TakePendingImageRequest();
+            if (request == nullptr) {
+                break;
+            }
+
+            ProcessImageDisplayRequest(*request);
+            delete request;
+        }
+    }
 }
 
 void StartImageDisplayTask(LvglDisplay* display,
@@ -187,16 +293,28 @@ void StartImageDisplayTask(LvglDisplay* display,
                            int duration_ms) {
     if (!display || urls.empty()) return;
 
-    auto* ctx = new ImageDisplayCtx{display, std::move(urls), duration_ms};
+    if (duration_ms < 0) {
+        duration_ms = 0;
+    } else if (duration_ms > kMaxImageDurationMs) {
+        duration_ms = kMaxImageDurationMs;
+    }
 
-    BaseType_t ret = xTaskCreate(
-        ImageDisplayTaskFn, "img_disp",
-        8 * 1024, ctx,
-        3, nullptr);
+    auto* request = new (std::nothrow) ImageDisplayRequest{display, std::move(urls), duration_ms};
+    if (request == nullptr) {
+        ESP_LOGE(TAG, "OOM: cannot allocate image display request");
+        return;
+    }
 
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create image display task");
-        delete ctx;
+    if (!EnsureImageDisplayWorkerStarted()) {
+        delete request;
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(s_image_worker_mutex);
+        delete s_pending_request;
+        s_pending_request = request;
+        xTaskNotifyGive(s_image_worker_task);
     }
 }
 

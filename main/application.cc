@@ -486,19 +486,17 @@ void Application::Start() {
     mcp_server.AddUserOnlyTools();
 
     edge_tts_client_ = std::make_unique<EdgeTtsClient>();
+    if (codec->output_sample_rate() == 24000) {
+        edge_tts_client_->SetOutputSampleRate(24000);
+    }
     edge_tts_client_->OnAudioData([this](const std::vector<int16_t>& pcm, int sample_rate) {
         audio_service_.PushPcmToPlaybackQueue(pcm, sample_rate);
     });
-    edge_tts_client_->OnCompleted([this]() {
-        Schedule([this]() {
-            if (device_state_ == kDeviceStateSpeaking) {
-                if (listening_mode_ == kListeningModeManualStop) {
-                    SetDeviceState(kDeviceStateIdle);
-                } else {
-                    SetDeviceState(kDeviceStateListening);
-                }
-            }
-        });
+    edge_tts_client_->OnIdle([this]() {
+        Schedule([this]() { CheckSpeakingFinished(); });
+    });
+    edge_tts_client_->OnError([this](const std::string& msg) {
+        ESP_LOGE(TAG, "EdgeTTS: %s", msg.c_str());
     });
 
 if (ota.HasWebsocketConfig()) {
@@ -547,14 +545,17 @@ if (ota.HasWebsocketConfig()) {
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
                     aborted_ = false;
+                    tts_stop_received_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
                         SetDeviceState(kDeviceStateSpeaking);
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+                    tts_stop_received_ = true;
                     if (aborted_) {
-                        edge_tts_client_->Stop();
+                        edge_tts_client_->Abort();
+                        audio_service_.ResetDecoder();
                         if (device_state_ == kDeviceStateSpeaking) {
                             if (listening_mode_ == kListeningModeManualStop) {
                                 SetDeviceState(kDeviceStateIdle);
@@ -562,8 +563,9 @@ if (ota.HasWebsocketConfig()) {
                                 SetDeviceState(kDeviceStateListening);
                             }
                         }
+                    } else {
+                        CheckSpeakingFinished();
                     }
-                    // If not aborted, we wait for EdgeTtsClient's OnCompleted to change state
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
@@ -576,7 +578,7 @@ if (ota.HasWebsocketConfig()) {
                         if (dbg) { ESP_LOGI(TAG, "TOOL_MSG: %s", dbg); cJSON_free(dbg); }
                     } else {
                         // Forward text to Edge TTS
-                        edge_tts_client_->Start(msg, "vi-VN-HoaiMyNeural");
+                        edge_tts_client_->Enqueue(msg, "vi-VN-HoaiMyNeural");
                     }
 
                     // Detect why-image tool-call notifications sent by the broker.
@@ -850,9 +852,25 @@ void Application::OnWakeWordDetected() {
     }
 }
 
+void Application::CheckSpeakingFinished() {
+    if (device_state_ != kDeviceStateSpeaking) return;
+    if (!tts_stop_received_) return;
+    if (edge_tts_client_->IsBusy()) return;
+    
+    for (int i = 0; i < 10 && !audio_service_.IsPlaybackQueueEmpty(); ++i) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    SetDeviceState(listening_mode_ == kListeningModeManualStop
+                       ? kDeviceStateIdle : kDeviceStateListening);
+}
+
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
+    if (edge_tts_client_) {
+        edge_tts_client_->Abort();
+    }
+    audio_service_.ResetDecoder();
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
     }

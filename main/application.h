@@ -228,6 +228,7 @@ private:
     bool has_server_time_ = false;
     bool aborted_ = false;
     int clock_ticks_ = 0;
+    bool tts_stop_received_ = false;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
     TaskHandle_t main_event_loop_task_handle_ = nullptr;
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
@@ -262,6 +263,7 @@ private:
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
+    void CheckSpeakingFinished();
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     // --- Weather Info ---

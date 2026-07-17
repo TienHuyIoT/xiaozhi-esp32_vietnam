@@ -506,7 +506,12 @@ void AudioService::PushPcmToPlaybackQueue(const std::vector<int16_t>& pcm, int s
     }
 
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
-    audio_queue_cv_.wait(lock, [this]() { return audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE; });
+    bool ok = audio_queue_cv_.wait_for(lock, std::chrono::seconds(3), 
+        [this]() { return audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE; });
+    if (!ok) {
+        ESP_LOGW(TAG, "playback stuck, drop chunk");
+        return;
+    }
     audio_playback_queue_.push_back(std::move(task));
     audio_queue_cv_.notify_all();
 }
@@ -711,6 +716,11 @@ void AudioService::PlaySound(const std::string_view& ogg) {
 bool AudioService::IsIdle() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     return audio_encode_queue_.empty() && audio_decode_queue_.empty() && audio_playback_queue_.empty() && audio_testing_queue_.empty();
+}
+
+bool AudioService::IsPlaybackQueueEmpty() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return audio_playback_queue_.empty();
 }
 
 void AudioService::ResetDecoder() {

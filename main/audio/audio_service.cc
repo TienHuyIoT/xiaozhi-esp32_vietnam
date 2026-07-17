@@ -488,6 +488,29 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
     return true;
 }
 
+void AudioService::PushPcmToPlaybackQueue(const std::vector<int16_t>& pcm, int sample_rate) {
+    auto task = std::make_unique<AudioTask>();
+    task->type = kAudioTaskTypeDecodeToPlaybackQueue;
+    task->timestamp = 0;
+    
+    // Resample if necessary
+    if (sample_rate != codec_->output_sample_rate()) {
+        OpusResampler resampler;
+        resampler.Configure(sample_rate, codec_->output_sample_rate());
+        int target_size = resampler.GetOutputSamples(pcm.size());
+        std::vector<int16_t> resampled(target_size);
+        resampler.Process(pcm.data(), pcm.size(), resampled.data());
+        task->pcm = std::move(resampled);
+    } else {
+        task->pcm = pcm;
+    }
+
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    audio_queue_cv_.wait(lock, [this]() { return audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE; });
+    audio_playback_queue_.push_back(std::move(task));
+    audio_queue_cv_.notify_all();
+}
+
 std::unique_ptr<AudioStreamPacket> AudioService::PopPacketFromSendQueue() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     if (audio_send_queue_.empty()) {

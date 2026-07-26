@@ -11,8 +11,10 @@ extern "C" {
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <string>
 #include <cstring>
 #include <cJSON.h>
 #include <mutex>
@@ -23,6 +25,11 @@ static constexpr size_t kMaxJpegBytes = 300 * 1024;
 static constexpr size_t kMaxRgbBytes = 512 * 1024;
 static constexpr int kMaxDecodedDimension = 1024;
 static constexpr int kMaxImageDurationMs = 30000;
+// The wsrv.nl proxy occasionally reports HTTP 404 (or 429/5xx) when Wikimedia
+// rate-limits it upstream (Wikimedia 429 → wsrv.nl 404). These are transient,
+// so retry a couple of times with a short backoff before giving up.
+static constexpr int kFetchMaxAttempts = 3;
+static constexpr int kFetchRetryDelayMs = 800;
 
 struct ImageDisplayRequest {
     LvglDisplay* display;
@@ -83,63 +90,108 @@ static bool WaitForDurationOrNewRequest(int duration_ms) {
     return false;
 }
 
-static void FetchAndShow(LvglDisplay* display, const std::string& url) {
-    // --- Download JPEG ---
-    auto http = Board::GetInstance().GetNetwork()->CreateHttp(5000);
-    http->SetHeader("User-Agent", "ESP32-Xiaozhi/1.0 (educational AI robot)");
-    http->SetHeader("Accept", "image/jpeg,image/*");
-
-    if (!http->Open("GET", url)) {
-        ESP_LOGE(TAG, "Open failed: %s", url.c_str());
-        return;
-    }
-
-    int status = http->GetStatusCode();
-    if (status != 200 && status != 206) {
-        ESP_LOGW(TAG, "HTTP %d for %s", status, url.c_str());
-        http->Close();
-        return;
-    }
-
-    size_t content_length = http->GetBodyLength();
-    if (content_length > kMaxJpegBytes) {
-        ESP_LOGW(TAG, "JPEG too large: %zu B > %zu B", content_length, kMaxJpegBytes);
-        http->Close();
-        return;
-    }
-    if (content_length == 0) {
-        content_length = kMaxJpegBytes;
-    }
-
-    uint8_t* jpeg_buf = (uint8_t*)heap_caps_malloc(content_length,
-                                                    MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-    if (!jpeg_buf) {
-        jpeg_buf = (uint8_t*)heap_caps_malloc(content_length, MALLOC_CAP_8BIT);
-    }
-    if (!jpeg_buf) {
-        ESP_LOGE(TAG, "OOM: cannot alloc %zu B for JPEG", content_length);
-        http->Close();
-        return;
-    }
-
-    size_t total = 0;
-    bool read_error = false;
-    while (total < content_length) {
-        int n = http->Read((char*)(jpeg_buf + total), content_length - total);
-        if (n < 0) {
-            ESP_LOGE(TAG, "Read error after %zu B", total);
-            read_error = true;
-            break;
+// Downloads a JPEG into a freshly allocated buffer (caller frees with
+// heap_caps_free). Returns nullptr on failure. Transient HTTP errors from the
+// wsrv.nl proxy (404/429/5xx) and short reads are retried; hard errors (too
+// large, OOM) fail immediately.
+static uint8_t* DownloadJpeg(const std::string& url, size_t* out_len) {
+    for (int attempt = 1; attempt <= kFetchMaxAttempts; ++attempt) {
+        // wsrv.nl caches upstream failures per-URL: when Wikimedia rate-limits it
+        // (429 → wsrv reports 404), the identical URL keeps serving that cached
+        // error. On retries, append a unique cache-buster so wsrv.nl re-fetches
+        // from origin under a fresh cache key instead of the poisoned entry.
+        std::string fetch_url = url;
+        if (attempt > 1) {
+            fetch_url += (url.find('?') == std::string::npos ? '?' : '&');
+            fetch_url += "cb=";
+            fetch_url += std::to_string(esp_random());
         }
-        if (n == 0) break;
-        total += n;
-    }
-    http->Close();
 
-    if (total < 4 || read_error ||
-        jpeg_buf[0] != 0xFF || jpeg_buf[1] != 0xD8 || jpeg_buf[2] != 0xFF) {
-        heap_caps_free(jpeg_buf);
-        ESP_LOGW(TAG, "Not a valid JPEG (%zu B): %s", total, url.c_str());
+        auto http = Board::GetInstance().GetNetwork()->CreateHttp(5000);
+        http->SetHeader("User-Agent", "ESP32-Xiaozhi/1.0 (educational AI robot)");
+        http->SetHeader("Accept", "image/jpeg,image/*");
+
+        if (!http->Open("GET", fetch_url)) {
+            ESP_LOGW(TAG, "Open failed (attempt %d/%d): %s",
+                     attempt, kFetchMaxAttempts, url.c_str());
+            if (attempt < kFetchMaxAttempts) {
+                vTaskDelay(pdMS_TO_TICKS(kFetchRetryDelayMs));
+                continue;
+            }
+            return nullptr;
+        }
+
+        int status = http->GetStatusCode();
+        if (status != 200 && status != 206) {
+            http->Close();
+            bool retryable = (status == 404 || status == 429 || status >= 500);
+            ESP_LOGW(TAG, "HTTP %d (attempt %d/%d) for %s",
+                     status, attempt, kFetchMaxAttempts, url.c_str());
+            if (retryable && attempt < kFetchMaxAttempts) {
+                vTaskDelay(pdMS_TO_TICKS(kFetchRetryDelayMs));
+                continue;
+            }
+            return nullptr;
+        }
+
+        size_t content_length = http->GetBodyLength();
+        if (content_length > kMaxJpegBytes) {
+            ESP_LOGW(TAG, "JPEG too large: %zu B > %zu B", content_length, kMaxJpegBytes);
+            http->Close();
+            return nullptr;  // not retryable
+        }
+        if (content_length == 0) {
+            content_length = kMaxJpegBytes;
+        }
+
+        uint8_t* jpeg_buf = (uint8_t*)heap_caps_malloc(content_length,
+                                                        MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+        if (!jpeg_buf) {
+            jpeg_buf = (uint8_t*)heap_caps_malloc(content_length, MALLOC_CAP_8BIT);
+        }
+        if (!jpeg_buf) {
+            ESP_LOGE(TAG, "OOM: cannot alloc %zu B for JPEG", content_length);
+            http->Close();
+            return nullptr;  // not retryable
+        }
+
+        size_t total = 0;
+        bool read_error = false;
+        while (total < content_length) {
+            int n = http->Read((char*)(jpeg_buf + total), content_length - total);
+            if (n < 0) {
+                ESP_LOGE(TAG, "Read error after %zu B", total);
+                read_error = true;
+                break;
+            }
+            if (n == 0) break;
+            total += n;
+        }
+        http->Close();
+
+        if (total < 4 || read_error ||
+            jpeg_buf[0] != 0xFF || jpeg_buf[1] != 0xD8 || jpeg_buf[2] != 0xFF) {
+            heap_caps_free(jpeg_buf);
+            ESP_LOGW(TAG, "Not a valid JPEG (%zu B, attempt %d/%d): %s",
+                     total, attempt, kFetchMaxAttempts, url.c_str());
+            if (attempt < kFetchMaxAttempts) {
+                vTaskDelay(pdMS_TO_TICKS(kFetchRetryDelayMs));
+                continue;
+            }
+            return nullptr;
+        }
+
+        *out_len = total;
+        return jpeg_buf;
+    }
+    return nullptr;
+}
+
+static void FetchAndShow(LvglDisplay* display, const std::string& url) {
+    // --- Download JPEG (with retry for transient proxy rate-limits) ---
+    size_t total = 0;
+    uint8_t* jpeg_buf = DownloadJpeg(url, &total);
+    if (!jpeg_buf) {
         return;
     }
 

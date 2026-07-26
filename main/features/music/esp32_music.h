@@ -24,7 +24,7 @@
 /* ------------------------------------------------------------------ */
 
 /** Default music server URL */
-#define DEFAULT_MUSIC_URL       "http://171.234.93.103:5000"
+#define DEFAULT_MUSIC_URL       "https://trinh-khanh-mp3-new-soundcloud.hf.space"
 
 /** Lyric buffer latency compensation (ms) */
 #define LYRIC_LATENCY_OFFSET_MS 600

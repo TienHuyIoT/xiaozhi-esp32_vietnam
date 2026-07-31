@@ -1,219 +1,64 @@
-# Weather Feature - Dự báo thời tiết
+# Weather idle card
 
-## Giới thiệu
+## Trạng thái hiện tại
 
-Tính năng **Weather** cho phép thiết bị ESP32-S3 hiển thị thời tiết hiện tại và dự báo 5 ngày trên màn hình LCD khi ở trạng thái idle (không sử dụng). Thời tiết được lấy từ API **OpenWeatherMap** và có thể tự động phát hiện vị trí qua địa chỉ IP.
+Weather có source, service và UI trong firmware nhưng **đang tắt** ở profile hiện tại (`sdkconfig` không đặt `CONFIG_WEATHER_IDLE_DISPLAY_ENABLE`). Kconfig mặc định cũng tắt. Source vẫn nằm trong build; không được mô tả là bị loại hoàn toàn khỏi binary.
 
-Hệ thống bao gồm các thành phần:
+Để thử nghiệm, bật `CONFIG_WEATHER_IDLE_DISPLAY_ENABLE=y` trong `idf.py menuconfig`, dùng board có `LcdDisplay`, Wi-Fi và đủ tài nguyên UI, sau đó build lại.
 
-| Thành phần | File chính | Chức năng |
-|---|---|---|
-| **Weather Service** | `main/features/weather/weather_service.{h,cc}` | Gọi API, parse dữ liệu thời tiết |
-| **Weather UI** | `main/features/weather/weather_ui.{h,cc}` | Giao diện LCD với đồng hồ lật + thời tiết |
-| **Weather Model** | `main/features/weather/weather_model.h` | Cấu trúc dữ liệu WeatherInfo, IdleCardInfo |
-| **Weather Config** | `main/features/weather/weather_config.h` | Hằng số cấu hình, API endpoint |
+## Luồng chạy
 
----
+Khi flag được bật:
+
+1. Application tạo weather idle task sau khi network sẵn sàng.
+2. Task chỉ cập nhật khi thiết bị ở trạng thái idle và không có media đang phát.
+3. Lần fetch đầu được gọi ở khoảng giây thứ 5; các lần sau theo điều kiện hard-code 1800 giây (30 phút) trong `Application`.
+4. Service gọi OpenWeatherMap cho current weather và cố gắng lấy forecast.
+
+`WEATHER_UPDATE_INTERVAL_MS` trong `weather_config.h` được dùng bởi `NeedsUpdate()`, nhưng scheduler hiện tại không gọi hàm đó để quyết định chu kỳ. Chỉ đổi macro này không thay đổi lịch fetch thực tế; muốn đổi chu kỳ phải sửa caller trong `Application`.
 
 ## Cấu hình
 
-### 1. Kconfig (`idf.py menuconfig`)
-
-Mở menu cấu hình và bật:
-
-```
-Xiaozhi Assistant
-└── Enable Weather Feature (Idle Display for LCD)  ──→  CONFIG_WEATHER_IDLE_DISPLAY_ENABLE=y
-```
-
-Khi bật `CONFIG_WEATHER_IDLE_DISPLAY_ENABLE=y`, toàn bộ thành phần weather sẽ được biên dịch:
-
-- `WeatherService` được khởi tạo trong `application.cc` dòng 1649
-- Task `weather_idle_task` chạy độc lập, cập nhật đồng hồ mỗi giây và fetch thời tiết mỗi 30 phút
-- `WeatherUI` được tạo trong `lcd_display.cc` dòng 200
-- Giao diện idle card hiển thị khi không có media đang phát
-
-### 2. Cấu hình trong Settings
-
-Có thể đặt city và API key qua Settings (key-value store), hoặc để mặc định:
-
-| Key | Giá trị mặc định | Mô tả |
-|---|---|---|
-| `weather_city` | `""` (auto detect) | Tên thành phố cần xem thời tiết |
-| `weather_api_key` | `""` (dùng key mặc định) | OpenWeatherMap API key |
-
-> **Lưu ý:** Nếu `weather_city` rỗng hoặc là `"auto"`, hệ thống sẽ tự động phát hiện thành phố qua IP (`ipwho.is`). Nếu phát hiện thất bại, mặc định fallback về **Hanoi**.
-
-### 3. weather_config.h
-
-File: `main/features/weather/weather_config.h`
-
-```c
-// Khoảng thời gian cập nhật thời tiết (30 phút)
-#define WEATHER_UPDATE_INTERVAL_MS (30 * 60 * 1000)
-
-// OpenWeatherMap API key mặc định (demo key, giới hạn usage)
-#define OPEN_WEATHERMAP_API_KEY_DEFAULT "ae8d3c2fda691593ce3e84472ef25784"
-
-// API endpoints
-#define WEATHER_API_ENDPOINT "https://api.openweathermap.org/data/2.5/"
-#define IP_LOCATION_API_ENDPOINT "https://ipwho.is"
-
-// Thành phố mặc định khi không phát hiện được IP
-#define CITY_LOCATION_DEFAULT "Hanoi"
-
-// Timeout cho HTTP request (10 giây)
-#define WEATHER_HTTP_TIMEOUT_MS 10000
-```
-
----
-
-## Luồng hoạt động
-
-### Khởi động
-
-```
-1. application.cc → StartWeatherIdleTask() (dòng 1649)
-2. Tạo task "weather_idle_task" với stack 6KB, priority 2
-3. Sau 5 giây đầu tiên → gọi FetchWeatherData()
-4. Mỗi 30 phút → gọi lại FetchWeatherData()
-5. Mỗi giây → gọi UpdateIdleDisplay() để cập nhật đồng hồ
-```
-
-### Fetch dữ liệu thời tiết
-
-```
-1. Kiểm tra WiFi đã kết nối (chờ tối đa 20 giây)
-2. Lấy city từ settings hoặc auto-detect qua IP
-3. Gọi API: GET /weather?q={city}&appid={key}&units=metric&lang=vi
-4. Parse JSON → WeatherInfo (temp, humidity, feels_like, wind, icon...)
-5. Gọi API: GET /forecast?q={city}&appid={key}&units=metric&cnt=40
-6. Parse JSON → lấy 5 mốc dự báo (12:00 mỗi ngày)
-7. Lưu vào WeatherInfo, đánh dấu valid=true
-8. Gọi UpdateIdleDisplay() để render lên LCD
-```
-
----
-
-## Giao diện Idle Card
-
-### Màn hình chính
-
-```
-┌─────────────────────────────────────┐
-│  🔋 85%            📶 -45 dBm      │  ← Header (pin + wifi)
-│                                     │
-│    ┌──┐  ┌──┐  ┌──┐  ┌──┐         │
-│    │ 1│ :│ 2│  │ 3│ :│ 4│         │  ← Đồng hồ lật (HH:MM)
-│    └──┘  └──┘  └──┘  └──┘         │
-│                                     │
-│     Thứ Năm, 08/05/2025            │  ← Ngày tháng
-│     📍 Hanoi                       │  ← Vị trí
-│     ☀️  32°C                       │  ← Thời tiết hiện tại
-└─────────────────────────────────────┘
-```
-
-### Thành phần UI (weather_ui.cc)
-
-| Thành phần | Mô tả |
+| Cấu hình | Hành vi thực tế |
 |---|---|
-| **Header** | Pin (biểu tượng + %), Wifi (RSSI + icon) |
-| **Đồng hồ lật** | 4 thẻ flip card cho HH:MM, animation lật khi đổi số |
-| **Ngày tháng** | Thứ, ngày/tháng/năm (tiếng Việt) |
-| **Vị trí** | Tên thành phố từ OpenWeatherMap |
-| **Khối thời tiết** | Icon thời tiết + nhiệt độ hiện tại |
+| `CONFIG_WEATHER_IDLE_DISPLAY_ENABLE` | Bật/tắt task và card idle |
+| `wifi/weather_city` | Thành phố sử dụng khi setting có giá trị; rỗng/`auto` sẽ dò theo IP |
+| `wifi/weather_api_key` | Có đường đọc setting, nhưng constructor hiện khởi tạo key mặc định khác rỗng nên setting thường không ghi đè được |
+| API endpoint | OpenWeatherMap current + forecast, đơn vị metric |
 
-### Mã icon thời tiết (Font Awesome)
+Dò IP đọc trường `region` từ dịch vụ định vị, không phải trường `city`. Nếu dò thất bại hoặc Wi-Fi chưa sẵn sàng, fetch bị bỏ qua/giữ trạng thái cũ.
 
-| Mã OpenWeatherMap | Icon | Mô tả |
-|---|---|---|
-| `01d`, `01n` | ☀️ | Trời quang |
-| `02d`, `02n` | 🌤️ | Ít mây |
-| `03d`, `03n`, `04d`, `04n` | ☁️ | Mây |
-| `09d`, `09n` | 🌧️ | Mưa |
-| `10d`, `10n` | 🌦️ | Mưa rào |
-| `11d`, `11n` | ⛈️ | Giông |
+## Dữ liệu và UI
 
----
+Current weather lưu thành phố, nhiệt độ, feels-like, độ ẩm, áp suất, gió, icon và mô tả. Forecast parser lấy các mốc 12:00 và có thể lưu tối đa 5 `ForecastItem`. Việc fetch forecast thất bại không làm current weather mất hiệu lực nếu current request đã thành công.
 
-## Cấu trúc dữ liệu
+Idle card hiện ưu tiên đồng hồ/ngày, vị trí, icon, nhiệt độ và thông tin current. Không quảng bá rằng màn hình hiện tại chắc chắn render đầy đủ 5 ngày forecast; vector forecast có trong model nhưng phần UI phải được kiểm tra riêng trên board.
 
-### WeatherInfo (weather_model.h)
+Board không có battery gauge sẽ hiển thị mức pin không xác định thay vì số phần trăm thực.
 
-Dữ liệu thời tiết từ API:
+## Cách sử dụng
 
-```c
-struct WeatherInfo {
-    std::string city;         // Tên thành phố
-    std::string description;  // Mô tả thời tiết ("Nhiều Mây")
-    std::string icon_code;    // Mã icon ("03d", "01n"...)
-    float temp = 0.0f;       // Nhiệt độ hiện tại (°C)
-    int humidity = 0;         // Độ ẩm (%)
-    float feels_like = 0.0f; // Nhiệt độ cảm giác (°C)
-    int pressure = 0;         // Áp suất khí quyển (hPa)
-    float wind_speed = 0.0f; // Tốc độ gió (m/s)
-    bool valid = false;       // Dữ liệu có hợp lệ không
+Tình huống vận hành và sử dụng:
 
-    std::vector<ForecastItem> forecast;  // Dự báo 5 ngày
-};
+- **Tự động hiển thị thẻ thời tiết khi idle:**
+  - Tính năng thời tiết **không có MCP tool độc lập** và không nhận câu lệnh giọng nói trực tiếp để xem thời tiết.
+  - Khi được bật cấu hình (`CONFIG_WEATHER_IDLE_DISPLAY_ENABLE=y`) và thiết bị ở trạng thái rảnh (Idle), màn hình sẽ tự động hiển thị thẻ thời tiết cùng đồng hồ/ngày tháng.
+  - Thiết bị tự động cập nhật dữ liệu thời tiết định kỳ (khoảng 30 phút một lần) từ OpenWeatherMap qua Wi-Fi.
 
-struct ForecastItem {
-    std::string day_name;   // "T2", "T3", "CN"...
-    std::string icon_code;  // Mã icon dự báo
-    float temp;             // Nhiệt độ dự báo (°C)
-};
-```
+- **Ẩn thẻ thời tiết trong các tình huống hoạt động:**
+  - Khi thiết bị đang phát nhạc, phát đài radio hoặc đang trong phiên hội thoại giọng nói với người dùng, thẻ thời tiết sẽ tự động bị ẩn để nhường màn hình cho giao diện tương ứng và việc tải dữ liệu thời tiết sẽ tạm hoãn.
 
-### IdleCardInfo (weather_model.h)
+## Giới hạn đã biết
 
-Dữ liệu truyền vào UI để hiển thị:
+- Profile hiện tại không hiển thị weather vì flag đang tắt.
+- Cần LCD; tài liệu không được hứa hỗ trợ OLED/cellular như một UI weather tương đương.
+- API key thay đổi qua setting chưa đáng tin cậy do giá trị mặc định trong constructor; muốn dùng key khác cần sửa cấu hình/source rồi build.
+- Chu kỳ “30 phút” nằm trong application loop, không tự lấy từ `WEATHER_UPDATE_INTERVAL_MS`.
+- Forecast là best-effort; current weather có thể hợp lệ dù forecast không tải được.
 
-```c
-struct IdleCardInfo {
-    std::string city;
-    std::string temperature_text;   // "32°C"
-    std::string description_text;    // "Nhiều Mây"
-    std::string humidity_text;       // "75%"
-    std::string wind_text;          // "3.5 m/s"
-    std::string pressure_text;
-    std::string battery_icon;       // Icon Font Awesome
-    std::string network_icon;       // Icon Font Awesome
-    const char* icon = nullptr;     // Icon thời tiết
-    int battery_level = 100;
-    bool is_charging = false;
-    int8_t rssi = 0;
-    std::vector<ForecastItem> forecast;
-};
-```
+## Xử lý lỗi
 
----
-
-## Lưu ý khi sử dụng
-
-### Về API
-
-1. **OpenWeatherMap API key:** Key mặc định có giới hạn usage. Khuyến nghị đăng ký key riêng tại [openweathermap.org/api](https://openweathermap.org/api) (miễn phí với 1000 calls/ngày).
-2. **Ngôn ngữ:** API gọi với `lang=vi` nên mô tả thời tiết trả về tiếng Việt.
-3. **Đơn vị:** Dùng `units=metric` (nhiệt độ °C, tốc độ m/s).
-4. **Auto-detect city:** Hệ thống dùng `ipwho.is` để phát hiện vị trí. Nếu thất bại → fallback về Hanoi.
-
-### Về hiển thị
-
-1. **Idle display:** Giao diện thời tiết chỉ hiển thị khi không có media đang phát. Khi bắt đầu phát nhạc/video → tự động ẩn (`HideIdleCard()`).
-2. **Đồng hồ lật:** Animation flip card mỗi phút. Mỗi card có 3 lớp chồng (shadow, highlight, white) tạo hiệu ứng 3D.
-3. **Task priority:** `weather_idle_task` chạy ở priority 2, stack 6KB. Task cập nhật mỗi giây nên cần đủ stack.
-4. **Double-buffer:** Giao diện weather không dùng double-buffer riêng, dùng chung với LVGL display.
-
-### Về cấu hình build
-
-1. **Khi không bật** `CONFIG_WEATHER_IDLE_DISPLAY_ENABLE`:
-   - Toàn bộ code weather bị exclude qua `#ifdef`
-   - Không ảnh hưởng binary size
-   - Các thành phần UI vẫn build nhưng `WeatherUI` không được khởi tạo
-2. **WiFi required:** Weather cần WiFi kết nối để gọi API. Nếu không có WiFi, task sẽ chờ tối đa 20 giây rồi bỏ qua.
-
-### Về tối ưu
-
-1. **Update interval:** Mặc định 30 phút. Có thể thay đổi `WEATHER_UPDATE_INTERVAL_MS` trong `weather_config.h`.
-2. **Forecast:** API `/forecast` trả về 40 mốc (5 ngày × 8 mốc/ngày). Hệ thống chỉ lấy mốc 12:00 của mỗi ngày → 5 ngày dự báo.
-3. **Memory:** Response forecast có thể lên tới 20KB. Hệ thống đọc chunk 1KB để tránh tràn buffer.
+1. Kiểm tra `CONFIG_WEATHER_IDLE_DISPLAY_ENABLE=y` trong `sdkconfig`.
+2. Kiểm tra Wi-Fi đã connected và timezone/network đã sẵn sàng.
+3. Kiểm tra log HTTP/status OpenWeatherMap và thành phố đã URL-encode đúng.
+4. Nếu card không xuất hiện, xác nhận board trả về `LcdDisplay` và thiết bị đang idle, không phát media.

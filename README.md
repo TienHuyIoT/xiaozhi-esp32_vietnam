@@ -1,324 +1,137 @@
-# Xiaozhi ESP32 - Phiên bản Việt Nam
+# Halo Xiaozhi
 
-<div style="display: flex; justify-content: space-between;>
+Firmware trợ lý giọng nói ESP32 của Halo, phát triển từ Xiaozhi Vietnam. Tài liệu này mô tả đúng trạng thái của source và profile `sdkconfig` đang có trong nhánh `main`; một tính năng chỉ có source hoặc bị tắt trong cấu hình không được xem là đã sẵn sàng cho người dùng.
 
-**Chatbot AI Giọng Nói Tiếng Việt Trên Nền Tảng ESP32**
-  <a href="docs/images/01_avata.jpg" target="_blank" title="Xingzhi Cube 1.54tft Board">
-    <img src="docs/images/01_avata.jpg" width="480" />
-  </a>
-</div>
+- Phiên bản firmware: `2.0.5.06`
+- ESP-IDF: `>=5.4.0`
+- Giấy phép: MIT
 
----
+## Trạng thái hiện tại
 
-## 🌐 Cộng Đồng & Hỗ Trợ
+| Tính năng | Trạng thái | Điều kiện chính |
+|---|---|---|
+| Trợ lý giọng nói, MCP và hội thoại | Hoạt động mặc định | Wi-Fi, backend Xiaozhi và board được hỗ trợ |
+| Nhạc online | Hoạt động mặc định | Wi-Fi, music server, codec và PSRAM đủ dùng |
+| Internet radio | Hoạt động mặc định | Wi-Fi, stream còn hoạt động, codec và PSRAM |
+| Báo thức | Hoạt động mặc định | Đồng bộ NTP để có giờ chính xác |
+| Nhạc từ thẻ SD | Có điều kiện | `CONFIG_SD_CARD_ENABLE`, mount SD thành công |
+| Spectrum khi phát audio | Có điều kiện | Media đang phát và board có màn hình phù hợp |
+| Weather idle card | Tắt trong profile hiện tại | Bật `CONFIG_WEATHER_IDLE_DISPLAY_ENABLE` để thử nghiệm |
+| Video AVI/MP4 từ SD | Mã nguồn thử nghiệm, chưa nối runtime | Các lời gọi khởi tạo video đang bị vô hiệu hóa khi build |
+| OTA/assets/hiển thị ảnh qua web cục bộ | Hoạt động theo board | Thiết bị đã vào mạng; khả năng hiển thị phụ thuộc display |
 
-Tham gia cộng đồng Xiaozhi AI-IoT Vietnam để nhận hỗ trợ, chia sẻ kinh nghiệm và cập nhật tính năng mới:
+## Kiến trúc ngắn
 
-| Nền tảng | Link | Mô tả |
-|----------|------|-------|
-| 📱 **Website** | [xiaozhi-ai-iot.vn](https://xiaozhi-ai-iot.vn/#) | XiaoZhi AI IoT Việt Nam |
-| 📱 **Zalo** | [Tham gia nhóm](https://zalo.me/g/qlvffa015) | Nhóm hỗ trợ người mới bắt đầu |
-| 📱 **Zalo** | [Tham gia nhóm](https://zalo.me/g/fsyuiz890) | Nhóm hỗ trợ chính thức |
-| 📘 **Facebook** | [Fanpage](https://www.facebook.com/XiaozhiAI.IoTVietnam/) | Xiaozhi AI-IoT Vietnam |
-| 📘 **Facebook** | [Tham gia nhóm](https://www.facebook.com/groups/2655614131443031) | Xiaozhi AI-IoT Vietnam 🇻🇳 | Cộng đồng Chia Sẻ |
-| 🎥 **YouTube** | [Xem hướng dẫn](https://youtu.be/g7Lh-LpxElU) | Video build chi tiết |
-| 🔧 **Web Flasher** | [Nạp ROM Online](https://tienhuyiot.github.io/esp_web_flasher/) | Nạp firmware không cần cài đặt |
+Thiết bị nhận âm thanh từ microphone, hiển thị trạng thái trên LCD/OLED và kết nối Wi-Fi. Cấu hình OTA chọn giao thức MQTT+UDP hoặc WebSocket để giao tiếp với backend ASR/LLM/TTS. Các chức năng thiết bị được expose dưới dạng MCP tools, gồm media, radio, alarm và các thao tác hệ thống.
 
----
+Ngoài kết nối backend, firmware luôn khởi động web server cục bộ cổng 80 với các endpoint cho OTA, assets và ảnh màn hình:
 
-## 📖 Giới Thiệu
+- `GET /ota` và `POST /ota_upload`: cập nhật firmware qua trình duyệt.
+- `GET /assets` và `POST /assets_upload`: quản lý custom assets.
+- `POST /api/display_image`: gửi ảnh hiển thị tạm thời nếu board hỗ trợ.
 
-**Xiaozhi ESP32 Vietnam** là phiên bản tùy chỉnh của dự án Xiaozhi AI Chatbot, được phát triển đặc biệt cho cộng đồng Việt Nam với nhiều tính năng bổ sung và tối ưu hóa cho thị trường Việt.
+## Profile đang được kiểm chứng
 
-Dự án sử dụng chip ESP32 kết hợp với các mô hình AI lớn (Qwen, DeepSeek) để tạo ra một chatbot tương tác bằng giọng nói thông minh, hỗ trợ điều khiển IoT thông qua giao thức MCP.
+Các giá trị dưới đây lấy từ `sdkconfig` hiện tại, không phải mặc định cho mọi board:
 
-### 🎯 Dự Án Gốc
+| Mục | Giá trị |
+|---|---|
+| Chip | ESP32-S3, dual-core, có PSRAM |
+| Board | `bread-compact-wifi-lcd` |
+| Ngôn ngữ | `CONFIG_LANGUAGE_VI_VN=y` |
+| Màn hình | ST7789 240×240 |
+| SD card | Bật, giao tiếp SPI |
+| Weather | Tắt |
+| Wake word | AFE, model “Hey Ivy” |
+| OTA URL | `https://api.tenclass.net/xiaozhi/ota/` |
 
-Dự án này được fork và phát triển từ [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) của tác giả Xiage.
+## Bắt đầu nhanh
 
----
+### 1. Lấy source
 
-## ✨ Tính Năng Đã Phát Triển
+Remote `origin` có default branch khác với profile đang kiểm chứng, vì vậy clone rõ nhánh `main`:
 
-### 🎵 Giải Trí & Âm Nhạc
-
-#### Nghe Nhạc Việt Nam
-- Phát nhạc từ server music với khả năng cấu hình linh hoạt
-- **Không cần build lại ROM** khi thay đổi link server music
-- Hỗ trợ streaming chất lượng cao
-
-#### Radio Việt Nam & Quốc Tế
-- 📻 Radio VOV (Đài Tiếng nói Việt Nam)
-- 🌍 Kênh radio tiếng Anh
-- Thêm nhiều kênh radio khác
-
-#### Hiển Thị Phổ Nhạc
-- 📊 Hiển thị phổ âm thanh trực quan trên màn hình **LCD**
-- 📊 Hiển thị phổ âm thanh trên màn hình **OLED**
-- Giao diện trực quan, đẹp mắt khi phát nhạc và Radio
-
-### 🔄 Cập Nhật & Triển Khai
-
-#### Hệ Thống OTA online
-- Cập nhật firmware qua mạng (Over-The-Air)
-- Link OTA: [https://ota-server.xiaozhi-ota.workers.dev/ota/](https://ota-server.xiaozhi-ota.workers.dev/ota/)
-- Không cần kết nối dây, cập nhật từ xa
-
-#### Hệ Thống OTA WebServer
-- Cập nhật firmware qua Web Server
-- Truy cập link bằng IP kết nối mang: Ví dụ 102.168.1.10/ota
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/images/02_Xingzhi_Cube.jpg" target="_blank" title="Xingzhi Cube 1.54tft Board">
-    <img src="docs/images/04_ota_server.png" width="480" />
-  </a>
-</div>
-
-#### Nạp ROM Dễ Dàng
-- Nạp ROM trực tiếp qua trình duyệt web
-- Link Web Flasher: [https://tienhuyiot.github.io/esp_web_flasher/](https://tienhuyiot.github.io/esp_web_flasher/)
-- Không cần cài đặt driver hay công cụ phức tạp
-
-### 🤖 Hỗ Trợ Phần Cứng:
-
-#### Xingzhi Cube:
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/images/02_Xingzhi_Cube.jpg" target="_blank" title="Xingzhi Cube 1.54tft Board">
-    <img src="docs/images/02_Xingzhi_Cube.jpg" width="480" />
-  </a>
-</div>
-
-#### Tự lắp theo sơ đồ kết nối: 
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/images/03_diy_01.jpg" target="_blank" title="Sơ đồ kết nối mạch ĐEN">
-    <img src="docs/images/03_diy_01.jpg" width="480" />
-  </a>
-  <a href="docs/images/03_diy_02.jpg" target="_blank" title="Sơ đồ kết nối mạch TÍM">
-    <img src="docs/images/03_diy_02.jpg" width="480" />
-  </a>
-  <a href="docs/images/03_diy_03.jpg" target="_blank" title="Sơ đồ kết nối mạch TÍM">
-    <img src="docs/images/03_diy_03.jpg" width="480" />
-  </a>
-  <a href="docs/images/03_diy_04.jpg" target="_blank" title="Sơ đồ kết nối mạch TÍM">
-    <img src="docs/images/03_diy_04.jpg" width="480" />
-  </a>
-</div>
-
-#### Otto Robot Board
-- Hỗ trợ new partition để build firmware cho board Otto Robot
-- Tích hợp điều khiển động cơ servo
-- Phù hợp cho các dự án robot giáo dục
-
----
-
-## 🚀 Tính Năng Đang Phát Triển
-
-Các tính năng sau đây đang được phát triển tích cực và sẽ được phát hành trong các phiên bản tương lai:
-
-### 🎵 Đa Phương Tiện Nâng Cao
-
-| Tính năng | Mô tả | Trạng thái |
-|-----------|-------|------------|
-| 💾 **Play music from SD card** | Phát nhạc trực tiếp từ thẻ nhớ SD | ✅ https://github.com/NTC95-Xiaozhi-Esp32/Xiaozhi_NTC_SDCARD |
-| 🎬 **Play video from SD** | Phát video từ thẻ nhớ SD trên màn hình LCD | 🔨 Đang phát triển |
-| 🔊 **Phát nhạc qua Bluetooth** | Kết nối và phát nhạc qua loa Bluetooth | 🔨 Đang phát triển |
-
-### 💰 Tích Hợp Thanh Toán & Tiện Ích Tin Tức
-
-| Tính năng | Mô tả | Trạng thái |
-|-----------|-------|------------|
-| 💳 **QR Code Ngân Hàng** | Hiển thị mã QR thanh toán ngân hàng Việt Nam | 📋 Kế hoạch |
-| 📈 **Giá Vàng** | Cập nhật giá vàng trong nước theo thời gian thực | 📋 Kế hoạch |
-| 📊 **Giá Chứng Khoán** | Hiển thị giá cổ phiếu VN-Index, HNX-Index | 📋 Kế hoạch |
-| 📰 **Tin Tức Tài Chính** | Cập nhật tin tức kinh tế Việt Nam | 📋 Kế hoạch |
-
-### 📱 Kết Nối Di Động
-
-| Tính năng | Mô tả | Trạng thái |
-|-----------|-------|------------|
-| 🍎 **ANCS Bluetooth iPhone** | Kết nối iPhone nhận thông báo chỉ đường, tin nhắn | 🔨 Đang phát triển |
-| 📲 **Thông Báo Cuộc Gọi** | Hiển thị thông tin người gọi từ điện thoại | 📋 Kế hoạch |
-
-### ⚙️ Hệ Thống & Cấu Hình
-
-| Tính năng | Mô tả | Trạng thái |
-|-----------|-------|------------|
-| 🌐 **OTA qua Webserver Nhúng** | Cập nhật firmware qua webserver tích hợp trong chip | ✅ Đã phát triển |
-| 🔧 **Web Server Cấu Hình GPIO** | Giao diện web để cấu hình chân GPIO | 🔨 Đang phát triển |
-| 🎚️ **Tăng Mic Gain với UI** | Điều chỉnh độ nhạy microphone qua giao diện | 🔨 Đang phát triển |
-| 🔄 **Update V1 lên V2** | Hỗ trợ nâng cấp từ phiên bản V1 lên V2 | 🔨 Đang phát triển |
-| 🖥️ **Hỗ Trợ Màn Hình Mới** | Build firmware cho các loại màn hình mới | ✅ Đã phát triển |
-
-### ⏰ Tiện Ích Thông Minh
-
-| Tính năng | Mô tả | Trạng thái |
-| 🌦️ **Màn hình chờ thời tiết** | Hiển thị thông tin thời tiết màn hình chờ | ✅ Đã phát triển |
-| ⏰ **Hẹn Giờ Báo Thức** | Thiết lập và quản lý nhiều báo thức | 🔨 Đang phát triển |
-| 🎙️ **Chủ Động Wakeup & thông báo** | Tự động kích hoạt và gửi văn bản theo lịch | 📋 Kế hoạch |
-
-### 🏭 Tự Động Hóa Công Nghiệp
-
-| Tính năng | Mô tả | Trạng thái |
-|-----------|-------|------------|
-| 🏭 **ModBus RTU** | Giao thức ModBus RTU để điều khiển thiết bị công nghiệp | 📋 Kế hoạch |
-| 🌐 **ModBus TCP/IP** | Giao thức ModBus TCP/IP qua mạng Ethernet/WiFi | 📋 Kế hoạch |
-
-**Chú thích trạng thái:**
-- 🔨 Đang phát triển: Đang được code và test
-- 📋 Kế hoạch: Đã lên kế hoạch, chưa bắt đầu phát triển
-
----
-
-## 🎯 Tính Năng Cốt Lõi (Từ Dự Án Gốc)
-
-### Kết Nối & Mạng
-- ✅ Wi-Fi
-- ✅ ML307 Cat.1 4G
-- ✅ Websocket hoặc MQTT+UDP
-- ✅ OPUS audio codec
-
-### AI & Giọng Nói
-- ✅ Wake word offline với [ESP-SR](https://github.com/espressif/esp-sr)
-- ✅ ASR + LLM + TTS streaming
-- ✅ Nhận dạng giọng nói với [3D Speaker](https://github.com/modelscope/3D-Speaker)
-- ✅ Đa ngôn ngữ (Tiếng Trung, Tiếng Anh, Tiếng Nhật)
-
-### Hiển Thị & Phần Cứng
-- ✅ Màn hình OLED / LCD
-- ✅ Hiển thị biểu cảm
-- ✅ Quản lý pin
-- ✅ ESP32-C3, ESP32-S3, ESP32-P4
-
-### Điều Khiển IoT
-- ✅ MCP phía thiết bị (âm lượng, LED, motor, GPIO)
-- ✅ MCP đám mây (nhà thông minh, desktop, email)
-- ✅ Tùy chỉnh wake word, font, biểu cảm
-
----
-
-## 🛠️ Bắt Đầu Nhanh
-
-### Cho Người Dùng Cuối
-
-1. **Nạp Firmware Online**
-   - Truy cập: [https://tienhuyiot.github.io/esp_web_flasher/](https://tienhuyiot.github.io/esp_web_flasher/)
-   - Kết nối ESP32 qua USB
-   - Chọn firmware và nhấn Flash
-
-2. **Cấu Hình WiFi**
-   - Bật thiết bị
-   - Kết nối vào WiFi của ESP32
-   - Cấu hình WiFi nhà bạn
-
-3. **Sử Dụng**
-   - Nói "Sophia" để đánh thức
-   - Bắt đầu trò chuyện
-
-### Cho Nhà Phát Triển
-
-#### Yêu Cầu
-- **IDE**: VSCode hoặc Cursor hoặc [antigravity](https://antigravity.google/)
-- **Plugin**: ESP-IDF v5.4+
-- **Hệ điều hành**: Linux (khuyến nghị) hoặc Windows
-- **Code Style**: Google C++ Style Guide
-
-#### Build Từ Source
-
-```bash
-# Clone repository
-git clone https://github.com/TienHuyIoT/xiaozhi-esp32_vietnam.git
-cd xiaozhi-esp32_vietnam
-
-# Cài đặt ESP-IDF dependencies
-# (Theo hướng dẫn của ESP-IDF)
-
-# Lần đầu cấu hình nên chạy các lệnh sau
-idf.py fullclean
-idf.py set-target esp32s3
-idf.py menuconfig
-
-# Build
-idf.py build
-
-# Flash
-idf.py -p COM_PORT flash monitor
-
-# Meger bin
-idf.py merge-bin
+```powershell
+git clone --branch main https://github.com/halotech95/halo_xiaozhi.git
+cd halo_xiaozhi
 ```
 
----
+### 2. Nạp môi trường ESP-IDF và build profile hiện tại
 
-## 📚 Tài Liệu
+Project yêu cầu ESP-IDF `>=5.4.0`. Trên PowerShell:
 
-### Tài Liệu Người Dùng
-- 🎥 [Video Hướng Dẫn Build](https://youtu.be/g7Lh-LpxElU)
-- 📖 [Hướng Dẫn Nạp Firmware](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
+```powershell
+& 'C:\Espressif\tools\Microsoft.v5.5.3.PowerShell_profile.ps1'
+idf.py build
+idf.py -p COMx flash monitor
+```
 
-### Tài Liệu Kỹ Thuật
-- [Hướng dẫn bo mạch tùy chỉnh](docs/custom-board.md)
-- [Giao thức MCP - Hướng dẫn sử dụng](docs/mcp-usage.md)
-- [Giao thức MCP - Quy trình tương tác](docs/mcp-protocol.md)
-- [Tài liệu MQTT + UDP](docs/mqtt-udp.md)
-- [Tài liệu WebSocket](docs/websocket.md)
+Không chạy `idf.py set-target` trước khi build profile hiện tại; lệnh đó tái tạo cấu hình và có thể thay đổi `sdkconfig`. Hãy thay `COMx` bằng cổng serial của thiết bị.
 
----
+### 3. Đổi chip hoặc board
 
-## 🤝 Đóng Góp
+```powershell
+idf.py set-target esp32s3
+idf.py menuconfig
+idf.py build
+idf.py -p COMx flash monitor
+```
 
-Chúng tôi rất hoan nghênh mọi đóng góp! Vui lòng:
+Các target được project chuẩn bị gồm ESP32, ESP32-C3, ESP32-S3, ESP32-C6 và ESP32-P4. Sau khi đổi board, phải kiểm tra lại codec, PSRAM, màn hình, SD và các tính năng có điều kiện.
 
-1. Fork repository này
-2. Tạo branch mới (`git checkout -b feature/TenTinhNang`)
-3. Commit thay đổi (`git commit -m 'Thêm tính năng mới'`)
-4. Push lên branch (`git push origin feature/TenTinhNang`)
-5. Tạo Pull Request
+`scripts/release.py` có thể liệt kê/tạo cấu hình release cho các board có `config.json`:
 
-### Quy Tắc Đóng Góp
-- Tuân thủ Google C++ Style Guide
-- Viết commit message rõ ràng bằng tiếng Việt hoặc tiếng Anh
-- Test kỹ trước khi tạo PR
+```powershell
+python -X utf8 scripts/release.py --list-boards
+python -X utf8 scripts/release.py <board> --name <variant>
+```
 
----
+Script này thay đổi target và cấu hình build. Board `bread-compact-wifi-lcd` trong profile hiện tại không có `config.json`, nên hãy build trực tiếp bằng `sdkconfig` thay vì giả định rằng release script sẽ hỗ trợ board đó.
 
-## 📄 Giấy Phép
+## Sử dụng thiết bị
 
-Dự án này được phát hành dưới giấy phép **MIT License**, kế thừa từ dự án gốc xiaozhi-esp32.
+1. Khởi động thiết bị, mở Wi-Fi setup theo hướng dẫn trên màn hình và kết nối vào mạng gia đình. AP cấu hình do firmware tạo có tiền tố `TienHuyIoT`.
+2. Chờ thiết bị đồng bộ mạng/backend. Dùng câu lệnh tự nhiên, ví dụ “đặt báo thức 7 giờ”, “mở VOV3” hoặc “phát bài …”.
+3. Khi biết địa chỉ IP, mở `http://<device-ip>/ota` để kiểm tra web server cục bộ và cập nhật firmware/assets theo nhu cầu.
+4. Để phát nhạc trong thẻ, phải nói rõ “nhạc trong thẻ nhớ” hoặc “nhạc offline”; câu “phát nhạc” mặc định đi vào online music.
 
-Bạn có thể:
-- ✅ Sử dụng miễn phí cho mục đích cá nhân
-- ✅ Sử dụng cho mục đích thương mại
-- ✅ Chỉnh sửa và phân phối lại
+Hướng dẫn chi tiết và các giới hạn đã kiểm chứng:
 
----
+- [Báo thức](docs/features/alarm.md)
+- [Internet radio](docs/features/radio.md)
+- [Weather idle card](docs/features/weather.md)
+- [Nhạc và media từ SD](docs/features/media-player.md)
+- [Nhạc online](docs/features/online-music.md)
 
-## 🙏 Cảm Ơn
+## Tài liệu hệ thống
 
-### Dự Án Gốc
-- [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) - Dự án gốc bởi Xiage
+Các tài liệu hệ thống nằm trong thư mục [`docs`](docs):
 
-### Thư Viện & Framework
-- [ESP-IDF](https://github.com/espressif/esp-idf) - Espressif IoT Development Framework
-- [ESP-SR](https://github.com/espressif/esp-sr) - Speech Recognition Framework
-- [3D Speaker](https://github.com/modelscope/3D-Speaker) - Speaker Recognition
+- [Custom board](docs/custom-board.md)
+- [MCP usage](docs/mcp-usage.md) và [MCP protocol](docs/mcp-protocol.md)
+- [MQTT + UDP](docs/mqtt-udp.md)
+- [WebSocket](docs/websocket.md)
+- [AV render architecture](docs/av_render_architecture.md)
 
-### Cộng Đồng
-- Cảm ơn tất cả các thành viên trong nhóm Zalo và Facebook
-- Cảm ơn những người đã đóng góp code và ý tưởng
+Các tài liệu trên không nằm trong đợt audit tính năng này; hãy đối chiếu source nếu cần dùng làm đặc tả giao thức. Tài liệu board/component cục bộ vẫn được giữ cạnh source của component.
 
----
+## Cấu trúc repository
 
-## 📞 Liên Hệ
+```text
+main/                Application, board, audio, display và MCP tools
+docs/                Tài liệu hệ thống và tính năng
+scripts/              Script build/release và sinh assets
+boards/               Cấu hình board
+components/           Managed/local ESP-IDF components
+sdkconfig             Profile build đang được kiểm chứng
+```
 
-- 📱 **Zalo Group**: [https://zalo.me/g/fsyuiz890](https://zalo.me/g/fsyuiz890)
-- 📘 **Facebook Group**: [https://www.facebook.com/share/1BhraxqFBb/](https://www.facebook.com/share/1BhraxqFBb/)
-- 💻 **GitHub Issues**: [Tạo issue mới](https://github.com/TienHuyIoT/xiaozhi-esp32_vietnam/issues)
+## Nguồn dự án
 
----
+- Repository: <https://github.com/halotech95/halo_xiaozhi>
+- Issues: <https://github.com/halotech95/halo_xiaozhi/issues>
+- Upstream tham khảo: <https://github.com/TienHuyIoT/xiaozhi-esp32_vietnam>
 
-<div align="center">
+## Phạm vi tài liệu
 
-**Made with ❤️ by Vietnam AI-IoT Community**
-
-⭐ Nếu project này hữu ích, hãy cho chúng tôi một star nhé! ⭐
-
-</div>
+README này và năm tài liệu trong `docs/features` được đối chiếu tĩnh với CMake, Kconfig, `sdkconfig`, `Application` và các lớp feature hiện tại. Không có firmware/API nào được thay đổi trong đợt cập nhật tài liệu này.

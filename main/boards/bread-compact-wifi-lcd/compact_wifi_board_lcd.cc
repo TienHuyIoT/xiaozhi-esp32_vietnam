@@ -6,6 +6,7 @@
 #include "application.h"
 #include "button.h"
 #include "config.h"
+#include "settings.h"
 #include "mcp_server.h"
 #include "lamp_controller.h"
 #include "led/single_led.h"
@@ -76,11 +77,19 @@ static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
  
 #define TAG "CompactWifiBoardLCD"
 
+namespace {
+constexpr char kWifiSettingsNamespace[] = "wifi";
+constexpr char kOtaUrlKey[] = "ota_url";
+constexpr char kOtaUrlOnceKey[] = "ota_url_once";
+}
+
 class CompactWifiBoardLCD : public WifiBoard {
 private:
  
     Button boot_button_;
-    LcdDisplay* display_;
+    Button sonic_server_button_;
+    Button default_server_button_;
+    LcdDisplay* display_ = nullptr;
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
     LcdTouch *touch_;
     // Touch interrupt semaphore
@@ -390,6 +399,40 @@ private:
     }
 #endif
 
+    void InitializeOtaServerSelection() {
+        Settings settings(kWifiSettingsNamespace, true);
+        std::string selected_url = settings.GetString(kOtaUrlOnceKey);
+        if (selected_url.empty()) {
+            selected_url = DEFAULT_OTA_URL;
+        }
+
+        if (settings.GetString(kOtaUrlKey) != selected_url) {
+            settings.SetString(kOtaUrlKey, selected_url);
+        }
+        if (!settings.GetString(kOtaUrlOnceKey).empty()) {
+            settings.SetString(kOtaUrlOnceKey, "");
+        }
+
+        ESP_LOGI(TAG, "OTA server selected for this boot: %s", selected_url.c_str());
+    }
+
+    void SelectOtaServer(const char* url, const char* server_name) {
+        auto& app = Application::GetInstance();
+        app.Schedule([this, url = std::string(url), server_name = std::string(server_name)]() {
+            {
+                Settings settings(kWifiSettingsNamespace, true);
+                settings.SetString(kOtaUrlOnceKey, url);
+            }
+
+            ESP_LOGI(TAG, "OTA server selected for next boot: %s", url.c_str());
+            if (display_ != nullptr) {
+                std::string message = "Server: " + server_name;
+                display_->ShowNotification(message.c_str());
+            }
+            Application::GetInstance().Reboot();
+        });
+    }
+
     void InitializeButtons() {
         boot_button_.OnMultipleClick([this]() {
             ResetWifiConfiguration();
@@ -402,6 +445,14 @@ private:
             }
             app.ToggleChatState();
         });
+
+        sonic_server_button_.OnLongPress([this]() {
+            SelectOtaServer(CONFIG_OTA_URL, "Sonic");
+        });
+
+        default_server_button_.OnLongPress([this]() {
+            SelectOtaServer(DEFAULT_OTA_URL, "Tenclass");
+        });
     }
 
     // IoT initialization, adding support for AI visible devices
@@ -411,7 +462,10 @@ private:
 
 public:
     CompactWifiBoardLCD() :
-        boot_button_(BOOT_BUTTON_GPIO) {
+        boot_button_(BOOT_BUTTON_GPIO),
+        sonic_server_button_(SONIC_SERVER_BUTTON_GPIO, false, SERVER_SWITCH_LONG_PRESS_MS),
+        default_server_button_(DEFAULT_SERVER_BUTTON_GPIO, false, SERVER_SWITCH_LONG_PRESS_MS) {
+        InitializeOtaServerSelection();
         InitializeSpi();
         InitializeLcdDisplay();
 #ifdef CONFIG_TOUCH_PANEL_ENABLE

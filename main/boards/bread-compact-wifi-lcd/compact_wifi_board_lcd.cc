@@ -403,7 +403,11 @@ private:
         Settings settings(kWifiSettingsNamespace, true);
         std::string selected_url = settings.GetString(kOtaUrlOnceKey);
         if (selected_url.empty()) {
-            selected_url = DEFAULT_OTA_URL;
+            // May chua tung chon server -> ve SONIC, khong phai upstream.
+            // DEFAULT_OTA_URL la URL cua nut GPIO38 ("Tenclass"), KHONG phai mac
+            // dinh cua san pham. Lay no lam mac dinh thi may vua nap xong se goi
+            // sang server upstream va khong bao gio thay backend Sonic.
+            selected_url = CONFIG_OTA_URL;
         }
 
         if (settings.GetString(kOtaUrlKey) != selected_url) {

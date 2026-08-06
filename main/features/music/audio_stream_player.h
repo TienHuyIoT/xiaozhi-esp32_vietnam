@@ -266,6 +266,18 @@ protected:
     /** WAV header info -- set before StartStream with WAV type. */
     WavHeaderInfo wav_info_;
 
+    /**
+     * Bytes to buffer before playback starts. Default AUDIO_BUF_MIN_SIZE (32KB)
+     * suits radio: a big prebuffer hides network jitter over a long stream.
+     *
+     * TTS is the opposite case -- one spoken sentence is only ~17KB of 48kbps
+     * MP3, so with the radio default playback would wait for a SECOND sentence
+     * before making any sound. DeviceTtsClient lowers this to a few KB.
+     * Call before StartStream().
+     */
+    void SetMinBufferSize(size_t bytes) { min_buffer_size_ = bytes; }
+    size_t min_buffer_size_ = AUDIO_BUF_MIN_SIZE;
+
 private:
     /* ---- FreeRTOS task wrappers ---- */
     static void SourceTaskEntry(void* param);

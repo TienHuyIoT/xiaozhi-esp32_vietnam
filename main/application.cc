@@ -528,20 +528,47 @@ if (ota.HasWebsocketConfig()) {
             SetDeviceState(kDeviceStateIdle);
         });
     });
+    // TTS tren thiet bi. Doi tuong luon duoc dung nhung chi HOAT DONG khi server
+    // that su gui `tts_config` -- co DEVICE_TTS_ENABLED tat o server thi day nam
+    // im, robot phat khung Opus nhu cu (cau dao o server, khong phai OTA lai may).
+    device_tts_client_ = std::make_unique<DeviceTtsClient>();
+    device_tts_client_->SetCodec(codec);
+    device_tts_client_->OnIdle([this]() {
+        Schedule([this]() { CheckSpeakingFinished(); });
+    });
+
     protocol_->OnIncomingJson([this, display](const cJSON* root) {
         // Parse JSON data
         auto type = cJSON_GetObjectItem(root, "type");
+        if (strcmp(type->valuestring, "tts_config") == 0) {
+            // Server cap URL + khung lenh cho duong TTS thiet bi. Gui lai nhieu
+            // lan trong mot phien la BINH THUONG: token chong bot cua nha cung
+            // cap xoay theo khoi 5 phut nen server phai lam tuoi truoc moi luot.
+            if (device_tts_client_) {
+                device_tts_client_->Configure(root);
+            }
+            return;
+        }
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
                     aborted_ = false;
+                    tts_stop_received_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
                         SetDeviceState(kDeviceStateSpeaking);
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+                    tts_stop_received_ = true;
+                    // Duong TTS thiet bi: server gui `tts:stop` ngay sau cau cuoi
+                    // vi no khong con nhin thay tieng nua. Phai doi tieng phat het
+                    // roi moi doi trang thai, khong thi cau cuoi bi cat cut.
+                    if (device_tts_client_ && device_tts_client_->IsConfigured()) {
+                        CheckSpeakingFinished();
+                        return;
+                    }
                     if (device_state_ == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
@@ -551,6 +578,16 @@ if (ota.HasWebsocketConfig()) {
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
+                // `tts_body` la cong tac MOI CAU: co no thi robot tu lay tieng,
+                // khong co thi phat khung Opus cua server nhu cu. Nho vay mot
+                // phien van tron duoc hai duong -- cau bai hoc di audio kho,
+                // cau free chat di TTS thiet bi.
+                auto tts_body = cJSON_GetObjectItem(root, "tts_body");
+                if (cJSON_IsString(tts_body) && tts_body->valuestring != nullptr &&
+                    device_tts_client_ != nullptr) {
+                    std::string body = tts_body->valuestring;
+                    Schedule([this, body]() { device_tts_client_->Enqueue(body); });
+                }
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
                     std::string msg = text->valuestring;
@@ -835,9 +872,30 @@ void Application::OnWakeWordDetected() {
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
+    // Tieng cua duong TTS thiet bi KHONG di qua server nen `tts:stop` cua server
+    // khong tat duoc no. Phai tu cat o day, khong thi be chen ngang xong robot
+    // van noi tiep het cau -- dung cai ma barge-in sinh ra de tranh.
+    if (device_tts_client_) {
+        device_tts_client_->Abort();
+    }
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
     }
+}
+
+void Application::CheckSpeakingFinished() {
+    if (device_state_ != kDeviceStateSpeaking) {
+        return;
+    }
+    if (!tts_stop_received_) {
+        return; // server con dang nha cau, chua het luot
+    }
+    if (device_tts_client_ && device_tts_client_->IsBusy()) {
+        return; // con cau trong hang doi hoac tieng chua phat het
+    }
+    SetDeviceState(listening_mode_ == kListeningModeManualStop
+                       ? kDeviceStateIdle
+                       : kDeviceStateListening);
 }
 
 void Application::SetListeningMode(ListeningMode mode) {

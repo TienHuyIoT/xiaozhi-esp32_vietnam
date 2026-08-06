@@ -659,8 +659,9 @@ void AudioStreamPlayer::PlayLoopCompressed()
 {
     ESP_LOGI(TAG, "Compressed playback path");
 
-    /* Wait for minimum buffer fill */
-    size_t min_buf = AUDIO_BUF_MIN_SIZE;
+    /* Wait for minimum buffer fill (subclasses may lower it -- see
+     * SetMinBufferSize(); one TTS sentence is far smaller than a radio stream) */
+    size_t min_buf = min_buffer_size_;
     while (is_playing_ && buffer_size_ < min_buf && is_source_active_) {
         xSemaphoreTake(buffer_data_sem_, pdMS_TO_TICKS(100));
     }

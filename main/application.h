@@ -14,6 +14,7 @@
 #include "protocol.h"
 #include "ota.h"
 #include "audio_service.h"
+#include "protocols/device_tts_client.h"
 #include "device_state_event.h"
 #include "esp32_sd_music.h"
 #include "esp32_music.h"
@@ -207,6 +208,12 @@ private:
     AecMode aec_mode_ = kAecOff;
     std::string last_error_message_;
     AudioService audio_service_;
+    // TTS tren thiet bi: khi server gui `tts_config` + `tts_body` thi robot tu
+    // lay tieng qua day thay vi phat khung Opus cua server. nullptr = chua bat.
+    std::unique_ptr<DeviceTtsClient> device_tts_client_;
+    // Server gui `tts:stop` NGAY sau cau cuoi (no khong con nhin thay tieng nua)
+    // -> phai nho co nay va doi DeviceTtsClient bao het viec moi doi trang thai.
+    bool tts_stop_received_ = false;
     Esp32Music* music_ = nullptr;
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
@@ -258,6 +265,12 @@ private:
     void OnWakeWordDetected();
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();
+    /**
+     * Chuyen Speaking->Listening/Idle khi VA CHI KHI ca hai dieu kien du:
+     * server da gui `tts:stop` VA DeviceTtsClient da phat het tieng.
+     * Go ham nay = cau cuoi cua moi luot free chat bi cat cut.
+     */
+    void CheckSpeakingFinished();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
 

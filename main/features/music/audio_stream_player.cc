@@ -16,11 +16,69 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 static const char* TAG = "AudioStreamPlayer";
+static const char* AUDIO_TRACE_TAG = "AudioTrace";
+
+namespace {
+constexpr size_t kMaxAudioTraceFieldLength = 64;
+constexpr int64_t kAudioTraceFinishQuietUs = 100 * 1000;
+std::atomic<uint32_t> audio_trace_event_sequence{1};
+}
+
+std::string SanitizeAudioTraceField(const std::string& value)
+{
+    std::string safe;
+    safe.reserve(std::min(value.size(), kMaxAudioTraceFieldLength));
+    for (size_t i = 0;
+         i < std::min(value.size(), kMaxAudioTraceFieldLength); ++i) {
+        const unsigned char c = static_cast<unsigned char>(value[i]);
+        if (std::isalnum(c) || c == '_' || c == '-' || c == '.' || c == ':') {
+            safe.push_back(static_cast<char>(c));
+        } else {
+            safe.push_back('_');
+        }
+    }
+    return safe.empty() ? "-" : safe;
+}
+
+void LogAudioTraceEvent(const char* event, const AudioTraceContext& context,
+                        int64_t timestamp_us)
+{
+    const int64_t monotonic_us =
+        timestamp_us >= 0 ? timestamp_us : esp_timer_get_time();
+    const uint32_t event_sequence = audio_trace_event_sequence.fetch_add(1);
+    const std::string turn_id = SanitizeAudioTraceField(context.turn_id);
+    const std::string segment_id = SanitizeAudioTraceField(context.segment_id);
+    const std::string audio_source =
+        SanitizeAudioTraceField(context.audio_source);
+    ESP_LOGI(AUDIO_TRACE_TAG,
+             "event=%s ts_us=%lld seq=%lu turn_id=%s segment_id=%s audio_source=%s",
+             event, static_cast<long long>(monotonic_us),
+             static_cast<unsigned long>(event_sequence), turn_id.c_str(),
+             segment_id.c_str(), audio_source.c_str());
+}
+
+void LogAudioTraceQueue(const char* event, const char* action,
+                        const AudioTraceContext& context, size_t queue_depth)
+{
+    const int64_t monotonic_us = esp_timer_get_time();
+    const uint32_t event_sequence = audio_trace_event_sequence.fetch_add(1);
+    const std::string turn_id = SanitizeAudioTraceField(context.turn_id);
+    const std::string segment_id = SanitizeAudioTraceField(context.segment_id);
+    const std::string audio_source =
+        SanitizeAudioTraceField(context.audio_source);
+    ESP_LOGI(AUDIO_TRACE_TAG,
+             "event=%s ts_us=%lld seq=%lu turn_id=%s segment_id=%s audio_source=%s queue_action=%s queue_depth=%u",
+             event, static_cast<long long>(monotonic_us),
+             static_cast<unsigned long>(event_sequence), turn_id.c_str(),
+             segment_id.c_str(), audio_source.c_str(), action,
+             static_cast<unsigned int>(queue_depth));
+}
 
 /* ================================================================== */
 /*  Constructor / Destructor                                          */
@@ -102,6 +160,15 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
     total_frames_decoded_ = 0;
     buffer_size_          = 0;
     content_length_       = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(trace_mutex_);
+        input_trace_spans_.clear();
+        trace_contexts_.clear();
+        active_pcm_trace_sequence_ = 0;
+        finish_requested_trace_sequence_ = 0;
+        last_pcm_timestamp_us_ = 0;
+    }
 
     ClearAudioBuffer();
 
@@ -248,6 +315,7 @@ bool AudioStreamPlayer::StopStream()
 #endif
     }
 
+    FinishActiveAudioTrace();
     ClearAudioBuffer();
     CleanupDecoder();
     ResetSampleRate();
@@ -425,7 +493,8 @@ void AudioStreamPlayer::SourceDataLoop(const std::string& source)
 /*  PushToBuffer -- thread-safe helper for subclasses                 */
 /* ================================================================== */
 
-bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size)
+bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size,
+                                     uint32_t trace_sequence)
 {
     if (!data || size == 0) return false;
 
@@ -447,7 +516,7 @@ bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size)
     }
 
     if (xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(500)) == pdTRUE) {
-        audio_buffer_.push(StreamAudioChunk(chunk, size));
+        audio_buffer_.push(StreamAudioChunk(chunk, size, trace_sequence));
         buffer_size_ += size;
         xSemaphoreGive(buffer_mutex_);
         xSemaphoreGive(buffer_data_sem_);
@@ -457,6 +526,179 @@ bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size)
     heap_caps_free(chunk);
     ESP_LOGW(TAG, "Buffer mutex timeout in PushToBuffer");
     return false;
+}
+
+void AudioStreamPlayer::RegisterAudioTraceSegment(
+    const AudioTraceContext& context)
+{
+    if (context.trace_sequence == 0) {
+        return;
+    }
+    AudioTraceContext safe = context;
+    safe.turn_id = SanitizeAudioTraceField(context.turn_id);
+    safe.segment_id = SanitizeAudioTraceField(context.segment_id);
+    safe.audio_source = SanitizeAudioTraceField(context.audio_source);
+
+    std::lock_guard<std::mutex> lock(trace_mutex_);
+    for (auto& registered : trace_contexts_) {
+        if (registered.trace_sequence == safe.trace_sequence) {
+            registered = std::move(safe);
+            return;
+        }
+    }
+    trace_contexts_.push_back(std::move(safe));
+    while (trace_contexts_.size() > 32) {
+        trace_contexts_.pop_front();
+    }
+}
+
+void AudioStreamPlayer::ConsumeTraceInputBytes(size_t bytes)
+{
+    while (bytes > 0 && !input_trace_spans_.empty()) {
+        TraceInputSpan& span = input_trace_spans_.front();
+        const size_t consumed = std::min(bytes, span.bytes);
+        span.bytes -= consumed;
+        bytes -= consumed;
+        if (span.bytes == 0) {
+            input_trace_spans_.pop_front();
+        }
+    }
+}
+
+void AudioStreamPlayer::RequestAudioTraceSegmentFinish(
+    uint32_t trace_sequence)
+{
+    if (trace_sequence == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(trace_mutex_);
+    finish_requested_trace_sequence_ = trace_sequence;
+}
+
+void AudioStreamPlayer::ObserveDecodedPcm(uint32_t decoded_trace_sequence)
+{
+    if (decoded_trace_sequence == 0) {
+        return;
+    }
+
+    const int64_t now_us = esp_timer_get_time();
+    AudioTraceContext previous;
+    AudioTraceContext current;
+    int64_t previous_last_pcm_us = 0;
+    bool emit_previous_last = false;
+    bool emit_current_first = false;
+
+    {
+        std::lock_guard<std::mutex> lock(trace_mutex_);
+        auto find_context = [this](uint32_t sequence) {
+            AudioTraceContext found;
+            found.trace_sequence = sequence;
+            for (const auto& context : trace_contexts_) {
+                if (context.trace_sequence == sequence) {
+                    return context;
+                }
+            }
+            return found;
+        };
+
+        if (decoded_trace_sequence != active_pcm_trace_sequence_) {
+            if (active_pcm_trace_sequence_ != 0 &&
+                last_pcm_timestamp_us_ > 0) {
+                previous = find_context(active_pcm_trace_sequence_);
+                previous_last_pcm_us = last_pcm_timestamp_us_;
+                emit_previous_last = true;
+                if (finish_requested_trace_sequence_ ==
+                    active_pcm_trace_sequence_) {
+                    finish_requested_trace_sequence_ = 0;
+                }
+            }
+            current = find_context(decoded_trace_sequence);
+            active_pcm_trace_sequence_ = decoded_trace_sequence;
+            last_pcm_timestamp_us_ = now_us;
+            emit_current_first = true;
+        } else {
+            last_pcm_timestamp_us_ = now_us;
+        }
+    }
+
+    if (emit_previous_last) {
+        EmitLastPcm(previous, previous_last_pcm_us);
+    }
+    if (emit_current_first) {
+        LogAudioTraceEvent("first_decoded_pcm", current, now_us);
+    }
+}
+
+void AudioStreamPlayer::MaybeFinishRequestedAudioTrace()
+{
+    const int64_t now_us = esp_timer_get_time();
+    uint32_t trace_sequence = 0;
+    {
+        std::lock_guard<std::mutex> lock(trace_mutex_);
+        trace_sequence = finish_requested_trace_sequence_;
+        if (trace_sequence == 0 ||
+            active_pcm_trace_sequence_ != trace_sequence ||
+            last_pcm_timestamp_us_ <= 0 ||
+            now_us - last_pcm_timestamp_us_ < kAudioTraceFinishQuietUs) {
+            return;
+        }
+        for (const auto& span : input_trace_spans_) {
+            if (span.trace_sequence == trace_sequence && span.bytes > 0) {
+                return;
+            }
+        }
+    }
+    FinishAudioTraceSegment(trace_sequence);
+}
+
+void AudioStreamPlayer::FinishAudioTraceSegment(uint32_t trace_sequence)
+{
+    if (trace_sequence == 0) {
+        return;
+    }
+
+    AudioTraceContext finished;
+    int64_t last_pcm_us = 0;
+    bool emit_last = false;
+    {
+        std::lock_guard<std::mutex> lock(trace_mutex_);
+        for (auto it = trace_contexts_.begin(); it != trace_contexts_.end(); ++it) {
+            if (it->trace_sequence == trace_sequence) {
+                finished = *it;
+                trace_contexts_.erase(it);
+                break;
+            }
+        }
+        if (active_pcm_trace_sequence_ == trace_sequence &&
+            last_pcm_timestamp_us_ > 0) {
+            last_pcm_us = last_pcm_timestamp_us_;
+            active_pcm_trace_sequence_ = 0;
+            last_pcm_timestamp_us_ = 0;
+            emit_last = true;
+        }
+        if (finish_requested_trace_sequence_ == trace_sequence) {
+            finish_requested_trace_sequence_ = 0;
+        }
+    }
+    if (emit_last) {
+        EmitLastPcm(finished, last_pcm_us);
+    }
+}
+
+void AudioStreamPlayer::EmitLastPcm(const AudioTraceContext& context,
+                                    int64_t timestamp_us)
+{
+    LogAudioTraceEvent("last_pcm", context, timestamp_us);
+}
+
+void AudioStreamPlayer::FinishActiveAudioTrace()
+{
+    uint32_t active_sequence = 0;
+    {
+        std::lock_guard<std::mutex> lock(trace_mutex_);
+        active_sequence = active_pcm_trace_sequence_;
+    }
+    FinishAudioTraceSegment(active_sequence);
 }
 
 /* ================================================================== */
@@ -705,6 +947,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
             }
 
             if (!got) {
+                MaybeFinishRequestedAudioTrace();
                 if (!is_source_active_ && buffer_size_ == 0) {
                     ESP_LOGI(TAG, "Source ended, total=%zu", total_played);
                     break;
@@ -718,6 +961,14 @@ void AudioStreamPlayer::PlayLoopCompressed()
                 size_t copy  = std::min(chunk.size, space);
                 memcpy(input_buffer_ + input_bytes_left_, chunk.data, copy);
                 input_bytes_left_ += copy;
+                if (!input_trace_spans_.empty() &&
+                    input_trace_spans_.back().trace_sequence ==
+                        chunk.trace_sequence) {
+                    input_trace_spans_.back().bytes += copy;
+                } else {
+                    input_trace_spans_.push_back(
+                        TraceInputSpan{copy, chunk.trace_sequence});
+                }
                 total_played += chunk.size;
                 log_counter  += chunk.size;
                 heap_caps_free(chunk.data);
@@ -751,6 +1002,10 @@ void AudioStreamPlayer::PlayLoopCompressed()
         out.decoded_size = 0;
         out.needed_size  = 0;
 
+        const uint32_t decoded_trace_sequence = input_trace_spans_.empty()
+                                                    ? 0
+                                                    : input_trace_spans_.front()
+                                                          .trace_sequence;
         esp_audio_err_t ret = esp_audio_simple_dec_process(decoder_, &raw, &out);
 
         if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
@@ -769,6 +1024,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
         }
 
         if (raw.consumed > 0) {
+            ConsumeTraceInputBytes(raw.consumed);
             input_bytes_left_ -= raw.consumed;
             if (input_bytes_left_ > 0)
                 memmove(input_buffer_, input_buffer_ + raw.consumed, input_bytes_left_);
@@ -819,6 +1075,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
         int frame_ms = (samples_per_chan * 1000) / dec_info_.sample_rate;
         current_play_time_ms_ += frame_ms;
 
+        ObserveDecodedPcm(decoded_trace_sequence);
         OnPcmFrame(current_play_time_ms_, dec_info_.sample_rate, chans);
 
         OutputPcmFrame(reinterpret_cast<int16_t*>(out.buffer),
@@ -906,6 +1163,7 @@ void AudioStreamPlayer::PlayLoopWav()
         int frame_ms         = (sr > 0) ? (samples_per_chan * 1000) / sr : 0;
         current_play_time_ms_ += frame_ms;
 
+        ObserveDecodedPcm(chunk.trace_sequence);
         OnPcmFrame(current_play_time_ms_, sr, ch);
 
         OutputPcmFrame(reinterpret_cast<int16_t*>(chunk.data),
@@ -931,6 +1189,7 @@ void AudioStreamPlayer::ClearAudioBuffer()
             if (c.data) heap_caps_free(c.data);
         }
         buffer_size_ = 0;
+        input_trace_spans_.clear();
         xSemaphoreGive(buffer_mutex_);
     }
 }

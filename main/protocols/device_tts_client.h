@@ -69,6 +69,7 @@ public:
    * Tu bat player neu no chua chay.
    */
   void Enqueue(const std::string &tts_body);
+  void Enqueue(const std::string &tts_body, const AudioTraceContext &trace);
 
   /**
    * Huy cau dang doc + xoa hang doi + tat tieng ngay (be chen ngang / bam nut).
@@ -151,6 +152,15 @@ private:
   OpenConfiguredSocket(const ConnectionSnapshot &snapshot, bool preconnect);
   bool PromoteReadySocket();
 
+  struct QueuedTtsSegment {
+    std::string body;
+    AudioTraceContext trace;
+  };
+
+  AudioTraceContext GetActiveTrace();
+  void SetActiveTrace(const AudioTraceContext &trace);
+  void ClearActiveTrace();
+
   /* --- cau hinh tu server (bao ve boi config_mutex_) --- */
   mutable std::mutex config_mutex_;
   std::string url_;
@@ -161,7 +171,13 @@ private:
 
   /* --- hang doi cau --- */
   std::mutex queue_mutex_;
-  std::deque<std::string> queue_;
+  std::deque<QueuedTtsSegment> queue_;
+  std::atomic<uint32_t> next_trace_sequence_{1};
+
+  /* --- correlation cua segment dang tong hop/nhan byte --- */
+  std::mutex active_trace_mutex_;
+  AudioTraceContext active_trace_;
+  std::atomic<bool> first_provider_byte_seen_{false};
 
   /* --- trang thai --- */
   std::atomic<bool> running_{true};

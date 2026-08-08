@@ -53,6 +53,34 @@ static const char* const STATE_STRINGS[] = {
     "invalid_state"
 };
 
+namespace {
+std::string ReadAudioTraceField(const cJSON* root, const char* field,
+                                const char* fallback) {
+    const cJSON* value = cJSON_GetObjectItem(root, field);
+    if (!cJSON_IsString(value) || value->valuestring == nullptr ||
+        value->valuestring[0] == '\0') {
+        return fallback;
+    }
+    return SanitizeAudioTraceField(value->valuestring);
+}
+
+AudioTraceContext ReadAudioTraceContext(const cJSON* root,
+                                        const char* fallback_source) {
+    AudioTraceContext trace;
+    trace.turn_id = ReadAudioTraceField(root, "turn_id", "-");
+    trace.segment_id = ReadAudioTraceField(root, "segment_id", "-");
+    const std::string requested_source =
+        ReadAudioTraceField(root, "audio_source", fallback_source);
+    if (requested_source == "device_tts" ||
+        requested_source == "server_opus") {
+        trace.audio_source = requested_source;
+    } else {
+        trace.audio_source = fallback_source;
+    }
+    return trace;
+}
+}  // namespace
+
 Application::Application() {
     event_group_ = xEventGroupCreate();
 
@@ -583,10 +611,28 @@ if (ota.HasWebsocketConfig()) {
                 // phien van tron duoc hai duong -- cau bai hoc di audio kho,
                 // cau free chat di TTS thiet bi.
                 auto tts_body = cJSON_GetObjectItem(root, "tts_body");
-                if (cJSON_IsString(tts_body) && tts_body->valuestring != nullptr &&
-                    device_tts_client_ != nullptr) {
+                const bool has_device_tts_body =
+                    cJSON_IsString(tts_body) && tts_body->valuestring != nullptr;
+                const AudioTraceContext trace = ReadAudioTraceContext(
+                    root,
+                    has_device_tts_body ? "device_tts" : "server_opus");
+                LogAudioTraceEvent("json_receive", trace);
+                bool source_changed = false;
+                {
+                    std::lock_guard<std::mutex> lock(audio_trace_mutex_);
+                    source_changed = audio_trace_source_ != trace.audio_source;
+                    audio_trace_source_ = trace.audio_source;
+                    active_audio_trace_ = trace;
+                }
+                if (source_changed) {
+                    LogAudioTraceEvent("source_transition", trace);
+                }
+
+                if (has_device_tts_body && device_tts_client_ != nullptr) {
                     std::string body = tts_body->valuestring;
-                    Schedule([this, body]() { device_tts_client_->Enqueue(body); });
+                    Schedule([this, body, trace]() {
+                        device_tts_client_->Enqueue(body, trace);
+                    });
                 }
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
@@ -871,6 +917,14 @@ void Application::OnWakeWordDetected() {
 
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
+    AudioTraceContext aborted_trace;
+    {
+        std::lock_guard<std::mutex> lock(audio_trace_mutex_);
+        aborted_trace = active_audio_trace_;
+        audio_trace_source_ = "none";
+        active_audio_trace_ = AudioTraceContext{};
+    }
+    LogAudioTraceEvent("abort", aborted_trace);
     aborted_ = true;
     // Tieng cua duong TTS thiet bi KHONG di qua server nen `tts:stop` cua server
     // khong tat duoc no. Phai tu cat o day, khong thi be chen ngang xong robot

@@ -211,6 +211,9 @@ private:
     // TTS tren thiet bi: khi server gui `tts_config` + `tts_body` thi robot tu
     // lay tieng qua day thay vi phat khung Opus cua server. nullptr = chua bat.
     std::unique_ptr<DeviceTtsClient> device_tts_client_;
+    std::mutex audio_trace_mutex_;
+    AudioTraceContext active_audio_trace_;
+    std::string audio_trace_source_ = "none";
     // Server gui `tts:stop` NGAY sau cau cuoi (no khong con nhin thay tieng nua)
     // -> phai nho co nay va doi DeviceTtsClient bao het viec moi doi trang thai.
     bool tts_stop_received_ = false;

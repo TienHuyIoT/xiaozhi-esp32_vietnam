@@ -99,6 +99,13 @@ bool DeviceTtsClient::Configure(const cJSON *cfg) {
 /* ------------------------------------------------------------------ */
 
 void DeviceTtsClient::Enqueue(const std::string &tts_body) {
+  AudioTraceContext trace;
+  trace.audio_source = "device_tts";
+  Enqueue(tts_body, trace);
+}
+
+void DeviceTtsClient::Enqueue(const std::string &tts_body,
+                              const AudioTraceContext &trace) {
   if (tts_body.empty()) {
     return;
   }
@@ -107,6 +114,17 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body) {
     return;
   }
 
+  AudioTraceContext queued_trace = trace;
+  queued_trace.trace_sequence = next_trace_sequence_.fetch_add(1);
+  queued_trace.turn_id = SanitizeAudioTraceField(trace.turn_id);
+  queued_trace.segment_id = SanitizeAudioTraceField(trace.segment_id);
+  queued_trace.audio_source = SanitizeAudioTraceField(trace.audio_source);
+  if (queued_trace.audio_source == "-" ||
+      queued_trace.audio_source == "unknown") {
+    queued_trace.audio_source = "device_tts";
+  }
+
+  size_t queue_depth = 0;
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     if (queue_.size() >= kMaxQueuedSentences) {
@@ -114,8 +132,10 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body) {
                static_cast<int>(queue_.size()));
       return;
     }
-    queue_.push_back(tts_body);
+    queue_.push_back(QueuedTtsSegment{tts_body, queued_trace});
+    queue_depth = queue_.size();
   }
+  LogAudioTraceQueue("queue", "enqueue", queued_trace, queue_depth);
 
   // Enqueue va Abort deu duoc goi tu task cua Application (mot luong) nen khong
   // co dua nhau o day. Neu sau nay co task khac goi thi phai xem lai cho nay.
@@ -130,16 +150,19 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body) {
 void DeviceTtsClient::Abort() {
   abort_ = true;
   turn_generation_.fetch_add(1);
+  const AudioTraceContext trace = GetActiveTrace();
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     queue_.clear();
   }
+  LogAudioTraceQueue("queue", "clear", trace, 0);
   CloseReadySocket();
   // Tat tieng NGAY: StopStream() xa buffer + dung task giai ma. Cau sau tu bat
   // lai qua EnsureStarted(). Doi lai la lan do tra gia bat tay them mot lan --
   // chap nhan duoc vi be chen ngang la viec hiem, con tieng cu keo dai sau khi
   // be da noi thi rat kho chiu.
   StopStream();
+  ClearActiveTrace();
 }
 
 bool DeviceTtsClient::IsBusy() {
@@ -204,24 +227,29 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
   ESP_LOGI(TAG, "vong nguon bat dau");
 
   while (IsSourceActive() && running_.load()) {
-    std::string body;
+    QueuedTtsSegment segment;
+    size_t queue_depth = 0;
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
       if (!queue_.empty()) {
-        body = std::move(queue_.front());
+        segment = std::move(queue_.front());
         queue_.pop_front();
+        queue_depth = queue_.size();
       }
     }
-    if (body.empty()) {
+    if (segment.body.empty()) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
+    LogAudioTraceQueue("queue", "dequeue", segment.trace, queue_depth);
     if (abort_.load()) {
       continue; // Abort() da xoa hang doi; vong sau se thay het viec
     }
 
+    RegisterAudioTraceSegment(segment.trace);
+    SetActiveTrace(segment.trace);
     synthesizing_ = true;
-    const bool ok = SynthesizeOne(body);
+    const bool ok = SynthesizeOne(segment.body);
     synthesizing_ = false;
 
     // Edge tren robot khong on dinh khi tai su dung socket. Dong socket active
@@ -249,14 +277,37 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
            waited += 20) {
         vTaskDelay(pdMS_TO_TICKS(20));
       }
-      if (!HasQueuedSentence() && on_idle_ && !abort_.load()) {
-        on_idle_();
+      if (!HasQueuedSentence() && !abort_.load()) {
+        RequestAudioTraceSegmentFinish(segment.trace.trace_sequence);
+        if (on_idle_) {
+          on_idle_();
+        }
       }
     }
   }
 
   CloseSocket();
+  ClearActiveTrace();
   ESP_LOGI(TAG, "vong nguon ket thuc");
+}
+
+AudioTraceContext DeviceTtsClient::GetActiveTrace() {
+  std::lock_guard<std::mutex> lock(active_trace_mutex_);
+  return active_trace_;
+}
+
+void DeviceTtsClient::SetActiveTrace(const AudioTraceContext &trace) {
+  {
+    std::lock_guard<std::mutex> lock(active_trace_mutex_);
+    active_trace_ = trace;
+  }
+  first_provider_byte_seen_ = false;
+}
+
+void DeviceTtsClient::ClearActiveTrace() {
+  std::lock_guard<std::mutex> lock(active_trace_mutex_);
+  active_trace_ = AudioTraceContext{};
+  first_provider_byte_seen_ = false;
 }
 
 bool DeviceTtsClient::HasQueuedSentence() {
@@ -530,9 +581,12 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
 }
 
 bool DeviceTtsClient::SynthesizeOne(const std::string &body) {
+  const AudioTraceContext trace = GetActiveTrace();
+  LogAudioTraceEvent("connect_begin", trace);
   if (!EnsureConnected()) {
     return false;
   }
+  LogAudioTraceEvent("connect_ready", trace);
 
   turn_end_ = false;
   last_data_tick_ = xTaskGetTickCount();
@@ -615,7 +669,12 @@ void DeviceTtsClient::HandleData(const char *data, size_t len, bool binary) {
     return;
   }
 
+  const AudioTraceContext trace = GetActiveTrace();
+  if (!first_provider_byte_seen_.exchange(true)) {
+    LogAudioTraceEvent("first_provider_byte", trace);
+  }
+
   // MP3 la dong BYTE nen khong can carry byte giua hai manh (ban PCM cu phai
   // giu, vi mot mau chiem 2 byte va co the bi cat doi).
-  PushToBuffer(p + off, len - off);
+  PushToBuffer(p + off, len - off, trace.trace_sequence);
 }

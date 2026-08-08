@@ -19,10 +19,12 @@
 
 #include <string>
 #include <queue>
+#include <deque>
 #include <atomic>
 #include <vector>
 #include <functional>
 #include <cstdint>
+#include <mutex>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -146,10 +148,29 @@ enum class AudioDecoderType {
 struct StreamAudioChunk {
     uint8_t* data;
     size_t   size;
+    uint32_t trace_sequence;
 
-    StreamAudioChunk() : data(nullptr), size(0) {}
-    StreamAudioChunk(uint8_t* d, size_t s) : data(d), size(s) {}
+    StreamAudioChunk() : data(nullptr), size(0), trace_sequence(0) {}
+    StreamAudioChunk(uint8_t* d, size_t s, uint32_t sequence = 0)
+        : data(d), size(s), trace_sequence(sequence) {}
 };
+
+/** Metadata de noi cac moc audio ma khong ghi noi dung hoi thoai/payload TTS. */
+struct AudioTraceContext {
+    uint32_t trace_sequence = 0;
+    std::string turn_id = "-";
+    std::string segment_id = "-";
+    std::string audio_source = "unknown";
+};
+
+/** Chuan hoa truong correlation truoc khi dua vao serial log. */
+std::string SanitizeAudioTraceField(const std::string& value);
+
+/** Structured event dung dong ho monotonic cua ESP-IDF. */
+void LogAudioTraceEvent(const char* event, const AudioTraceContext& context,
+                        int64_t timestamp_us = -1);
+void LogAudioTraceQueue(const char* event, const char* action,
+                        const AudioTraceContext& context, size_t queue_depth);
 
 /* ------------------------------------------------------------------ */
 /*  WAV header info (for raw PCM passthrough)                         */
@@ -255,7 +276,14 @@ protected:
 
     /** Push data into the playback buffer (copies to PSRAM). Thread-safe.
      *  Returns false if stopped or allocation failed. */
-    bool PushToBuffer(const void* data, size_t size);
+    bool PushToBuffer(const void* data, size_t size,
+                      uint32_t trace_sequence = 0);
+
+    /** Dang ky correlation truoc khi byte cua segment vao buffer. */
+    void RegisterAudioTraceSegment(const AudioTraceContext& context);
+
+    /** Source bao da het byte; playback tu quyet dinh luc decoder da yen. */
+    void RequestAudioTraceSegmentFinish(uint32_t trace_sequence);
 
     /** Get decoder type for the current stream. */
     AudioDecoderType GetDecoderType() const { return decoder_type_; }
@@ -304,6 +332,14 @@ private:
     /* ---- Buffer helpers ---- */
     void ClearAudioBuffer();
 
+    /** Noi byte input da consume voi segment, khong log tren tung frame. */
+    void ConsumeTraceInputBytes(size_t bytes);
+    void ObserveDecodedPcm(uint32_t decoded_trace_sequence);
+    void MaybeFinishRequestedAudioTrace();
+    void FinishAudioTraceSegment(uint32_t trace_sequence);
+    void EmitLastPcm(const AudioTraceContext& context, int64_t timestamp_us);
+    void FinishActiveAudioTrace();
+
     /* ---- Decoder helpers ---- */
     bool  InitDecoder(AudioDecoderType type);
     void  CleanupDecoder();
@@ -348,6 +384,17 @@ private:
     SemaphoreHandle_t            buffer_data_sem_;
     SemaphoreHandle_t            buffer_space_sem_;
     size_t                       buffer_size_;
+
+    struct TraceInputSpan {
+        size_t bytes = 0;
+        uint32_t trace_sequence = 0;
+    };
+    std::deque<TraceInputSpan> input_trace_spans_;
+    mutable std::mutex trace_mutex_;
+    std::deque<AudioTraceContext> trace_contexts_;
+    uint32_t active_pcm_trace_sequence_ = 0;
+    uint32_t finish_requested_trace_sequence_ = 0;
+    int64_t last_pcm_timestamp_us_ = 0;
 
     /* ---- Decoder (esp_audio_codec) ---- */
     esp_audio_simple_dec_handle_t decoder_;

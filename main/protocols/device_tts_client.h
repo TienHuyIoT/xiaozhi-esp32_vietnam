@@ -112,13 +112,26 @@ private:
    *   giu mot socket suot     : 1690 1561 1819 2111 2143 2570 ms  (te dan)
    *   dong+mo lai moi 2 cau   :  201  124  192  185  160  207 ms
    *
-   * Muoi lan chenh. Bat tay ton ~400ms nhung roi vao luc cau truoc CON DANG PHAT
-   * (buffer PSRAM chua vai giay tieng) nen be khong nghe thay do tre do.
+   * Muoi lan chenh.
    *
-   * Neu ai do sau nay thay "dong socket moi 2 cau" la phi pham va bo di: hay do
-   * lai truoc, dung suy luan. Con so o tren la do that, khong phai uoc luong.
+   * ⚠️ Con so tren do tren PC. DO LAI TREN ROBOT cung ngay bac bo not phan "2 cau":
+   * tren ESP32, moi socket chi duoc phuc vu 1-2 cau roi Microsoft ngung cap HAN --
+   * tren PC chi cham them ~2,5s, tren robot vuot 7s nen watchdog no va MAT cau do.
+   * Nhat ky mot luot that:
+   *
+   *   1145691  bat tay xong sau 1501ms   <- socket #1, 2 cau dau KEU
+   *   1148381  socket dong
+   *   1149781  bat tay xong sau 1396ms   <- socket #2, them 1 cau
+   *   1160841  watchdog: 7000ms khong nhan them du lieu
+   *
+   * Nen ha ve 1: MOI CAU MOT SOCKET. Va vi bat tay tren ESP32 ton 1396-1501ms chu
+   * khong ~400ms nhu PC, SourceDataLoop mo san socket ke tiep NGAY sau khi gui xong
+   * cau -- luc do tieng cua cau vua roi con nam trong buffer PSRAM.
+   *
+   * Neu ai do sau nay thay "moi cau mot socket" la phi pham va nang len: do lai
+   * TREN ROBOT, dung do tren PC. Do tren PC chinh la cach da sai lan dau.
    */
-  static constexpr int kSentencesPerConnection = 2;
+  static constexpr int kSentencesPerConnection = 1;
 
   /** Khong nhan them byte nao trong ngan nay -> coi nhu chet (half-open TCP). */
   static constexpr int kNoAudioTimeoutMs = 7000;

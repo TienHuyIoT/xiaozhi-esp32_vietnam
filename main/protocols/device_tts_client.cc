@@ -181,15 +181,25 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
       // cau sau bat tay lai bang URL moi nhat, thay vi keo dai ket noi hong.
       CloseSocket();
     } else if (++cau_tren_socket_ >= kSentencesPerConnection) {
-      // Xoay socket -- KHONG phai don dep cho gon ma la don bay do tre: giu mot
-      // socket qua 2 cau thi tieng dau tut tu ~190ms xuong ~2000ms. Xem con so
-      // do duoc o kSentencesPerConnection (device_tts_client.h).
+      // Xoay socket, roi MO LAI NGAY chu khong doi cau sau goi den.
       //
-      // Dong o DAY, ngay sau khi cau vua roi gui xong, la co y: tieng cua no van
-      // dang nam trong buffer PSRAM va con phat vai giay nua, nen ~400ms bat tay
-      // cua cau ke tiep nap hoan toan vao khoang do -- be khong nghe thay.
-      ESP_LOGD(TAG, "da %d cau tren socket nay -> xoay socket", cau_tren_socket_);
+      // Hai con so do tren robot that 08/08 buoc phai lam vay:
+      //  - Bat tay tren ESP32 ton 1396-1501ms (mbedtls), KHONG phai ~400ms nhu do
+      //    tren PC. Cho den luc can dung la be ngoi im tung nay giay.
+      //  - Moi socket chi duoc Microsoft phuc vu 1-2 cau roi ngung cap HAN. Tren PC
+      //    no chi cham lai ~2,5s; tren robot no vuot 7s -> watchdog no, cau do mat.
+      //
+      // Nen: mot cau mot socket (tranh bi ngung cap), va mo truoc ngay tai day --
+      // luc nay tieng cua cau vua gui con nam trong buffer PSRAM va con phat vai
+      // giay nua, nen 1,4s bat tay nap tron vao khoang do, be khong nghe thay.
       CloseSocket();
+      const int64_t t0 = esp_timer_get_time();
+      if (EnsureConnected()) {
+        ESP_LOGD(TAG, "mo truoc socket ke tiep trong %lldms",
+                 (esp_timer_get_time() - t0) / 1000);
+      }
+      // Mo truoc that bai thi KHONG coi la loi: cau sau se tu goi EnsureConnected()
+      // lan nua. Chi mat phan giau do tre, khong mat tieng.
     }
 
     bool con_cau_khac;

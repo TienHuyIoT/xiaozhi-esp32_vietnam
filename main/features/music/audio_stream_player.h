@@ -149,10 +149,14 @@ struct StreamAudioChunk {
     uint8_t* data;
     size_t   size;
     uint32_t trace_sequence;
+    uint32_t stream_generation;
 
-    StreamAudioChunk() : data(nullptr), size(0), trace_sequence(0) {}
-    StreamAudioChunk(uint8_t* d, size_t s, uint32_t sequence = 0)
-        : data(d), size(s), trace_sequence(sequence) {}
+    StreamAudioChunk()
+        : data(nullptr), size(0), trace_sequence(0), stream_generation(0) {}
+    StreamAudioChunk(uint8_t* d, size_t s, uint32_t sequence = 0,
+                     uint32_t generation = 0)
+        : data(d), size(s), trace_sequence(sequence),
+          stream_generation(generation) {}
 };
 
 /** Metadata de noi cac moc audio ma khong ghi noi dung hoi thoai/payload TTS. */
@@ -277,7 +281,17 @@ protected:
     /** Push data into the playback buffer (copies to PSRAM). Thread-safe.
      *  Returns false if stopped or allocation failed. */
     bool PushToBuffer(const void* data, size_t size,
-                      uint32_t trace_sequence = 0);
+                      uint32_t trace_sequence = 0,
+                      uint32_t stream_generation = 0);
+
+    /**
+     * Cat ngay pipeline hien tai ma van giu hai worker song. Byte/PCM den muon
+     * cua generation cu se bi loai bo thay vi chen vao cau moi.
+     */
+    void InterruptStream();
+    uint32_t GetStreamGeneration() const {
+        return stream_generation_.load();
+    }
 
     /** Dang ky correlation truoc khi byte cua segment vao buffer. */
     void RegisterAudioTraceSegment(const AudioTraceContext& context);
@@ -317,7 +331,8 @@ private:
 
     /* ---- PCM output helper (shared between compressed & WAV paths) ---- */
     void OutputPcmFrame(int16_t* pcm_in, int total_samples, int channels,
-                        int sample_rate, int frame_duration_ms);
+                        int sample_rate, int frame_duration_ms,
+                        uint32_t expected_generation);
 
     /** Output PCM directly through AudioCodec (bypasses Application pipeline) */
     void OutputPcmDirect(int16_t* pcm_in, int total_samples, int channels,
@@ -331,6 +346,7 @@ private:
 
     /* ---- Buffer helpers ---- */
     void ClearAudioBuffer();
+    void DiscardQueuedAudio();
 
     /** Noi byte input da consume voi segment, khong log tren tung frame. */
     void ConsumeTraceInputBytes(size_t bytes);
@@ -343,6 +359,7 @@ private:
     /* ---- Decoder helpers ---- */
     bool  InitDecoder(AudioDecoderType type);
     void  CleanupDecoder();
+    bool  ResetCompressedPlaybackForGeneration();
     AudioDecoderType DetectStreamType(const uint8_t* data, size_t len);
 
     /* ---- Sample-rate reset ---- */
@@ -352,6 +369,8 @@ private:
     std::atomic<bool> is_playing_;
     std::atomic<bool> is_source_active_;
     std::atomic<bool> is_paused_;
+    std::atomic<uint32_t> stream_generation_{1};
+    std::mutex output_generation_mutex_;
     std::atomic<DisplayMode> display_mode_;
     std::atomic<AudioPlayerState> player_state_{AudioPlayerState::Idle};
     float volume_factor_;
@@ -367,11 +386,13 @@ private:
 
     /* ---- FreeRTOS handles ---- */
     TaskHandle_t source_task_handle_;
+    std::atomic<bool> source_task_exited_{true};
 #if AUDIO_STREAM_STATIC_TASK_CREATION == 1
     StaticTask_t* source_task_buffer_;
     StackType_t* source_task_stack_;
 #endif
     TaskHandle_t play_task_handle_;
+    std::atomic<bool> play_task_exited_{true};
 #if AUDIO_STREAM_STATIC_TASK_CREATION == 1
     StaticTask_t* play_task_buffer_;
     StackType_t* play_task_stack_;

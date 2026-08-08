@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include <esp_log.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 
 #include "board.h"
@@ -20,6 +21,7 @@ DeviceTtsClient::DeviceTtsClient() {
     return;
   }
 
+  preconnect_task_exited_ = false;
   const BaseType_t created = xTaskCreatePinnedToCore(
       [](void *arg) {
         static_cast<DeviceTtsClient *>(arg)->PreconnectTaskRoutine();
@@ -27,11 +29,22 @@ DeviceTtsClient::DeviceTtsClient() {
       "tts_preconn", kPreconnectTaskStack, this, 4, &preconnect_task_handle_, 0);
   if (created != pdPASS) {
     preconnect_task_handle_ = nullptr;
+    preconnect_task_exited_ = true;
     ESP_LOGE(TAG, "khong tao duoc task preconnect; se bat tay dong bo");
   }
 }
 
-DeviceTtsClient::~DeviceTtsClient() { Shutdown(); }
+DeviceTtsClient::~DeviceTtsClient() {
+  Shutdown();
+  // Join khi member cua DeviceTtsClient con song. Cho destructor lop cha la
+  // qua muon: SourceDataLoop van co the cham queue_/socket_/mutex_.
+  if (!StopStream()) {
+    ESP_LOGE(TAG, "worker TTS khong thoat khi teardown; restart fail-safe");
+    esp_restart();
+  }
+  // Source worker da dung, bay gio moi duoc phep cham active socket.
+  CloseSocket();
+}
 
 /* ------------------------------------------------------------------ */
 /*  Cau hinh tu server                                                */
@@ -156,13 +169,14 @@ void DeviceTtsClient::Abort() {
     queue_.clear();
   }
   LogAudioTraceQueue("queue", "clear", trace, 0);
-  CloseReadySocket();
-  // Tat tieng NGAY: StopStream() xa buffer + dung task giai ma. Cau sau tu bat
-  // lai qua EnsureStarted(). Doi lai la lan do tra gia bat tay them mot lan --
-  // chap nhan duoc vi be chen ngang la viec hiem, con tieng cu keo dai sau khi
-  // be da noi thi rat kho chiu.
-  StopStream();
+  // Chi doi generation + xa byte dang cho. Hai worker va decoder se tu cat o
+  // ranh gioi an toan; tuyet doi khong StopStream tu task Application.
+  InterruptStream();
   ClearActiveTrace();
+  // Giao viec dong socket warm (co the block TLS) cho worker preconnect.
+  if (preconnect_events_ != nullptr) {
+    xEventGroupSetBits(preconnect_events_, kPreconnectWakeBit);
+  }
 }
 
 bool DeviceTtsClient::IsBusy() {
@@ -180,21 +194,36 @@ bool DeviceTtsClient::IsBusy() {
 }
 
 void DeviceTtsClient::Shutdown() {
-  const bool was_running = running_.exchange(false);
+  running_ = false;
   Abort();
-  CloseSocket();
-  CloseReadySocket();
 
-  if (was_running && preconnect_events_ != nullptr) {
+  if (preconnect_events_ != nullptr) {
     xEventGroupSetBits(preconnect_events_, kPreconnectWakeBit);
   }
   if (preconnect_task_handle_ != nullptr && preconnect_exited_ != nullptr) {
     if (xSemaphoreTake(preconnect_exited_, pdMS_TO_TICKS(15000)) != pdTRUE) {
-      ESP_LOGE(TAG, "task preconnect khong thoat sau 15s; buoc dung");
-      vTaskDelete(preconnect_task_handle_);
-      preconnect_task_handle_ = nullptr;
+      ESP_LOGE(TAG, "task preconnect khong thoat sau 15s; restart fail-safe");
+      esp_restart();
     }
   }
+  if (preconnect_task_handle_ != nullptr) {
+    bool suspended = false;
+    for (int i = 0; i < 50; ++i) {
+      if (preconnect_task_exited_.load() &&
+          eTaskGetState(preconnect_task_handle_) == eSuspended) {
+        suspended = true;
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (!suspended) {
+      ESP_LOGE(TAG, "task preconnect chua suspend; restart fail-safe");
+      esp_restart();
+    }
+    vTaskDelete(preconnect_task_handle_);
+    preconnect_task_handle_ = nullptr;
+  }
+  CloseReadySocket();
   if (preconnect_events_ != nullptr) {
     vEventGroupDelete(preconnect_events_);
     preconnect_events_ = nullptr;
@@ -300,12 +329,14 @@ void DeviceTtsClient::SetActiveTrace(const AudioTraceContext &trace) {
   {
     std::lock_guard<std::mutex> lock(active_trace_mutex_);
     active_trace_ = trace;
+    active_stream_generation_ = GetStreamGeneration();
   }
   first_provider_byte_seen_ = false;
 }
 
 void DeviceTtsClient::ClearActiveTrace() {
   std::lock_guard<std::mutex> lock(active_trace_mutex_);
+  active_stream_generation_ = 0;
   active_trace_ = AudioTraceContext{};
   first_provider_byte_seen_ = false;
 }
@@ -502,7 +533,6 @@ void DeviceTtsClient::RequestPreconnect() {
     return;
   }
 
-  std::unique_ptr<WebSocket> stale;
   {
     std::lock_guard<std::mutex> lock(ready_socket_mutex_);
     if (ready_websocket_ && ready_websocket_->IsConnected() &&
@@ -510,15 +540,6 @@ void DeviceTtsClient::RequestPreconnect() {
         ready_turn_generation_ == turn_generation_.load()) {
       return;
     }
-    if (ready_websocket_) {
-      stale = std::move(ready_websocket_);
-      ready_config_generation_ = 0;
-      ready_turn_generation_ = 0;
-      ready_socket_generation_ = 0;
-    }
-  }
-  if (stale) {
-    stale->Close();
   }
 
   bool expected = false;
@@ -540,11 +561,21 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
     vTaskDelay(pdMS_TO_TICKS(kPreconnectDelayMs));
 
     bool already_ready = false;
+    std::unique_ptr<WebSocket> stale;
     {
       std::lock_guard<std::mutex> lock(ready_socket_mutex_);
       already_ready = ready_websocket_ && ready_websocket_->IsConnected() &&
                       ready_config_generation_ == config_generation_.load() &&
                       ready_turn_generation_ == turn_generation_.load();
+      if (ready_websocket_ && !already_ready) {
+        stale = std::move(ready_websocket_);
+        ready_config_generation_ = 0;
+        ready_turn_generation_ = 0;
+        ready_socket_generation_ = 0;
+      }
+    }
+    if (stale) {
+      stale->Close();
     }
 
     ConnectionSnapshot snapshot;
@@ -576,14 +607,20 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
   if (preconnect_exited_ != nullptr) {
     xSemaphoreGive(preconnect_exited_);
   }
-  preconnect_task_handle_ = nullptr;
+  preconnect_task_exited_ = true;
+  vTaskSuspend(nullptr);
   vTaskDelete(nullptr);
 }
 
 bool DeviceTtsClient::SynthesizeOne(const std::string &body) {
   const AudioTraceContext trace = GetActiveTrace();
+  const uint32_t synthesis_generation = turn_generation_.load();
   LogAudioTraceEvent("connect_begin", trace);
   if (!EnsureConnected()) {
+    return false;
+  }
+  if (abort_.load() ||
+      turn_generation_.load() != synthesis_generation) {
     return false;
   }
   LogAudioTraceEvent("connect_ready", trace);
@@ -609,6 +646,9 @@ bool DeviceTtsClient::SynthesizeOne(const std::string &body) {
   const TickType_t started = xTaskGetTickCount();
 
   while (running_.load() && !abort_.load()) {
+    if (turn_generation_.load() != synthesis_generation) {
+      return false;
+    }
     if (turn_end_.load()) {
       return true;
     }
@@ -635,7 +675,8 @@ bool DeviceTtsClient::SynthesizeOne(const std::string &body) {
 /* ------------------------------------------------------------------ */
 
 void DeviceTtsClient::HandleData(const char *data, size_t len, bool binary) {
-  if (abort_.load() || !running_.load()) {
+  const uint32_t stream_generation = active_stream_generation_.load();
+  if (abort_.load() || !running_.load() || stream_generation == 0) {
     return; // sau khi be chen ngang thi bo het, khong bom vao buffer nua
   }
 
@@ -676,5 +717,6 @@ void DeviceTtsClient::HandleData(const char *data, size_t len, bool binary) {
 
   // MP3 la dong BYTE nen khong can carry byte giua hai manh (ban PCM cu phai
   // giu, vi mot mau chiem 2 byte va co the bi cat doi).
-  PushToBuffer(p + off, len - off, trace.trace_sequence);
+  PushToBuffer(p + off, len - off, trace.trace_sequence,
+               stream_generation);
 }

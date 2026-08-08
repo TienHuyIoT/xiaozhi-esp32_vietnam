@@ -12,6 +12,7 @@
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <cstring>
 #include <algorithm>
@@ -127,7 +128,35 @@ AudioStreamPlayer::AudioStreamPlayer()
 AudioStreamPlayer::~AudioStreamPlayer()
 {
     ESP_LOGI(TAG, "Destroying AudioStreamPlayer");
-    StopStream();
+    const bool stopped = StopStream();
+
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+    if (stopped) {
+        if (source_task_buffer_) {
+            heap_caps_free(source_task_buffer_);
+            source_task_buffer_ = nullptr;
+        }
+        if (source_task_stack_) {
+            heap_caps_free(source_task_stack_);
+            source_task_stack_ = nullptr;
+        }
+        if (play_task_buffer_) {
+            heap_caps_free(play_task_buffer_);
+            play_task_buffer_ = nullptr;
+        }
+        if (play_task_stack_) {
+            heap_caps_free(play_task_stack_);
+            play_task_stack_ = nullptr;
+        }
+    }
+#endif
+
+    if (!stopped) {
+        // Destructor khong duoc tra ve khi worker con giu `this`. Restart co
+        // chu dich an toan hon use-after-free va chi xay ra tren duong teardown.
+        ESP_LOGE(TAG, "Worker audio khong thoat khi teardown; restart fail-safe");
+        esp_restart();
+    }
 
     if (buffer_mutex_)     vSemaphoreDelete(buffer_mutex_);
     if (buffer_data_sem_)  vSemaphoreDelete(buffer_data_sem_);
@@ -148,8 +177,11 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
 
     ESP_LOGI(TAG, "StartStream: source=%s, type=%d", source.c_str(), (int)type);
 
-    /* Stop previous session */
-    StopStream();
+    /* Stop previous session. Khong tao worker moi de len worker cu bi ket. */
+    if (!StopStream()) {
+        ESP_LOGE(TAG, "Khong the bat stream moi: worker cu chua thoat");
+        return false;
+    }
 
     SetPlayerState(AudioPlayerState::Loading);
 
@@ -174,6 +206,7 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
 
     /* Launch source task */
     is_source_active_ = true;
+    source_task_exited_ = false;
 #if AUDIO_STREAM_STATIC_TASK_CREATION == 1
     if (source_task_stack_ == nullptr) {
         source_task_stack_ = (StackType_t*)heap_caps_malloc(AUDIO_SOURCE_TASK_STACK, MALLOC_CAP_SPIRAM);
@@ -192,6 +225,7 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
     if (source_task_handle_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create source task");
         is_source_active_ = false;
+        source_task_exited_ = true;
         return false;
     }
 #else
@@ -204,12 +238,14 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create source task");
         is_source_active_ = false;
+        source_task_exited_ = true;
         return false;
     }
 #endif
 
     /* Launch playback task */
     is_playing_ = true;
+    play_task_exited_ = false;
 #if AUDIO_STREAM_STATIC_TASK_CREATION == 1
     if (play_task_stack_ == nullptr) {
         play_task_stack_ = (StackType_t*)heap_caps_malloc(AUDIO_PLAY_TASK_STACK, MALLOC_CAP_SPIRAM);
@@ -229,6 +265,8 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
         ESP_LOGE(TAG, "Failed to create playback task");
         is_playing_       = false;
         is_source_active_ = false;
+        play_task_exited_ = true;
+        StopStream();
         return false;
     }
 #else
@@ -242,6 +280,8 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
         ESP_LOGE(TAG, "Failed to create playback task");
         is_playing_       = false;
         is_source_active_ = false;
+        play_task_exited_ = true;
+        StopStream();
         return false;
     }
 #endif
@@ -252,8 +292,15 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
 
 bool AudioStreamPlayer::StopStream()
 {
-    if (!is_playing_ && !is_source_active_) {
+    if (!is_playing_ && !is_source_active_ && source_task_handle_ == nullptr &&
+        play_task_handle_ == nullptr) {
         return true;
+    }
+
+    const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
+    if (current_task == source_task_handle_ || current_task == play_task_handle_) {
+        ESP_LOGE(TAG, "StopStream khong duoc goi tu chinh worker audio");
+        return false;
     }
 
     ESP_LOGI(TAG, "StopStream: src=%d, play=%d",
@@ -272,47 +319,52 @@ bool AudioStreamPlayer::StopStream()
     if (buffer_data_sem_)  xSemaphoreGive(buffer_data_sem_);
     if (buffer_space_sem_) xSemaphoreGive(buffer_space_sem_);
 
-    /* Wait for source task */
+    /* Danh thuc worker de no di toi diem suspend cuoi cung. */
     if (source_task_handle_) {
-        for (int i = 0; i < 50 && source_task_handle_; ++i) {
+        for (int i = 0; i < 50 && !source_task_exited_.load(); ++i) {
             xSemaphoreGive(buffer_space_sem_);
             vTaskDelay(pdMS_TO_TICKS(100));
-            if (source_task_handle_ == nullptr) break;
-            if (eTaskGetState(source_task_handle_) == eDeleted) break;
         }
-        source_task_handle_ = nullptr;
-#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
-        if (source_task_buffer_) {
-            heap_caps_free(source_task_buffer_);
-            source_task_buffer_ = nullptr;
-        }
-        if (source_task_stack_) {
-            heap_caps_free(source_task_stack_);
-            source_task_stack_ = nullptr;
-        }
-#endif
     }
 
     /* Wait for play task */
     if (play_task_handle_) {
-        for (int i = 0; i < 50 && play_task_handle_; ++i) {
+        for (int i = 0; i < 50 && !play_task_exited_.load(); ++i) {
             xSemaphoreGive(buffer_data_sem_);
             if (pause_sem_) xSemaphoreGive(pause_sem_);
             vTaskDelay(pdMS_TO_TICKS(100));
-            if (play_task_handle_ == nullptr) break;
-            if (eTaskGetState(play_task_handle_) == eDeleted) break;
         }
+    }
+
+    auto wait_until_suspended = [](TaskHandle_t handle,
+                                   const std::atomic<bool>& exited) {
+        if (handle == nullptr) return true;
+        for (int i = 0; i < 50; ++i) {
+            if (exited.load() && eTaskGetState(handle) == eSuspended) {
+                return true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        return false;
+    };
+    const bool source_stopped =
+        wait_until_suspended(source_task_handle_, source_task_exited_);
+    const bool play_stopped =
+        wait_until_suspended(play_task_handle_, play_task_exited_);
+    if (!source_stopped || !play_stopped) {
+        ESP_LOGE(TAG, "StopStream timeout: src=%p play=%p",
+                 source_task_handle_, play_task_handle_);
+        return false;
+    }
+
+    /* Task da suspend nen vTaskDelete o day cleanup dong bo, stack moi an toan. */
+    if (source_task_handle_) {
+        vTaskDelete(source_task_handle_);
+        source_task_handle_ = nullptr;
+    }
+    if (play_task_handle_) {
+        vTaskDelete(play_task_handle_);
         play_task_handle_ = nullptr;
-#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
-        if (play_task_buffer_) {
-            heap_caps_free(play_task_buffer_);
-            play_task_buffer_ = nullptr;
-        }
-        if (play_task_stack_) {
-            heap_caps_free(play_task_stack_);
-            play_task_stack_ = nullptr;
-        }
-#endif
     }
 
     FinishActiveAudioTrace();
@@ -372,9 +424,10 @@ void AudioStreamPlayer::SourceTaskEntry(void* param)
     auto* self = static_cast<AudioStreamPlayer*>(param);
     self->SourceDataLoop(self->stream_url_);
     self->is_source_active_ = false;
-    self->source_task_handle_ = nullptr;
     /* Wake playback in case it is waiting for data */
     if (self->buffer_data_sem_) xSemaphoreGive(self->buffer_data_sem_);
+    self->source_task_exited_ = true;
+    vTaskSuspend(nullptr);
     vTaskDelete(nullptr);
 }
 
@@ -382,7 +435,8 @@ void AudioStreamPlayer::PlayTaskEntry(void* param)
 {
     auto* self = static_cast<AudioStreamPlayer*>(param);
     self->PlayLoop();
-    self->play_task_handle_ = nullptr;
+    self->play_task_exited_ = true;
+    vTaskSuspend(nullptr);
     vTaskDelete(nullptr);
 }
 
@@ -494,9 +548,16 @@ void AudioStreamPlayer::SourceDataLoop(const std::string& source)
 /* ================================================================== */
 
 bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size,
-                                     uint32_t trace_sequence)
+                                     uint32_t trace_sequence,
+                                     uint32_t stream_generation)
 {
     if (!data || size == 0) return false;
+
+    const uint32_t expected_generation =
+        stream_generation == 0 ? stream_generation_.load() : stream_generation;
+    if (expected_generation != stream_generation_.load()) {
+        return false;
+    }
 
     uint8_t* chunk = (uint8_t*)heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
     if (!chunk) {
@@ -507,16 +568,27 @@ bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size,
 
     /* Back-pressure: wait for space */
     while (is_source_active_ && is_playing_ && buffer_size_ >= AUDIO_BUF_MAX_SIZE) {
+        if (expected_generation != stream_generation_.load()) {
+            heap_caps_free(chunk);
+            return false;
+        }
         xSemaphoreTake(buffer_space_sem_, pdMS_TO_TICKS(100));
     }
 
-    if (!is_source_active_ || !is_playing_) {
+    if (!is_source_active_ || !is_playing_ ||
+        expected_generation != stream_generation_.load()) {
         heap_caps_free(chunk);
         return false;
     }
 
     if (xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(500)) == pdTRUE) {
-        audio_buffer_.push(StreamAudioChunk(chunk, size, trace_sequence));
+        if (expected_generation != stream_generation_.load()) {
+            xSemaphoreGive(buffer_mutex_);
+            heap_caps_free(chunk);
+            return false;
+        }
+        audio_buffer_.push(StreamAudioChunk(
+            chunk, size, trace_sequence, expected_generation));
         buffer_size_ += size;
         xSemaphoreGive(buffer_mutex_);
         xSemaphoreGive(buffer_data_sem_);
@@ -526,6 +598,22 @@ bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size,
     heap_caps_free(chunk);
     ESP_LOGW(TAG, "Buffer mutex timeout in PushToBuffer");
     return false;
+}
+
+void AudioStreamPlayer::InterruptStream()
+{
+    uint32_t next_generation = 0;
+    {
+        // Cung mutex voi lan ghi I2S cuoi: Abort tra ve thi PCM cu da het quyen ghi.
+        std::lock_guard<std::mutex> lock(output_generation_mutex_);
+        next_generation = stream_generation_.fetch_add(1) + 1;
+    }
+    FinishActiveAudioTrace();
+    DiscardQueuedAudio();
+    if (buffer_data_sem_) xSemaphoreGive(buffer_data_sem_);
+    if (buffer_space_sem_) xSemaphoreGive(buffer_space_sem_);
+    ESP_LOGI(TAG, "InterruptStream: generation=%lu",
+             static_cast<unsigned long>(next_generation));
 }
 
 void AudioStreamPlayer::RegisterAudioTraceSegment(
@@ -785,7 +873,8 @@ bool AudioStreamPlayer::HandlePause()
 
 void AudioStreamPlayer::OutputPcmFrame(int16_t* pcm_in, int total_samples,
                                         int channels, int sample_rate,
-                                        int frame_duration_ms)
+                                        int frame_duration_ms,
+                                        uint32_t expected_generation)
 {
     int16_t* final_pcm   = pcm_in;
     int      final_count = total_samples;
@@ -820,6 +909,12 @@ void AudioStreamPlayer::OutputPcmFrame(int16_t* pcm_in, int total_samples,
     /* Notify PCM callback for custom processing */
     if (pcm_callback_) {
         pcm_callback_(amp_buf.data(), final_count, 1, sample_rate);
+    }
+
+    /* Tuan tu hoa generation check voi InterruptStream. */
+    std::lock_guard<std::mutex> output_lock(output_generation_mutex_);
+    if (expected_generation != stream_generation_.load()) {
+        return;
     }
 
     /* Output audio through direct codec path */
@@ -926,9 +1021,21 @@ void AudioStreamPlayer::PlayLoopCompressed()
 
     size_t total_played = 0;
     size_t log_counter  = 0;
+    uint32_t playback_generation = stream_generation_.load();
 
     while (is_playing_) {
         if (!HandlePause()) break;
+
+        const uint32_t current_generation = stream_generation_.load();
+        if (current_generation != playback_generation) {
+            playback_generation = current_generation;
+            if (!ResetCompressedPlaybackForGeneration()) {
+                ESP_LOGE(TAG, "Khong reset duoc decoder sau interrupt");
+                is_playing_ = false;
+                break;
+            }
+            continue;
+        }
 
         /* Fill input buffer from audio buffer */
         if (input_bytes_left_ < (AUDIO_DEC_INPUT_BUF_SIZE / 2)) {
@@ -957,6 +1064,10 @@ void AudioStreamPlayer::PlayLoopCompressed()
             }
 
             if (chunk.data && chunk.size > 0) {
+                if (chunk.stream_generation != playback_generation) {
+                    heap_caps_free(chunk.data);
+                    continue;
+                }
                 size_t space = AUDIO_DEC_INPUT_BUF_SIZE - input_bytes_left_;
                 size_t copy  = std::min(chunk.size, space);
                 memcpy(input_buffer_ + input_bytes_left_, chunk.data, copy);
@@ -1006,7 +1117,12 @@ void AudioStreamPlayer::PlayLoopCompressed()
                                                     ? 0
                                                     : input_trace_spans_.front()
                                                           .trace_sequence;
+        const uint32_t decode_generation = playback_generation;
         esp_audio_err_t ret = esp_audio_simple_dec_process(decoder_, &raw, &out);
+
+        if (stream_generation_.load() != decode_generation) {
+            continue;
+        }
 
         if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
             ESP_LOGI(TAG, "Decoder needs bigger output buffer: %zu bytes",
@@ -1075,11 +1191,15 @@ void AudioStreamPlayer::PlayLoopCompressed()
         int frame_ms = (samples_per_chan * 1000) / dec_info_.sample_rate;
         current_play_time_ms_ += frame_ms;
 
+        if (stream_generation_.load() != decode_generation) {
+            continue;
+        }
         ObserveDecodedPcm(decoded_trace_sequence);
         OnPcmFrame(current_play_time_ms_, dec_info_.sample_rate, chans);
 
         OutputPcmFrame(reinterpret_cast<int16_t*>(out.buffer),
-                       total_samples, chans, dec_info_.sample_rate, frame_ms);
+                       total_samples, chans, dec_info_.sample_rate, frame_ms,
+                       decode_generation);
 
         if (log_counter >= AUDIO_LOG_INTERVAL) {
             log_counter = 0;
@@ -1127,9 +1247,15 @@ void AudioStreamPlayer::PlayLoopWav()
     }
 
     size_t total_played = 0;
+    uint32_t playback_generation = stream_generation_.load();
 
     while (is_playing_) {
         if (!HandlePause()) break;
+
+        const uint32_t current_generation = stream_generation_.load();
+        if (current_generation != playback_generation) {
+            playback_generation = current_generation;
+        }
 
         /* Get chunk from buffer */
         StreamAudioChunk chunk;
@@ -1156,6 +1282,10 @@ void AudioStreamPlayer::PlayLoopWav()
         }
 
         if (!chunk.data || chunk.size == 0) continue;
+        if (chunk.stream_generation != playback_generation) {
+            heap_caps_free(chunk.data);
+            continue;
+        }
 
         /* Interpret as raw PCM */
         int total_samples    = chunk.size / sizeof(int16_t);
@@ -1163,11 +1293,16 @@ void AudioStreamPlayer::PlayLoopWav()
         int frame_ms         = (sr > 0) ? (samples_per_chan * 1000) / sr : 0;
         current_play_time_ms_ += frame_ms;
 
+        if (stream_generation_.load() != playback_generation) {
+            heap_caps_free(chunk.data);
+            continue;
+        }
         ObserveDecodedPcm(chunk.trace_sequence);
         OnPcmFrame(current_play_time_ms_, sr, ch);
 
         OutputPcmFrame(reinterpret_cast<int16_t*>(chunk.data),
-                       total_samples, ch, sr, frame_ms);
+                       total_samples, ch, sr, frame_ms,
+                       playback_generation);
 
         total_played += chunk.size;
         heap_caps_free(chunk.data);
@@ -1192,6 +1327,21 @@ void AudioStreamPlayer::ClearAudioBuffer()
         input_trace_spans_.clear();
         xSemaphoreGive(buffer_mutex_);
     }
+}
+
+void AudioStreamPlayer::DiscardQueuedAudio()
+{
+    if (xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(20)) != pdTRUE) {
+        ESP_LOGW(TAG, "Khong khoa duoc buffer de huy generation cu");
+        return;
+    }
+    while (!audio_buffer_.empty()) {
+        auto chunk = audio_buffer_.front();
+        audio_buffer_.pop();
+        if (chunk.data) heap_caps_free(chunk.data);
+    }
+    buffer_size_ = 0;
+    xSemaphoreGive(buffer_mutex_);
 }
 
 /* ================================================================== */
@@ -1276,6 +1426,14 @@ void AudioStreamPlayer::CleanupDecoder()
 
     esp_audio_simple_dec_unregister_default();
     esp_audio_dec_unregister_default();
+}
+
+bool AudioStreamPlayer::ResetCompressedPlaybackForGeneration()
+{
+    input_bytes_left_ = 0;
+    input_trace_spans_.clear();
+    CleanupDecoder();
+    return InitDecoder(decoder_type_);
 }
 
 AudioDecoderType AudioStreamPlayer::DetectStreamType(const uint8_t* data, size_t len)

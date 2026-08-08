@@ -177,6 +177,7 @@ private:
   /* --- correlation cua segment dang tong hop/nhan byte --- */
   std::mutex active_trace_mutex_;
   AudioTraceContext active_trace_;
+  std::atomic<uint32_t> active_stream_generation_{0};
   std::atomic<bool> first_provider_byte_seen_{false};
 
   /* --- trang thai --- */
@@ -209,6 +210,7 @@ private:
   EventGroupHandle_t preconnect_events_ = nullptr;
   SemaphoreHandle_t preconnect_exited_ = nullptr;
   TaskHandle_t preconnect_task_handle_ = nullptr;
+  std::atomic<bool> preconnect_task_exited_{true};
 
   std::function<void()> on_idle_;
 };

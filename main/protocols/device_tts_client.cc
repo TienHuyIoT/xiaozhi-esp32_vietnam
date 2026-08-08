@@ -12,6 +12,23 @@
 DeviceTtsClient::DeviceTtsClient() {
   // Mot cau ~17KB MP3; nguong 32KB cua lop cha se treo cau dau mai mai.
   SetMinBufferSize(kTtsMinBufferBytes);
+
+  preconnect_events_ = xEventGroupCreate();
+  preconnect_exited_ = xSemaphoreCreateBinary();
+  if (preconnect_events_ == nullptr || preconnect_exited_ == nullptr) {
+    ESP_LOGE(TAG, "khong tao duoc dong bo preconnect; se bat tay dong bo");
+    return;
+  }
+
+  const BaseType_t created = xTaskCreatePinnedToCore(
+      [](void *arg) {
+        static_cast<DeviceTtsClient *>(arg)->PreconnectTaskRoutine();
+      },
+      "tts_preconn", kPreconnectTaskStack, this, 4, &preconnect_task_handle_, 0);
+  if (created != pdPASS) {
+    preconnect_task_handle_ = nullptr;
+    ESP_LOGE(TAG, "khong tao duoc task preconnect; se bat tay dong bo");
+  }
 }
 
 DeviceTtsClient::~DeviceTtsClient() { Shutdown(); }
@@ -62,8 +79,14 @@ bool DeviceTtsClient::Configure(const cJSON *cfg) {
         }
       }
     }
+    config_generation_.fetch_add(1);
   }
   configured_ = true;
+
+  // URL moi lam socket warm cu vo nghia. Mo san ngay luc nhan tts_config --
+  // thuong la trong khi be con dang noi -- de cau dau cung khong tra gia TLS.
+  CloseReadySocket();
+  RequestPreconnect();
 
   // KHONG log url_: no chua token chong bot cua nha cung cap.
   ESP_LOGI(TAG, "nap cau hinh TTS thiet bi (%d header, codec mp3)",
@@ -97,6 +120,8 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body) {
   // Enqueue va Abort deu duoc goi tu task cua Application (mot luong) nen khong
   // co dua nhau o day. Neu sau nay co task khac goi thi phai xem lai cho nay.
   abort_ = false;
+  // Neu turn truoc vua abort thi worker co the chua kip mo lai socket warm.
+  RequestPreconnect();
   if (!EnsureStarted()) {
     ESP_LOGE(TAG, "khong bat duoc duong phat -> be se khong nghe gi");
   }
@@ -104,10 +129,12 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body) {
 
 void DeviceTtsClient::Abort() {
   abort_ = true;
+  turn_generation_.fetch_add(1);
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     queue_.clear();
   }
+  CloseReadySocket();
   // Tat tieng NGAY: StopStream() xa buffer + dung task giai ma. Cau sau tu bat
   // lai qua EnsureStarted(). Doi lai la lan do tra gia bat tay them mot lan --
   // chap nhan duoc vi be chen ngang la viec hiem, con tieng cu keo dai sau khi
@@ -130,8 +157,29 @@ bool DeviceTtsClient::IsBusy() {
 }
 
 void DeviceTtsClient::Shutdown() {
-  running_ = false;
+  const bool was_running = running_.exchange(false);
   Abort();
+  CloseSocket();
+  CloseReadySocket();
+
+  if (was_running && preconnect_events_ != nullptr) {
+    xEventGroupSetBits(preconnect_events_, kPreconnectWakeBit);
+  }
+  if (preconnect_task_handle_ != nullptr && preconnect_exited_ != nullptr) {
+    if (xSemaphoreTake(preconnect_exited_, pdMS_TO_TICKS(15000)) != pdTRUE) {
+      ESP_LOGE(TAG, "task preconnect khong thoat sau 15s; buoc dung");
+      vTaskDelete(preconnect_task_handle_);
+      preconnect_task_handle_ = nullptr;
+    }
+  }
+  if (preconnect_events_ != nullptr) {
+    vEventGroupDelete(preconnect_events_);
+    preconnect_events_ = nullptr;
+  }
+  if (preconnect_exited_ != nullptr) {
+    vSemaphoreDelete(preconnect_exited_);
+    preconnect_exited_ = nullptr;
+  }
 }
 
 bool DeviceTtsClient::EnsureStarted() {
@@ -176,46 +224,32 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
     const bool ok = SynthesizeOne(body);
     synthesizing_ = false;
 
+    // Edge tren robot khong on dinh khi tai su dung socket. Dong socket active
+    // sau dung mot cau; socket moi da duoc worker mo SONG SONG tu luc gui SSML.
+    CloseSocket();
     if (!ok) {
-      // Socket dang nghi ngo (dut, watchdog no, hoac bi tu choi): dong han de
-      // cau sau bat tay lai bang URL moi nhat, thay vi keo dai ket noi hong.
-      CloseSocket();
-    } else if (++cau_tren_socket_ >= kSentencesPerConnection) {
-      // Xoay socket, roi MO LAI NGAY chu khong doi cau sau goi den.
-      //
-      // Hai con so do tren robot that 08/08 buoc phai lam vay:
-      //  - Bat tay tren ESP32 ton 1396-1501ms (mbedtls), KHONG phai ~400ms nhu do
-      //    tren PC. Cho den luc can dung la be ngoi im tung nay giay.
-      //  - Moi socket chi duoc Microsoft phuc vu 1-2 cau roi ngung cap HAN. Tren PC
-      //    no chi cham lai ~2,5s; tren robot no vuot 7s -> watchdog no, cau do mat.
-      //
-      // Nen: mot cau mot socket (tranh bi ngung cap), va mo truoc ngay tai day --
-      // luc nay tieng cua cau vua gui con nam trong buffer PSRAM va con phat vai
-      // giay nua, nen 1,4s bat tay nap tron vao khoang do, be khong nghe thay.
-      CloseSocket();
-      const int64_t t0 = esp_timer_get_time();
-      if (EnsureConnected()) {
-        ESP_LOGD(TAG, "mo truoc socket ke tiep trong %lldms",
-                 (esp_timer_get_time() - t0) / 1000);
-      }
-      // Mo truoc that bai thi KHONG coi la loi: cau sau se tu goi EnsureConnected()
-      // lan nua. Chi mat phan giau do tre, khong mat tieng.
+      ESP_LOGW(TAG, "tong hop cau that bai; cau sau se dung socket warm/fallback");
     }
 
-    bool con_cau_khac;
-    {
-      std::lock_guard<std::mutex> lock(queue_mutex_);
-      con_cau_khac = !queue_.empty();
-    }
-    if (!con_cau_khac) {
-      // Cho tieng phat het roi moi bao "het viec" -- Application dua vao day de
-      // biet luc nao duoc chuyen Speaking->Listening (xem OnIdle o header).
+    if (!HasQueuedSentence()) {
+      // Race cu: neu LLM day cau N+1 trong luc vong nay dang doi buffer cau N
+      // can ve 0, source task van doi den het + grace 300ms moi quay lai queue.
+      // Ket qua loa im ro ret. Nay queue co cau moi la thoat NGAY de synth cau
+      // tiep trong khi PCM cu van con phat o task core 1.
       while (IsSourceActive() && running_.load() && !abort_.load() &&
-             GetBufferSize() > 0) {
+             GetBufferSize() > 0 && !HasQueuedSentence()) {
         vTaskDelay(pdMS_TO_TICKS(20));
       }
-      vTaskDelay(pdMS_TO_TICKS(kDrainGraceMs));
-      if (on_idle_ && !abort_.load()) {
+
+      // Grace chi ap dung khi queue van rong. Chia nho de cau moi den trong
+      // 300ms nay cung danh thuc pipeline thay vi bi bao idle nham.
+      for (int waited = 0;
+           waited < kDrainGraceMs && IsSourceActive() && running_.load() &&
+           !abort_.load() && !HasQueuedSentence();
+           waited += 20) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+      }
+      if (!HasQueuedSentence() && on_idle_ && !abort_.load()) {
         on_idle_();
       }
     }
@@ -225,70 +259,274 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
   ESP_LOGI(TAG, "vong nguon ket thuc");
 }
 
+bool DeviceTtsClient::HasQueuedSentence() {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  return !queue_.empty();
+}
+
 bool DeviceTtsClient::EnsureConnected() {
   if (websocket_ && websocket_->IsConnected()) {
-    // Giu socket giua cac cau -- nhung chi trong pham vi kSentencesPerConnection.
-    // Ghi chep cu o day tung noi giu cang lau cang tot; DO 08/08 BAC BO dieu do.
     return true;
   }
   CloseSocket();
-  cau_tren_socket_ = 0;
 
-  std::string url;
-  std::string config_frame;
-  std::vector<std::pair<std::string, std::string>> headers;
-  {
-    std::lock_guard<std::mutex> lock(config_mutex_);
-    url = url_;
-    config_frame = config_frame_;
-    headers = headers_;
+  if (PromoteReadySocket()) {
+    return true;
   }
-  if (url.empty()) {
+
+  // Worker co the dang o 100-200ms cuoi cua TLS. Doi dung ket qua do thay vi
+  // mo them mot ket noi trung lap. Trong luc doi, task phat core 1 van tieu thu
+  // PCM cau truoc, nen day van la overlap chu khong khoa loa.
+  const int64_t wait_started = esp_timer_get_time();
+  while (running_.load() && !abort_.load() &&
+         (preconnect_requested_.load() || preconnect_inflight_.load()) &&
+         (esp_timer_get_time() - wait_started) / 1000 < kPreconnectWaitMs) {
+    if (PromoteReadySocket()) {
+      return true;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  if (PromoteReadySocket()) {
+    return true;
+  }
+
+  // Worker vang/loi/qua han: fallback bat tay dong bo de khong lam mat cau.
+  ConnectionSnapshot snapshot;
+  if (!CaptureConnectionSnapshot(snapshot)) {
     return false;
   }
-
-  auto network = Board::GetInstance().GetNetwork();
-  websocket_ = network->CreateWebSocket(2); // ID 2: kenh TTS thiet bi
+  websocket_ = OpenConfiguredSocket(snapshot, false);
   if (!websocket_) {
-    ESP_LOGE(TAG, "CreateWebSocket that bai");
     return false;
   }
-
-  websocket_->SetReceiveBufferSize(8192);
-  for (const auto &h : headers) {
-    websocket_->SetHeader(h.first.c_str(), h.second.c_str());
-  }
-  // Chi capture `this` -- khong capture bien stack theo tham chieu.
-  websocket_->OnData([this](const char *data, size_t len, bool binary) {
-    HandleData(data, len, binary);
-  });
-  websocket_->OnError([](int err) { ESP_LOGE(TAG, "loi socket %d", err); });
-  websocket_->OnDisconnected([]() { ESP_LOGI(TAG, "socket dong"); });
-
-  const int64_t t0 = esp_timer_get_time();
-  if (!websocket_->Connect(url.c_str())) {
-    // Nguyen nhan hay gap nhat, theo thu tu: URL het han (token xoay 5 phut),
-    // server chua kip gui tts_config moi, hoac mat mang.
-    ESP_LOGE(TAG, "bat tay that bai -- URL het han hay mat mang?");
-    websocket_.reset();
-    return false;
-  }
-  ESP_LOGI(TAG, "bat tay xong sau %lldms", (esp_timer_get_time() - t0) / 1000);
-
-  // Khung cau hinh gui MOT lan cho moi ket noi.
-  if (!config_frame.empty() && !websocket_->Send(config_frame)) {
-    ESP_LOGE(TAG, "gui config_frame that bai");
-    CloseSocket();
-    return false;
-  }
+  active_socket_generation_ = snapshot.socket_generation;
+  websocket_->OnData(
+      [this, socket_generation = snapshot.socket_generation](
+          const char *data, size_t len, bool binary) {
+        if (active_socket_generation_.load() == socket_generation) {
+          HandleData(data, len, binary);
+        }
+      });
   return true;
 }
 
 void DeviceTtsClient::CloseSocket() {
+  active_socket_generation_ = 0;
   if (websocket_) {
     websocket_->Close();
     websocket_.reset();
   }
+}
+
+void DeviceTtsClient::CloseReadySocket() {
+  std::unique_ptr<WebSocket> stale;
+  {
+    std::lock_guard<std::mutex> lock(ready_socket_mutex_);
+    stale = std::move(ready_websocket_);
+    ready_config_generation_ = 0;
+    ready_turn_generation_ = 0;
+    ready_socket_generation_ = 0;
+  }
+  if (stale) {
+    stale->Close();
+  }
+}
+
+bool DeviceTtsClient::CaptureConnectionSnapshot(
+    ConnectionSnapshot &snapshot) {
+  std::lock_guard<std::mutex> lock(config_mutex_);
+  if (!configured_.load() || url_.empty()) {
+    return false;
+  }
+  snapshot.url = url_;
+  snapshot.config_frame = config_frame_;
+  snapshot.headers = headers_;
+  snapshot.config_generation = config_generation_.load();
+  snapshot.turn_generation = turn_generation_.load();
+  snapshot.socket_generation = next_socket_generation_.fetch_add(1);
+  return true;
+}
+
+std::unique_ptr<WebSocket> DeviceTtsClient::OpenConfiguredSocket(
+    const ConnectionSnapshot &snapshot, bool preconnect) {
+  auto network = Board::GetInstance().GetNetwork();
+  if (!network) {
+    ESP_LOGE(TAG, "khong co network de mo TTS socket");
+    return nullptr;
+  }
+
+  // Backend dang dung ID 1. Tach ID 2/3 de modem nao co slot ket noi cung khong
+  // cho socket active va socket warm de len nhau; Wi-Fi bo qua ID nhung van an toan.
+  auto socket = network->CreateWebSocket(preconnect ? 3 : 2);
+  if (!socket) {
+    ESP_LOGE(TAG, "CreateWebSocket that bai");
+    return nullptr;
+  }
+
+  socket->SetReceiveBufferSize(8192);
+  for (const auto &h : snapshot.headers) {
+    socket->SetHeader(h.first.c_str(), h.second.c_str());
+  }
+
+  const uint32_t socket_generation = snapshot.socket_generation;
+  // Socket warm KHONG gan OnData. Truoc khi duoc promote no khong gui SSML va
+  // khong duoc phep co payload vao decoder; cach nay cung tranh cho hai TTS
+  // socket dong thoi cham bo ghep frame cua dependency WebSocket.
+  socket->OnError([socket_generation](int err) {
+    ESP_LOGE(TAG, "loi socket #%lu: %d",
+             static_cast<unsigned long>(socket_generation), err);
+  });
+  socket->OnDisconnected([socket_generation]() {
+    ESP_LOGI(TAG, "socket #%lu dong",
+             static_cast<unsigned long>(socket_generation));
+  });
+
+  const int64_t t0 = esp_timer_get_time();
+  if (!socket->Connect(snapshot.url.c_str())) {
+    ESP_LOGE(TAG, "%s bat tay that bai -- URL het han hay mat mang?",
+             preconnect ? "preconnect" : "fallback");
+    return nullptr;
+  }
+  const int64_t elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+
+  if (!snapshot.config_frame.empty() &&
+      !socket->Send(snapshot.config_frame)) {
+    ESP_LOGE(TAG, "gui config_frame that bai");
+    socket->Close();
+    return nullptr;
+  }
+
+  ESP_LOGI(TAG, "%s socket #%lu xong sau %lldms",
+           preconnect ? "mo truoc" : "bat tay truc tiep",
+           static_cast<unsigned long>(socket_generation), elapsed_ms);
+  return socket;
+}
+
+bool DeviceTtsClient::PromoteReadySocket() {
+  std::unique_ptr<WebSocket> stale;
+  uint32_t promoted_generation = 0;
+  {
+    std::lock_guard<std::mutex> lock(ready_socket_mutex_);
+    if (!ready_websocket_) {
+      return false;
+    }
+
+    const bool valid = ready_websocket_->IsConnected() &&
+                       ready_config_generation_ == config_generation_.load() &&
+                       ready_turn_generation_ == turn_generation_.load();
+    if (!valid) {
+      stale = std::move(ready_websocket_);
+    } else {
+      websocket_ = std::move(ready_websocket_);
+      promoted_generation = ready_socket_generation_;
+      active_socket_generation_ = promoted_generation;
+      websocket_->OnData(
+          [this, socket_generation = promoted_generation](
+              const char *data, size_t len, bool binary) {
+            if (active_socket_generation_.load() == socket_generation) {
+              HandleData(data, len, binary);
+            }
+          });
+    }
+    ready_config_generation_ = 0;
+    ready_turn_generation_ = 0;
+    ready_socket_generation_ = 0;
+  }
+
+  if (stale) {
+    stale->Close();
+    return false;
+  }
+  if (promoted_generation != 0) {
+    ESP_LOGI(TAG, "dung socket #%lu da mo truoc -- khong cho TLS",
+             static_cast<unsigned long>(promoted_generation));
+    return true;
+  }
+  return false;
+}
+
+void DeviceTtsClient::RequestPreconnect() {
+  if (!running_.load() || abort_.load() || !configured_.load() ||
+      preconnect_events_ == nullptr || preconnect_task_handle_ == nullptr) {
+    return;
+  }
+
+  std::unique_ptr<WebSocket> stale;
+  {
+    std::lock_guard<std::mutex> lock(ready_socket_mutex_);
+    if (ready_websocket_ && ready_websocket_->IsConnected() &&
+        ready_config_generation_ == config_generation_.load() &&
+        ready_turn_generation_ == turn_generation_.load()) {
+      return;
+    }
+    if (ready_websocket_) {
+      stale = std::move(ready_websocket_);
+      ready_config_generation_ = 0;
+      ready_turn_generation_ = 0;
+      ready_socket_generation_ = 0;
+    }
+  }
+  if (stale) {
+    stale->Close();
+  }
+
+  bool expected = false;
+  if (preconnect_requested_.compare_exchange_strong(expected, true)) {
+    xEventGroupSetBits(preconnect_events_, kPreconnectWakeBit);
+  }
+}
+
+void DeviceTtsClient::PreconnectTaskRoutine() {
+  while (running_.load()) {
+    xEventGroupWaitBits(preconnect_events_, kPreconnectWakeBit, pdTRUE, pdFALSE,
+                        portMAX_DELAY);
+    if (!running_.load()) {
+      break;
+    }
+
+    preconnect_inflight_ = true;
+    preconnect_requested_ = false;
+    vTaskDelay(pdMS_TO_TICKS(kPreconnectDelayMs));
+
+    bool already_ready = false;
+    {
+      std::lock_guard<std::mutex> lock(ready_socket_mutex_);
+      already_ready = ready_websocket_ && ready_websocket_->IsConnected() &&
+                      ready_config_generation_ == config_generation_.load() &&
+                      ready_turn_generation_ == turn_generation_.load();
+    }
+
+    ConnectionSnapshot snapshot;
+    std::unique_ptr<WebSocket> socket;
+    if (!already_ready && running_.load() && !abort_.load() &&
+        CaptureConnectionSnapshot(snapshot)) {
+      socket = OpenConfiguredSocket(snapshot, true);
+    }
+
+    if (socket) {
+      std::lock_guard<std::mutex> lock(ready_socket_mutex_);
+      if (running_.load() && !abort_.load() && !ready_websocket_ &&
+          snapshot.config_generation == config_generation_.load() &&
+          snapshot.turn_generation == turn_generation_.load()) {
+        ready_websocket_ = std::move(socket);
+        ready_config_generation_ = snapshot.config_generation;
+        ready_turn_generation_ = snapshot.turn_generation;
+        ready_socket_generation_ = snapshot.socket_generation;
+      }
+    }
+    if (socket) {
+      socket->Close();
+    }
+    preconnect_inflight_ = false;
+  }
+
+  preconnect_inflight_ = false;
+  preconnect_requested_ = false;
+  if (preconnect_exited_ != nullptr) {
+    xSemaphoreGive(preconnect_exited_);
+  }
+  preconnect_task_handle_ = nullptr;
+  vTaskDelete(nullptr);
 }
 
 bool DeviceTtsClient::SynthesizeOne(const std::string &body) {
@@ -306,6 +544,10 @@ bool DeviceTtsClient::SynthesizeOne(const std::string &body) {
     ESP_LOGE(TAG, "gui cau that bai");
     return false;
   }
+
+  // Bat tay cau ke tiep NGAY trong khi Edge dang tong hop/stream cau nay. Worker
+  // co delay ngan de viec gui SSML va byte audio dau khong bi chen boi TLS.
+  RequestPreconnect();
 
   const TickType_t no_data_timeout = pdMS_TO_TICKS(kNoAudioTimeoutMs);
   const TickType_t total_timeout =

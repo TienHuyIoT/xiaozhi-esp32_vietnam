@@ -12,9 +12,9 @@
  *     `tts_config` / truong `tts_body`. Doi nha cung cap = doi JSON o backend,
  *     KHONG phai OTA lai robot ngoai hien truong.
  *
- *  2. GIU MOT SOCKET MO SUOT PHIEN. Ban cu mo socket MOI cho tung cau -> tra
- *     gia bat tay 316-421ms moi cau (do that 06/08). Giu socket thi chi cau dau
- *     tra gia do; cac cau sau ~200ms la co tieng.
+ *  2. MOI CAU MOT SOCKET, NHUNG MO TRUOC SONG SONG. Edge tren robot da do duoc
+ *     co luc ngung cap audio neu tai su dung cung socket. Vi vay ta van xoay
+ *     socket moi cau, nhung bat tay cau N+1 ngay khi dang tong hop/phat cau N.
  *
  *  3. KE THUA AudioStreamPlayer (dung cho radio internet) thay vi tu viet duong
  *     giai ma. Edge da BO moi dinh dang tho -- xin raw PCM bi dong socket 1007 --
@@ -25,6 +25,7 @@
  */
 
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -34,6 +35,10 @@
 #include <vector>
 
 #include <cJSON.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include "features/music/audio_stream_player.h"
 #include "web_socket.h"
@@ -102,36 +107,12 @@ private:
   /** Tran hang doi -- LLM khong bao gio nha nhieu the nay trong mot luot. */
   static constexpr size_t kMaxQueuedSentences = 16;
 
-  /*
-   * So cau toi da tren MOT socket, roi chu dong dong di.
-   *
-   * Nguoc voi truc giac, va nguoc voi chinh ghi chep cu cua file nay: GIU socket
-   * lau KHONG nhanh hon ma CHAM di ro ret. Do 08/08 tu mang dan dung VN, cung
-   * mot chuoi 6 cau, tinh tu luc gui SSML den byte tieng dau:
-   *
-   *   giu mot socket suot     : 1690 1561 1819 2111 2143 2570 ms  (te dan)
-   *   dong+mo lai moi 2 cau   :  201  124  192  185  160  207 ms
-   *
-   * Muoi lan chenh.
-   *
-   * ⚠️ Con so tren do tren PC. DO LAI TREN ROBOT cung ngay bac bo not phan "2 cau":
-   * tren ESP32, moi socket chi duoc phuc vu 1-2 cau roi Microsoft ngung cap HAN --
-   * tren PC chi cham them ~2,5s, tren robot vuot 7s nen watchdog no va MAT cau do.
-   * Nhat ky mot luot that:
-   *
-   *   1145691  bat tay xong sau 1501ms   <- socket #1, 2 cau dau KEU
-   *   1148381  socket dong
-   *   1149781  bat tay xong sau 1396ms   <- socket #2, them 1 cau
-   *   1160841  watchdog: 7000ms khong nhan them du lieu
-   *
-   * Nen ha ve 1: MOI CAU MOT SOCKET. Va vi bat tay tren ESP32 ton 1396-1501ms chu
-   * khong ~400ms nhu PC, SourceDataLoop mo san socket ke tiep NGAY sau khi gui xong
-   * cau -- luc do tieng cua cau vua roi con nam trong buffer PSRAM.
-   *
-   * Neu ai do sau nay thay "moi cau mot socket" la phi pham va nang len: do lai
-   * TREN ROBOT, dung do tren PC. Do tren PC chinh la cach da sai lan dau.
-   */
-  static constexpr int kSentencesPerConnection = 1;
+  // Bat tay Edge tren ESP32 do duoc 1,39-1,51s. Worker warm-up co stack rieng
+  // vi TLS can nhieu stack; delay ngan de cau hien tai co quyen gui SSML truoc.
+  static constexpr int kPreconnectDelayMs = 150;
+  static constexpr int kPreconnectWaitMs = 12000;
+  static constexpr int kPreconnectTaskStack = 10 * 1024;
+  static constexpr EventBits_t kPreconnectWakeBit = BIT0;
 
   /** Khong nhan them byte nao trong ngan nay -> coi nhu chet (half-open TCP). */
   static constexpr int kNoAudioTimeoutMs = 7000;
@@ -148,9 +129,27 @@ private:
 
   bool EnsureStarted();
   bool EnsureConnected();
+  bool HasQueuedSentence();
   void CloseSocket();
+  void CloseReadySocket();
   bool SynthesizeOne(const std::string &body);
   void HandleData(const char *data, size_t len, bool binary);
+  void RequestPreconnect();
+  void PreconnectTaskRoutine();
+
+  struct ConnectionSnapshot {
+    std::string url;
+    std::string config_frame;
+    std::vector<std::pair<std::string, std::string>> headers;
+    uint32_t config_generation = 0;
+    uint32_t turn_generation = 0;
+    uint32_t socket_generation = 0;
+  };
+
+  bool CaptureConnectionSnapshot(ConnectionSnapshot &snapshot);
+  std::unique_ptr<WebSocket>
+  OpenConfiguredSocket(const ConnectionSnapshot &snapshot, bool preconnect);
+  bool PromoteReadySocket();
 
   /* --- cau hinh tu server (bao ve boi config_mutex_) --- */
   mutable std::mutex config_mutex_;
@@ -158,6 +157,7 @@ private:
   std::string config_frame_;
   std::vector<std::pair<std::string, std::string>> headers_;
   std::atomic<bool> configured_{false};
+  std::atomic<uint32_t> config_generation_{0};
 
   /* --- hang doi cau --- */
   std::mutex queue_mutex_;
@@ -167,8 +167,10 @@ private:
   std::atomic<bool> running_{true};
   std::atomic<bool> abort_{false};
   std::atomic<bool> synthesizing_{false};
-  /** So cau da tong hop tren socket hien tai; ve 0 moi lan bat tay lai. */
-  int cau_tren_socket_ = 0;
+  // Tang moi lan Abort de socket warm cua turn cu khong lot sang turn moi.
+  std::atomic<uint32_t> turn_generation_{1};
+  std::atomic<uint32_t> next_socket_generation_{1};
+  std::atomic<uint32_t> active_socket_generation_{0};
   /** Ghi tu task nhan cua WebSocket, doc tu task nguon. */
   std::atomic<bool> turn_end_{false};
   std::atomic<TickType_t> last_data_tick_{0};
@@ -178,6 +180,19 @@ private:
    * neu khong se dua nhau giai phong con tro (BUG-4 cua ban cu).
    */
   std::unique_ptr<WebSocket> websocket_;
+
+  // Worker chi ghi slot ready; source task chi lay/move slot nay. Socket active
+  // van chi do source task dong/mo, giu nguyen bat bien chong use-after-free.
+  std::mutex ready_socket_mutex_;
+  std::unique_ptr<WebSocket> ready_websocket_;
+  uint32_t ready_config_generation_ = 0;
+  uint32_t ready_turn_generation_ = 0;
+  uint32_t ready_socket_generation_ = 0;
+  std::atomic<bool> preconnect_requested_{false};
+  std::atomic<bool> preconnect_inflight_{false};
+  EventGroupHandle_t preconnect_events_ = nullptr;
+  SemaphoreHandle_t preconnect_exited_ = nullptr;
+  TaskHandle_t preconnect_task_handle_ = nullptr;
 
   std::function<void()> on_idle_;
 };

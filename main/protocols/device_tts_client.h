@@ -102,6 +102,24 @@ private:
   /** Tran hang doi -- LLM khong bao gio nha nhieu the nay trong mot luot. */
   static constexpr size_t kMaxQueuedSentences = 16;
 
+  /*
+   * So cau toi da tren MOT socket, roi chu dong dong di.
+   *
+   * Nguoc voi truc giac, va nguoc voi chinh ghi chep cu cua file nay: GIU socket
+   * lau KHONG nhanh hon ma CHAM di ro ret. Do 08/08 tu mang dan dung VN, cung
+   * mot chuoi 6 cau, tinh tu luc gui SSML den byte tieng dau:
+   *
+   *   giu mot socket suot     : 1690 1561 1819 2111 2143 2570 ms  (te dan)
+   *   dong+mo lai moi 2 cau   :  201  124  192  185  160  207 ms
+   *
+   * Muoi lan chenh. Bat tay ton ~400ms nhung roi vao luc cau truoc CON DANG PHAT
+   * (buffer PSRAM chua vai giay tieng) nen be khong nghe thay do tre do.
+   *
+   * Neu ai do sau nay thay "dong socket moi 2 cau" la phi pham va bo di: hay do
+   * lai truoc, dung suy luan. Con so o tren la do that, khong phai uoc luong.
+   */
+  static constexpr int kSentencesPerConnection = 2;
+
   /** Khong nhan them byte nao trong ngan nay -> coi nhu chet (half-open TCP). */
   static constexpr int kNoAudioTimeoutMs = 7000;
 
@@ -136,6 +154,8 @@ private:
   std::atomic<bool> running_{true};
   std::atomic<bool> abort_{false};
   std::atomic<bool> synthesizing_{false};
+  /** So cau da tong hop tren socket hien tai; ve 0 moi lan bat tay lai. */
+  int cau_tren_socket_ = 0;
   /** Ghi tu task nhan cua WebSocket, doc tu task nguon. */
   std::atomic<bool> turn_end_{false};
   std::atomic<TickType_t> last_data_tick_{0};

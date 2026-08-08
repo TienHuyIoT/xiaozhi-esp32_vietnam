@@ -180,6 +180,16 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
       // Socket dang nghi ngo (dut, watchdog no, hoac bi tu choi): dong han de
       // cau sau bat tay lai bang URL moi nhat, thay vi keo dai ket noi hong.
       CloseSocket();
+    } else if (++cau_tren_socket_ >= kSentencesPerConnection) {
+      // Xoay socket -- KHONG phai don dep cho gon ma la don bay do tre: giu mot
+      // socket qua 2 cau thi tieng dau tut tu ~190ms xuong ~2000ms. Xem con so
+      // do duoc o kSentencesPerConnection (device_tts_client.h).
+      //
+      // Dong o DAY, ngay sau khi cau vua roi gui xong, la co y: tieng cua no van
+      // dang nam trong buffer PSRAM va con phat vai giay nua, nen ~400ms bat tay
+      // cua cau ke tiep nap hoan toan vao khoang do -- be khong nghe thay.
+      ESP_LOGD(TAG, "da %d cau tren socket nay -> xoay socket", cau_tren_socket_);
+      CloseSocket();
     }
 
     bool con_cau_khac;
@@ -207,9 +217,12 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
 
 bool DeviceTtsClient::EnsureConnected() {
   if (websocket_ && websocket_->IsConnected()) {
-    return true; // giu socket giua cac cau -- day chinh la don bay do tre
+    // Giu socket giua cac cau -- nhung chi trong pham vi kSentencesPerConnection.
+    // Ghi chep cu o day tung noi giu cang lau cang tot; DO 08/08 BAC BO dieu do.
+    return true;
   }
   CloseSocket();
+  cau_tren_socket_ = 0;
 
   std::string url;
   std::string config_frame;

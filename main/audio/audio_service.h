@@ -156,6 +156,11 @@ private:
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_testing_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_encode_queue_;
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
+    // Generation loai decode da pop truoc ResetDecoder(); hai co in-flight
+    // giup ResetDecoder doi frame hien tai ra loa xong truoc khi tra ve.
+    uint32_t audio_decode_generation_ = 0;
+    bool audio_decode_in_flight_ = false;
+    bool audio_output_in_flight_ = false;
     // For server AEC
     std::deque<uint32_t> timestamp_queue_;
 

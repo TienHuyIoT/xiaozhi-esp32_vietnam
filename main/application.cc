@@ -79,6 +79,17 @@ AudioTraceContext ReadAudioTraceContext(const cJSON* root,
     }
     return trace;
 }
+
+uint64_t AudioTurnToken(const std::string& turn_id) {
+    // FNV-1a 64-bit: cung thuat toan voi backend, khong can dua UUID/text day du
+    // vao tung frame. Token chi de correlation/loai frame den muon, khong la secret.
+    uint64_t token = 14695981039346656037ULL;
+    for (const unsigned char byte : turn_id) {
+        token ^= byte;
+        token *= 1099511628211ULL;
+    }
+    return token;
+}
 }  // namespace
 
 Application::Application() {
@@ -538,7 +549,7 @@ if (ota.HasWebsocketConfig()) {
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         if (device_state_ == kDeviceStateSpeaking) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+            AcceptServerOpusPacket(std::move(packet));
         }
     });
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
@@ -553,6 +564,7 @@ if (ota.HasWebsocketConfig()) {
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
+            RevokeSpeechAudio();
             SetDeviceState(kDeviceStateIdle);
         });
     });
@@ -617,6 +629,7 @@ if (ota.HasWebsocketConfig()) {
                     root,
                     has_device_tts_body ? "device_tts" : "server_opus");
                 LogAudioTraceEvent("json_receive", trace);
+                const SpeechAudioLease lease = TransitionSpeechAudio(trace);
                 bool source_changed = false;
                 {
                     std::lock_guard<std::mutex> lock(audio_trace_mutex_);
@@ -630,8 +643,8 @@ if (ota.HasWebsocketConfig()) {
 
                 if (has_device_tts_body && device_tts_client_ != nullptr) {
                     std::string body = tts_body->valuestring;
-                    Schedule([this, body, trace]() {
-                        device_tts_client_->Enqueue(body, trace);
+                    Schedule([this, body, trace, lease]() {
+                        EnqueueDeviceTtsIfLeaseCurrent(lease, body, trace);
                     });
                 }
                 auto text = cJSON_GetObjectItem(root, "text");
@@ -915,6 +928,125 @@ void Application::OnWakeWordDetected() {
     }
 }
 
+Application::SpeechAudioLease Application::TransitionSpeechAudio(
+    const AudioTraceContext& trace) {
+    const SpeechAudioSource desired_source =
+        trace.audio_source == "device_tts"
+            ? SpeechAudioSource::kDeviceTts
+            : SpeechAudioSource::kServerOpus;
+
+    // Serialize ca khoang revoke -> drain -> commit. Neu chi khoa tung field,
+    // hai callback sat nhau co the reset queue cua lease moi sau khi no da cap.
+    std::lock_guard<std::mutex> transition_lock(speech_audio_transition_mutex_);
+    uint32_t transition_generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(speech_audio_mutex_);
+        if (speech_audio_source_ == desired_source &&
+            speech_audio_turn_id_ == trace.turn_id) {
+            return SpeechAudioLease{
+                speech_audio_source_,
+                speech_audio_turn_id_,
+                speech_audio_generation_,
+            };
+        }
+
+        transition_generation = ++speech_audio_generation_;
+        speech_audio_source_ = SpeechAudioSource::kSwitching;
+    }
+
+    // Thu hoi ca hai producer truoc khi cap lease moi. Abort() dung player MP3,
+    // ResetDecoder() xa Opus decode/playback queue. Thu tu nay giu callback WS
+    // lai cho toi khi duong direct-output cu da dung, nen frame moi khong chen.
+    if (device_tts_client_ != nullptr) {
+        device_tts_client_->Abort();
+    }
+    audio_service_.ResetDecoder();
+
+    {
+        std::lock_guard<std::mutex> lock(speech_audio_mutex_);
+        speech_audio_source_ = desired_source;
+        speech_audio_turn_id_ = trace.turn_id;
+        speech_audio_generation_ = transition_generation;
+        return SpeechAudioLease{
+            speech_audio_source_,
+            speech_audio_turn_id_,
+            speech_audio_generation_,
+        };
+    }
+}
+
+bool Application::IsSpeechAudioLeaseCurrent(const SpeechAudioLease& lease) {
+    std::lock_guard<std::mutex> lock(speech_audio_mutex_);
+    return speech_audio_source_ == lease.source &&
+           speech_audio_turn_id_ == lease.turn_id &&
+           speech_audio_generation_ == lease.generation &&
+           speech_audio_source_ != SpeechAudioSource::kNone &&
+           speech_audio_source_ != SpeechAudioSource::kSwitching;
+}
+
+bool Application::AcceptServerOpusPacket(
+    std::unique_ptr<AudioStreamPacket> packet) {
+    if (packet == nullptr) {
+        return false;
+    }
+
+    // Khoa transition bao tron check + push. Neu tha khoa sau check, callback
+    // source moi co the reset xong roi packet Opus cu moi lot vao queue.
+    std::lock_guard<std::mutex> transition_lock(speech_audio_transition_mutex_);
+    {
+        std::lock_guard<std::mutex> lock(speech_audio_mutex_);
+        if (speech_audio_source_ != SpeechAudioSource::kServerOpus) {
+            return false;
+        }
+        if (packet->speech_turn_token_present &&
+            packet->speech_turn_token != AudioTurnToken(speech_audio_turn_id_)) {
+            ESP_LOGI(TAG, "Bo frame Opus den muon: token turn da bi thu hoi");
+            return false;
+        }
+    }
+    return audio_service_.PushPacketToDecodeQueue(std::move(packet));
+}
+
+bool Application::EnqueueDeviceTtsIfLeaseCurrent(
+    const SpeechAudioLease& lease,
+    const std::string& body,
+    const AudioTraceContext& trace) {
+    // Cung mot critical section voi TransitionSpeechAudio/RevokeSpeechAudio:
+    // lease khong the bi thu hoi giua luc check va Enqueue khoi dong player.
+    std::lock_guard<std::mutex> transition_lock(speech_audio_transition_mutex_);
+    if (device_state_ != kDeviceStateSpeaking ||
+        !IsSpeechAudioLeaseCurrent(lease) ||
+        device_tts_client_ == nullptr) {
+        ESP_LOGI(TAG, "Bo segment Device TTS den muon: lease da bi thu hoi");
+        return false;
+    }
+    device_tts_client_->Enqueue(body, trace);
+    return true;
+}
+
+void Application::RevokeSpeechAudio() {
+    std::lock_guard<std::mutex> transition_lock(speech_audio_transition_mutex_);
+    uint32_t revoke_generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(speech_audio_mutex_);
+        revoke_generation = ++speech_audio_generation_;
+        speech_audio_source_ = SpeechAudioSource::kSwitching;
+        speech_audio_turn_id_.clear();
+    }
+
+    if (device_tts_client_ != nullptr) {
+        device_tts_client_->Abort();
+    }
+    audio_service_.ResetDecoder();
+
+    {
+        std::lock_guard<std::mutex> lock(speech_audio_mutex_);
+        speech_audio_source_ = SpeechAudioSource::kNone;
+        speech_audio_turn_id_.clear();
+        speech_audio_generation_ = revoke_generation;
+    }
+}
+
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     AudioTraceContext aborted_trace;
@@ -926,12 +1058,9 @@ void Application::AbortSpeaking(AbortReason reason) {
     }
     LogAudioTraceEvent("abort", aborted_trace);
     aborted_ = true;
-    // Tieng cua duong TTS thiet bi KHONG di qua server nen `tts:stop` cua server
-    // khong tat duoc no. Phai tu cat o day, khong thi be chen ngang xong robot
-    // van noi tiep het cau -- dung cai ma barge-in sinh ra de tranh.
-    if (device_tts_client_) {
-        device_tts_client_->Abort();
-    }
+    // Thu hoi ca Device TTS lan Opus; khong con producer nao duoc noi tiep sau
+    // khi be chen ngang hoac turn moi da chiem loa.
+    RevokeSpeechAudio();
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
     }

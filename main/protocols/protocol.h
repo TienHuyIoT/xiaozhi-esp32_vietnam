@@ -11,6 +11,10 @@ struct AudioStreamPacket {
     int sample_rate = 0;
     int frame_duration = 0;
     uint32_t timestamp = 0;
+    // Phase 1: server co the dong dau moi frame bang token cua turn. Hai field
+    // nay additive de firmware moi van nhan duoc backend cu gui Opus raw.
+    uint64_t speech_turn_token = 0;
+    bool speech_turn_token_present = false;
     std::vector<uint8_t> payload;
 };
 

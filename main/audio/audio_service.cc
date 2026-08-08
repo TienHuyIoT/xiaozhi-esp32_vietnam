@@ -330,6 +330,7 @@ void AudioService::AudioOutputTask() {
 
         auto task = std::move(audio_playback_queue_.front());
         audio_playback_queue_.pop_front();
+        audio_output_in_flight_ = true;
         audio_queue_cv_.notify_all();
         lock.unlock();
 
@@ -345,13 +346,16 @@ void AudioService::AudioOutputTask() {
         last_output_time_ = std::chrono::steady_clock::now();
         debug_statistics_.playback_count++;
 
+        lock.lock();
+        audio_output_in_flight_ = false;
+
 #if CONFIG_USE_SERVER_AEC
         /* Record the timestamp for server AEC */
         if (task->timestamp > 0) {
-            lock.lock();
             timestamp_queue_.push_back(task->timestamp);
         }
 #endif
+        audio_queue_cv_.notify_all();
     }
 
     ESP_LOGW(TAG, "Audio output task stopped");
@@ -373,6 +377,8 @@ void AudioService::OpusCodecTask() {
         if (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
+            const uint32_t decode_generation = audio_decode_generation_;
+            audio_decode_in_flight_ = true;
             audio_queue_cv_.notify_all();
             lock.unlock();
 
@@ -381,7 +387,9 @@ void AudioService::OpusCodecTask() {
             task->timestamp = packet->timestamp;
 
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
-            if (opus_decoder_->Decode(std::move(packet->payload), task->pcm)) {
+            const bool decoded =
+                opus_decoder_->Decode(std::move(packet->payload), task->pcm);
+            if (decoded) {
                 // Resample if the sample rate is different
                 if (opus_decoder_->sample_rate() != codec_->output_sample_rate()) {
                     int target_size = output_resampler_.GetOutputSamples(task->pcm.size());
@@ -389,14 +397,16 @@ void AudioService::OpusCodecTask() {
                     output_resampler_.Process(task->pcm.data(), task->pcm.size(), resampled.data());
                     task->pcm = std::move(resampled);
                 }
-
-                lock.lock();
-                audio_playback_queue_.push_back(std::move(task));
-                audio_queue_cv_.notify_all();
-            } else {
-                ESP_LOGE(TAG, "Failed to decode audio");
-                lock.lock();
             }
+
+            lock.lock();
+            if (decoded && decode_generation == audio_decode_generation_) {
+                audio_playback_queue_.push_back(std::move(task));
+            } else if (!decoded) {
+                ESP_LOGE(TAG, "Failed to decode audio");
+            }
+            audio_decode_in_flight_ = false;
+            audio_queue_cv_.notify_all();
             debug_statistics_.decode_count++;
         }
         
@@ -691,8 +701,23 @@ bool AudioService::IsIdle() {
 }
 
 void AudioService::ResetDecoder() {
-    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    ++audio_decode_generation_;
+    timestamp_queue_.clear();
+    audio_decode_queue_.clear();
+    audio_playback_queue_.clear();
+    audio_testing_queue_.clear();
+    audio_queue_cv_.notify_all();
+
+    // Mot packet co the da pop khoi queue de decode, hoac mot frame da pop de
+    // OutputData. Doi hai critical section do ket thuc; generation o tren dam
+    // bao ket qua decode cu khong duoc day nguoc vao playback queue.
+    audio_queue_cv_.wait(lock, [this]() {
+        return !audio_decode_in_flight_ && !audio_output_in_flight_;
+    });
     opus_decoder_->ResetState();
+
+    // Loai ca packet local/PlaySound neu no chen vao trong luc wait tha mutex.
     timestamp_queue_.clear();
     audio_decode_queue_.clear();
     audio_playback_queue_.clear();

@@ -10,6 +10,7 @@
 #include <mutex>
 #include <deque>
 #include <memory>
+#include <cstdint>
 
 #include "protocol.h"
 #include "ota.h"
@@ -195,6 +196,19 @@ public:
     AlarmManager* GetAlarmManager() const { return alarm_manager_; }
 
 private:
+    enum class SpeechAudioSource : uint8_t {
+        kNone = 0,
+        kSwitching,
+        kServerOpus,
+        kDeviceTts,
+    };
+
+    struct SpeechAudioLease {
+        SpeechAudioSource source = SpeechAudioSource::kNone;
+        std::string turn_id;
+        uint32_t generation = 0;
+    };
+
     Application();
     ~Application();
 
@@ -211,6 +225,13 @@ private:
     // TTS tren thiet bi: khi server gui `tts_config` + `tts_body` thi robot tu
     // lay tieng qua day thay vi phat khung Opus cua server. nullptr = chua bat.
     std::unique_ptr<DeviceTtsClient> device_tts_client_;
+    // Chi mot duong speech duoc so huu loa. transition_mutex_ serialize toan
+    // bo revoke/drain/commit; state mutex chi bao ve lease doc nhanh tu callback.
+    std::mutex speech_audio_transition_mutex_;
+    std::mutex speech_audio_mutex_;
+    SpeechAudioSource speech_audio_source_ = SpeechAudioSource::kNone;
+    std::string speech_audio_turn_id_;
+    uint32_t speech_audio_generation_ = 0;
     std::mutex audio_trace_mutex_;
     AudioTraceContext active_audio_trace_;
     std::string audio_trace_source_ = "none";
@@ -266,6 +287,14 @@ private:
     void StopOtherMedia(MediaComponent except = MediaComponent::kNone);
 
     void OnWakeWordDetected();
+    SpeechAudioLease TransitionSpeechAudio(const AudioTraceContext& trace);
+    bool IsSpeechAudioLeaseCurrent(const SpeechAudioLease& lease);
+    bool AcceptServerOpusPacket(std::unique_ptr<AudioStreamPacket> packet);
+    bool EnqueueDeviceTtsIfLeaseCurrent(
+        const SpeechAudioLease& lease,
+        const std::string& body,
+        const AudioTraceContext& trace);
+    void RevokeSpeechAudio();
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();
     /**

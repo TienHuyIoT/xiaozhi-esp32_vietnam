@@ -12,6 +12,19 @@
 
 #define TAG "WS"
 
+namespace {
+constexpr char kSpeechAudioEnvelopeMagic[] = "SOP1";
+constexpr size_t kSpeechAudioEnvelopeSize = 12;
+
+uint64_t ReadBigEndianUint64(const uint8_t* bytes) {
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        value = (value << 8) | bytes[i];
+    }
+    return value;
+}
+}  // namespace
+
 WebsocketProtocol::WebsocketProtocol() {
     event_group_handle_ = xEventGroupCreate();
 }
@@ -114,6 +127,11 @@ bool WebsocketProtocol::OpenAudioChannel() {
         websocket_->SetHeader("Authorization", token.c_str());
     }
     websocket_->SetHeader("Protocol-Version", std::to_string(version_).c_str());
+    // Capability additive: backend chi dong envelope SOP1 khi thay header nay.
+    // Neu rollback firmware, header bien mat va backend tu dong gui Opus raw.
+    if (version_ == 1) {
+        websocket_->SetHeader("Speech-Audio-Frame-Version", "1");
+    }
     websocket_->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
     websocket_->SetHeader("Client-Id", Board::GetInstance().GetUuid().c_str());
 
@@ -145,11 +163,22 @@ bool WebsocketProtocol::OpenAudioChannel() {
                         .payload = std::vector<uint8_t>(payload, payload + bp3->payload_size)
                     }));
                 } else {
+                    const auto* bytes = reinterpret_cast<const uint8_t*>(data);
+                    const bool has_speech_envelope =
+                        len >= kSpeechAudioEnvelopeSize &&
+                        memcmp(bytes, kSpeechAudioEnvelopeMagic, 4) == 0;
+                    const size_t payload_offset =
+                        has_speech_envelope ? kSpeechAudioEnvelopeSize : 0;
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
                         .sample_rate = server_sample_rate_,
                         .frame_duration = server_frame_duration_,
                         .timestamp = 0,
-                        .payload = std::vector<uint8_t>((uint8_t*)data, (uint8_t*)data + len)
+                        .speech_turn_token = has_speech_envelope
+                            ? ReadBigEndianUint64(bytes + 4)
+                            : 0,
+                        .speech_turn_token_present = has_speech_envelope,
+                        .payload = std::vector<uint8_t>(
+                            bytes + payload_offset, bytes + len)
                     }));
                 }
             }

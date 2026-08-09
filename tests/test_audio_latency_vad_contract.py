@@ -235,3 +235,82 @@ def test_yeu_cau_bo_tail_cu_khong_duoc_ro_sang_segment_moi():
     # request cu phai bi huy; neu khong DATA_LACK dau cua cau sau se bi cat oan.
     assert "discard_incomplete_decoder_tail_ = false" in consumed
     assert "discard_incomplete_decoder_tail_ = false" in pop
+
+
+def _starved_branch(compressed: str) -> str:
+    """Nhanh 'khong lay duoc chunk moi' trong PlayLoopCompressed."""
+    start = compressed.index("if (!got) {")
+    end = compressed.index("if (pending_chunk.data && pending_chunk.size > 0)")
+    return compressed[start:end]
+
+
+def test_het_chunk_ma_con_tail_thi_van_phai_goi_decoder():
+    """Robot that 09/08 ket Speaking: queue rong nhung input_bytes_left_ > 0.
+
+    Vong playback bo qua decoder khi khong lay duoc chunk moi, nen ca nhanh
+    DATA_LACK lan fallback bo tail deu khong bao gio chay -> pending khong ve 0
+    -> IsPlaybackDrained() sai vinh vien -> on_idle_() khong bao gio goi.
+    """
+    source = _text(PLAYER_SOURCE)
+    compressed = _function(
+        source,
+        "void AudioStreamPlayer::PlayLoopCompressed()",
+        "void AudioStreamPlayer::PlayLoopWav()",
+    )
+    starved = _starved_branch(compressed)
+
+    # Chi duoc quay lai dau vong khi decoder khong con gi de nhai.
+    assert "if (input_bytes_left_ <= 0)" in starved
+    assert starved.index("if (input_bytes_left_ <= 0)") < starved.index(
+        "xSemaphoreTake(buffer_data_sem_"
+    )
+    # Dung mot `continue` duy nhat va no phai nam trong guard tren; `break` cua
+    # stream ket thuc that su khong tinh.
+    assert starved.count("continue;") == 1
+
+
+def test_source_bao_het_byte_segment_thi_decode_cuoi_duoc_dat_eos():
+    """Khong co eos, decoder giu lai frame cuoi cho sync word cua frame ke tiep.
+
+    `is_source_active_` dung cho ca vong doi client nen eos cu khong bao gio bat
+    giua turn; phai co tin hieu rieng theo segment, neu khong moi cau deu de lai
+    tail va phai cho het kDecoderTailStallMs.
+    """
+    header = _text(PLAYER_HEADER)
+    player = _text(PLAYER_SOURCE)
+    device = _text(DEVICE_SOURCE)
+    compressed = _function(
+        player,
+        "void AudioStreamPlayer::PlayLoopCompressed()",
+        "void AudioStreamPlayer::PlayLoopWav()",
+    )
+    source_loop = _function(
+        device,
+        "void DeviceTtsClient::SourceDataLoop",
+        "AudioTraceContext DeviceTtsClient::GetActiveTrace",
+    )
+    eos = compressed[
+        compressed.index("bool eos =") : compressed.index("esp_audio_simple_dec_raw_t")
+    ]
+
+    assert "source_segment_complete_" in header
+    assert "MarkSourceSegmentComplete" in header
+    assert "ClearSourceSegmentComplete" in header
+    assert "source_segment_complete_.load()" in eos
+    # Chi duoc coi la het segment khi khong con byte nao dang cho vao decoder.
+    assert "buffer_size_.load() == 0" in eos
+    assert "pending_chunk.data == nullptr" in eos
+    # Nguon phai bao SAU khi SynthesizeOne tra ve (turn.end = het byte) va TRUOC
+    # khi doi drain, neu khong tin hieu vo dung.
+    assert "MarkSourceSegmentComplete()" in source_loop
+    assert source_loop.index("SynthesizeOne(") < source_loop.index(
+        "MarkSourceSegmentComplete()"
+    )
+    assert source_loop.index("MarkSourceSegmentComplete()") < source_loop.index(
+        "IsPlaybackDrained()"
+    )
+    # Segment moi phai xoa co, neu khong eos cu ro sang cau sau va cat frame dau.
+    assert "ClearSourceSegmentComplete()" in source_loop
+    assert source_loop.index("ClearSourceSegmentComplete()") < source_loop.index(
+        "SynthesizeOne("
+    )

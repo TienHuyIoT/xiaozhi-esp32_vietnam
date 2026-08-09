@@ -213,6 +213,9 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
     total_frames_decoded_ = 0;
     buffer_size_.store(0);
     content_length_       = 0;
+    // Stream moi khong duoc thua co "het segment" cua lan chay truoc, neu khong
+    // frame dau tien co the bi flush som thanh tieng cach.
+    source_segment_complete_.store(false);
 
     {
         std::lock_guard<std::mutex> lock(trace_mutex_);
@@ -1101,8 +1104,14 @@ void AudioStreamPlayer::PlayLoopCompressed()
                     ESP_LOGI(TAG, "Source ended, total=%zu", total_played);
                     break;
                 }
-                xSemaphoreTake(buffer_data_sem_, pdMS_TO_TICKS(50));
-                continue;
+                if (input_bytes_left_ <= 0) {
+                    xSemaphoreTake(buffer_data_sem_, pdMS_TO_TICKS(50));
+                    continue;
+                }
+                // Con tail trong input buffer: phai roi xuong decode. Quay lai
+                // dau vong o day thi ca nhanh DATA_LACK lan fallback bo tail
+                // deu khong bao gio chay, pending_decoder_input_bytes_ khong ve
+                // 0 va robot ket o Speaking -- do that 09/08 tren COM5.
             }
 
             if (pending_chunk.data && pending_chunk.size > 0) {
@@ -1154,7 +1163,12 @@ void AudioStreamPlayer::PlayLoopCompressed()
         }
 
         /* Decode */
-        bool eos = (!is_source_active_ && buffer_size_.load() == 0);
+        // `is_source_active_` chi tat khi ca client dung nen giua turn no luon
+        // true. Khong co tin hieu rieng theo segment thi decoder giu frame cuoi
+        // lai de cho sync word cua frame ke tiep -- tail do khong bao gio duoc
+        // nhai het va IsPlaybackDrained() sai vinh vien.
+        bool eos = buffer_size_.load() == 0 && pending_chunk.data == nullptr &&
+                   (!is_source_active_ || source_segment_complete_.load());
 
         esp_audio_simple_dec_raw_t raw = {};
         raw.buffer   = input_buffer_;

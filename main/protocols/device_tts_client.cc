@@ -287,9 +287,16 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
 
     RegisterAudioTraceSegment(segment.trace);
     SetActiveTrace(segment.trace);
+    // Segment moi: huy tin hieu "het byte" cua cau truoc, neu khong byte dau
+    // cua cau nay co the bi danh dau eos oan va decoder flush nua frame.
+    ClearSourceSegmentComplete();
     synthesizing_ = true;
     const bool ok = SynthesizeOne(segment.body, segment.turn_generation);
     synthesizing_ = false;
+    // Edge da gui turn.end -- hoac cau nay hong nen se khong con byte nao nua.
+    // Bao cho task playback de decode cuoi cung duoc dat eos va nha not frame
+    // chot, thay vi doi het kDecoderTailStallMs roi bo tail.
+    MarkSourceSegmentComplete();
 
     // Edge tren robot khong on dinh khi tai su dung socket. Dong socket active
     // sau dung mot cau; socket moi da duoc worker mo SONG SONG tu luc gui SSML.

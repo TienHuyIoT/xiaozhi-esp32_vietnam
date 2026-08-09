@@ -339,6 +339,18 @@ protected:
         discard_incomplete_decoder_tail_.store(true);
     }
 
+    /**
+     * Nguon da giao het byte cua segment hien tai (Edge gui turn.end, hoac cau
+     * hong nen se khong con byte nao nua). `is_source_active_` chi tat khi ca
+     * client dung nen no khong dung de suy ra ranh gioi segment.
+     */
+    void MarkSourceSegmentComplete() { source_segment_complete_.store(true); }
+
+    /** Segment moi bat dau: byte sap toi khong duoc coi la doan cuoi. */
+    void ClearSourceSegmentComplete() {
+        source_segment_complete_.store(false);
+    }
+
     /** Queue, decoder input va output phan cung deu da rong. */
     bool IsPlaybackDrained() const {
         return GetBufferSize() == 0 && !HasPendingDecoderPlayback();
@@ -476,6 +488,7 @@ private:
     std::atomic<size_t> pending_decoder_input_bytes_{0};
     std::atomic<bool> decoder_output_in_flight_{false};
     std::atomic<bool> discard_incomplete_decoder_tail_{false};
+    std::atomic<bool> source_segment_complete_{false};
 
     /* ---- Playback timing ---- */
     int64_t current_play_time_ms_;

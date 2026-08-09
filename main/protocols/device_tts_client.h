@@ -129,6 +129,13 @@ private:
   static constexpr int kDrainGraceMs = 300;
 
   /**
+   * Provider da gui turn.end ma decoder van doi them byte cua frame cuoi.
+   * Sau mot khoang pending khong doi, bo tail loi tren task playback de robot
+   * khong ket Speaking vo han. Cau sau chua duoc synth trong luc cho nay.
+   */
+  static constexpr int kDecoderTailStallMs = 500;
+
+  /**
    * Tuoi toi da cua socket warm chua dung. Do 09/08 cho thay socket warm song
    * qua ranh gioi turn tiet kiem ~1,6s cho cau dau moi turn, nhung giu qua lau
    * thi gap TCP nua song: `IsConnected()` van true, gui SSML vao do khong bao

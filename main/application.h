@@ -334,6 +334,7 @@ private:
     void DrainAudioPlaybackStates();
     void HandleServerOpusPlaybackFinished();
     void RevokeSpeechAudio();
+    void ResetDecoderBeforeSpeakingIfUnowned();
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();
     /**

@@ -1297,6 +1297,21 @@ void Application::CheckSpeakingFinished() {
                        : kDeviceStateListening);
 }
 
+void Application::ResetDecoderBeforeSpeakingIfUnowned() {
+    // tts:start chay main task, sentence_start/frame chay network task. Neu owner
+    // da commit thi TransitionSpeechAudio da reset truoc do; reset lan hai o day
+    // co the xoa cac frame dau vua vao queue.
+    std::lock_guard<std::mutex> transition_lock(
+        speech_audio_transition_mutex_);
+    {
+        std::lock_guard<std::mutex> lock(speech_audio_mutex_);
+        if (speech_audio_source_ != SpeechAudioSource::kNone) {
+            return;
+        }
+    }
+    audio_service_.ResetDecoder();
+}
+
 void Application::SetListeningMode(ListeningMode mode) {
     listening_mode_ = mode;
     SetDeviceState(kDeviceStateListening);
@@ -1372,7 +1387,7 @@ void Application::SetDeviceState(DeviceState state) {
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
-            audio_service_.ResetDecoder();
+            ResetDecoderBeforeSpeakingIfUnowned();
             break;
         default:
             // Do nothing

@@ -225,7 +225,7 @@ public:
     virtual bool IsPlaying() const     { return is_playing_.load(); }
     bool  IsDownloading() const        { return is_source_active_.load(); }
     bool  IsSourceActive() const       { return is_source_active_.load(); }
-    size_t GetBufferSize() const       { return buffer_size_; }
+    size_t GetBufferSize() const       { return buffer_size_.load(); }
 
     /* ---- State machine ---- */
     AudioPlayerState GetPlayerState() const { return player_state_.load(); }
@@ -316,6 +316,34 @@ protected:
     /** Get decoder type for the current stream. */
     AudioDecoderType GetDecoderType() const { return decoder_type_; }
 
+    /** Decoder con compressed input hoac dang ghi PCM ra loa. */
+    bool HasPendingDecoderPlayback() const {
+        return pending_decoder_input_bytes_.load() > 0 ||
+               decoder_output_in_flight_.load();
+    }
+
+    size_t GetPendingDecoderInputBytes() const {
+        return pending_decoder_input_bytes_.load();
+    }
+
+    bool IsDecoderOutputInFlight() const {
+        return decoder_output_in_flight_.load();
+    }
+
+    /**
+     * Source da giao het byte cua segment nhung decoder van tra DATA_LACK.
+     * Chi task playback moi duoc phep bo tail/reset decoder; source task chi
+     * dat co de tranh data race voi input_buffer_.
+     */
+    void RequestIncompleteDecoderTailDiscard() {
+        discard_incomplete_decoder_tail_.store(true);
+    }
+
+    /** Queue, decoder input va output phan cung deu da rong. */
+    bool IsPlaybackDrained() const {
+        return GetBufferSize() == 0 && !HasPendingDecoderPlayback();
+    }
+
     /** Access to the display mode atomic. */
     std::atomic<DisplayMode>& DisplayModeRef() { return display_mode_; }
 
@@ -374,6 +402,7 @@ private:
     bool  InitDecoder(AudioDecoderType type);
     void  CleanupDecoder();
     bool  ResetCompressedPlaybackForGeneration();
+    size_t FindCompressedSyncOffset(const uint8_t* data, size_t size) const;
     AudioDecoderType DetectStreamType(const uint8_t* data, size_t len);
 
     /* ---- Sample-rate reset ---- */
@@ -418,7 +447,7 @@ private:
     SemaphoreHandle_t            buffer_mutex_;
     SemaphoreHandle_t            buffer_data_sem_;
     SemaphoreHandle_t            buffer_space_sem_;
-    size_t                       buffer_size_;
+    std::atomic<size_t> buffer_size_{0};
 
     struct TraceInputSpan {
         size_t bytes = 0;
@@ -444,6 +473,9 @@ private:
     /* ---- Decoder input ---- */
     uint8_t* input_buffer_;
     int      input_bytes_left_;
+    std::atomic<size_t> pending_decoder_input_bytes_{0};
+    std::atomic<bool> decoder_output_in_flight_{false};
+    std::atomic<bool> discard_incomplete_decoder_tail_{false};
 
     /* ---- Playback timing ---- */
     int64_t current_play_time_ms_;

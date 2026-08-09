@@ -194,8 +194,9 @@ bool DeviceTtsClient::IsBusy() {
       return true;
     }
   }
-  // Con byte trong buffer nghia la con tieng chua phat het.
-  return GetBufferSize() > 0;
+  // Buffer co the da can nhung decoder van giu compressed input hoac dang ghi
+  // PCM cuoi ra I2S. Bao idle som o day se mo mic giua cau.
+  return GetBufferSize() > 0 || HasPendingDecoderPlayback();
 }
 
 void DeviceTtsClient::Shutdown() {
@@ -302,20 +303,52 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
       // can ve 0, source task van doi den het + grace 300ms moi quay lai queue.
       // Ket qua loa im ro ret. Nay queue co cau moi la thoat NGAY de synth cau
       // tiep trong khi PCM cu van con phat o task core 1.
+      int decoder_tail_stall_ms = 0;
+      size_t last_pending_decoder_bytes = 0;
       while (IsSourceActive() && running_.load() && !abort_.load() &&
-             GetBufferSize() > 0 && !HasQueuedSentence()) {
+             (GetBufferSize() > 0 || HasPendingDecoderPlayback()) &&
+             !HasQueuedSentence()) {
+        const size_t pending_decoder_bytes = GetPendingDecoderInputBytes();
+        if (GetBufferSize() == 0 && pending_decoder_bytes > 0 &&
+            !IsDecoderOutputInFlight()) {
+          if (pending_decoder_bytes == last_pending_decoder_bytes) {
+            decoder_tail_stall_ms += 20;
+          } else {
+            last_pending_decoder_bytes = pending_decoder_bytes;
+            decoder_tail_stall_ms = 0;
+          }
+          if (decoder_tail_stall_ms >= kDecoderTailStallMs) {
+            ESP_LOGW(TAG,
+                     "decoder tail dung o %zu byte; yeu cau bo frame loi",
+                     pending_decoder_bytes);
+            RequestIncompleteDecoderTailDiscard();
+            decoder_tail_stall_ms = 0;
+          }
+        } else {
+          last_pending_decoder_bytes = pending_decoder_bytes;
+          decoder_tail_stall_ms = 0;
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
       }
 
-      // Grace chi ap dung khi queue van rong. Chia nho de cau moi den trong
-      // 300ms nay cung danh thuc pipeline thay vi bi bao idle nham.
-      for (int waited = 0;
-           waited < kDrainGraceMs && IsSourceActive() && running_.load() &&
-           !abort_.load() && !HasQueuedSentence();
-           waited += 20) {
+      // Chi bao idle sau khi queue, decoder input va write PCM cung rong lien
+      // tuc het grace. Pending cua chunk duoc cong bo truoc khi queue ve 0;
+      // kiem tra lap o day van giu an toan neu co preemption bat thuong.
+      int drained_ms = 0;
+      while (IsSourceActive() && running_.load() && !abort_.load() &&
+             !HasQueuedSentence()) {
+        if (!IsPlaybackDrained()) {
+          drained_ms = 0;
+          vTaskDelay(pdMS_TO_TICKS(20));
+          continue;
+        }
+        if (drained_ms >= kDrainGraceMs) {
+          break;
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
+        drained_ms += 20;
       }
-      if (!HasQueuedSentence() && !abort_.load()) {
+      if (!HasQueuedSentence() && !abort_.load() && IsPlaybackDrained()) {
         RequestAudioTraceSegmentFinish(segment.trace.trace_sequence);
         if (on_idle_) {
           on_idle_();

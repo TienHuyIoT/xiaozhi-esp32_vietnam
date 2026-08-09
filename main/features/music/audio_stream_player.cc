@@ -211,7 +211,7 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
     is_paused_            = false;
     current_play_time_ms_ = 0;
     total_frames_decoded_ = 0;
-    buffer_size_          = 0;
+    buffer_size_.store(0);
     content_length_       = 0;
 
     {
@@ -554,7 +554,8 @@ void AudioStreamPlayer::SourceDataLoop(const std::string& source)
         log_counter += n;
         if (log_counter >= AUDIO_LOG_INTERVAL) {
             log_counter = 0;
-            ESP_LOGI(TAG, "Downloaded %zu bytes, buf=%zu", total, buffer_size_);
+            ESP_LOGI(TAG, "Downloaded %zu bytes, buf=%zu", total,
+                     buffer_size_.load());
         }
     }
 
@@ -588,7 +589,8 @@ bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size,
     memcpy(chunk, data, size);
 
     /* Back-pressure: wait for space */
-    while (is_source_active_ && is_playing_ && buffer_size_ >= AUDIO_BUF_MAX_SIZE) {
+    while (is_source_active_ && is_playing_ &&
+           buffer_size_.load() >= AUDIO_BUF_MAX_SIZE) {
         if (expected_generation != stream_generation_.load()) {
             heap_caps_free(chunk);
             return false;
@@ -610,7 +612,7 @@ bool AudioStreamPlayer::PushToBuffer(const void* data, size_t size,
         }
         audio_buffer_.push(StreamAudioChunk(
             chunk, size, trace_sequence, expected_generation));
-        buffer_size_ += size;
+        buffer_size_.fetch_add(size);
         xSemaphoreGive(buffer_mutex_);
         xSemaphoreGive(buffer_data_sem_);
         return true;
@@ -663,6 +665,7 @@ void AudioStreamPlayer::RegisterAudioTraceSegment(
 
 void AudioStreamPlayer::ConsumeTraceInputBytes(size_t bytes)
 {
+    std::lock_guard<std::mutex> lock(trace_mutex_);
     while (bytes > 0 && !input_trace_spans_.empty()) {
         TraceInputSpan& span = input_trace_spans_.front();
         const size_t consumed = std::min(bytes, span.bytes);
@@ -848,6 +851,8 @@ void AudioStreamPlayer::PlayLoop()
         input_buffer_ = nullptr;
     }
     input_bytes_left_ = 0;
+    pending_decoder_input_bytes_ = 0;
+    decoder_output_in_flight_ = false;
 
     bool was_playing = is_playing_.load();
     is_playing_ = false;
@@ -1020,7 +1025,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
     /* Wait for minimum buffer fill (subclasses may lower it -- see
      * SetMinBufferSize(); one TTS sentence is far smaller than a radio stream) */
     size_t min_buf = min_buffer_size_;
-    while (is_playing_ && buffer_size_ < min_buf && is_source_active_) {
+    while (is_playing_ && buffer_size_.load() < min_buf && is_source_active_) {
         xSemaphoreTake(buffer_data_sem_, pdMS_TO_TICKS(100));
     }
 
@@ -1039,10 +1044,15 @@ void AudioStreamPlayer::PlayLoopCompressed()
         return;
     }
     input_bytes_left_ = 0;
+    pending_decoder_input_bytes_ = 0;
+    decoder_output_in_flight_ = false;
+    discard_incomplete_decoder_tail_ = false;
 
     size_t total_played = 0;
     size_t log_counter  = 0;
     uint32_t playback_generation = stream_generation_.load();
+    StreamAudioChunk pending_chunk;
+    size_t pending_chunk_offset = 0;
 
     while (is_playing_) {
         if (!HandlePause()) break;
@@ -1050,6 +1060,11 @@ void AudioStreamPlayer::PlayLoopCompressed()
         const uint32_t current_generation = stream_generation_.load();
         if (current_generation != playback_generation) {
             playback_generation = current_generation;
+            if (pending_chunk.data != nullptr) {
+                heap_caps_free(pending_chunk.data);
+                pending_chunk = StreamAudioChunk{};
+                pending_chunk_offset = 0;
+            }
             if (!ResetCompressedPlaybackForGeneration()) {
                 ESP_LOGE(TAG, "Khong reset duoc decoder sau interrupt");
                 is_playing_ = false;
@@ -1060,14 +1075,20 @@ void AudioStreamPlayer::PlayLoopCompressed()
 
         /* Fill input buffer from audio buffer */
         if (input_bytes_left_ < (AUDIO_DEC_INPUT_BUF_SIZE / 2)) {
-            StreamAudioChunk chunk;
-            bool got = false;
+            bool got = pending_chunk.data != nullptr;
 
-            if (xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (!got &&
+                xSemaphoreTake(buffer_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
                 if (!audio_buffer_.empty()) {
-                    chunk = audio_buffer_.front();
+                    pending_chunk = audio_buffer_.front();
                     audio_buffer_.pop();
-                    buffer_size_ -= chunk.size;
+                    // Cong bo ownership cua chunk truoc khi queue ve 0. Source
+                    // task khong duoc thay ca queue va decoder deu rong trong
+                    // khe hep giua pop va memcpy vao input_buffer_.
+                    pending_decoder_input_bytes_.store(
+                        input_bytes_left_ + pending_chunk.size);
+                    discard_incomplete_decoder_tail_ = false;
+                    buffer_size_.fetch_sub(pending_chunk.size);
                     got = true;
                 }
                 xSemaphoreGive(buffer_mutex_);
@@ -1076,7 +1097,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
 
             if (!got) {
                 MaybeFinishRequestedAudioTrace();
-                if (!is_source_active_ && buffer_size_ == 0) {
+                if (!is_source_active_ && buffer_size_.load() == 0) {
                     ESP_LOGI(TAG, "Source ended, total=%zu", total_played);
                     break;
                 }
@@ -1084,26 +1105,46 @@ void AudioStreamPlayer::PlayLoopCompressed()
                 continue;
             }
 
-            if (chunk.data && chunk.size > 0) {
-                if (chunk.stream_generation != playback_generation) {
-                    heap_caps_free(chunk.data);
+            if (pending_chunk.data && pending_chunk.size > 0) {
+                if (pending_chunk.stream_generation != playback_generation) {
+                    heap_caps_free(pending_chunk.data);
+                    pending_chunk = StreamAudioChunk{};
+                    pending_chunk_offset = 0;
+                    pending_decoder_input_bytes_.store(input_bytes_left_);
                     continue;
                 }
                 size_t space = AUDIO_DEC_INPUT_BUF_SIZE - input_bytes_left_;
-                size_t copy  = std::min(chunk.size, space);
-                memcpy(input_buffer_ + input_bytes_left_, chunk.data, copy);
+                const size_t remaining =
+                    pending_chunk.size - pending_chunk_offset;
+                size_t copy = std::min(remaining, space);
+                memcpy(input_buffer_ + input_bytes_left_,
+                       pending_chunk.data + pending_chunk_offset, copy);
                 input_bytes_left_ += copy;
-                if (!input_trace_spans_.empty() &&
-                    input_trace_spans_.back().trace_sequence ==
-                        chunk.trace_sequence) {
-                    input_trace_spans_.back().bytes += copy;
-                } else {
-                    input_trace_spans_.push_back(
-                        TraceInputSpan{copy, chunk.trace_sequence});
+                {
+                    std::lock_guard<std::mutex> lock(trace_mutex_);
+                    if (!input_trace_spans_.empty() &&
+                        input_trace_spans_.back().trace_sequence ==
+                            pending_chunk.trace_sequence) {
+                        input_trace_spans_.back().bytes += copy;
+                    } else {
+                        input_trace_spans_.push_back(
+                            TraceInputSpan{copy,
+                                           pending_chunk.trace_sequence});
+                    }
                 }
-                total_played += chunk.size;
-                log_counter  += chunk.size;
-                heap_caps_free(chunk.data);
+                pending_chunk_offset += copy;
+                pending_decoder_input_bytes_ =
+                    input_bytes_left_ +
+                    (pending_chunk.size - pending_chunk_offset);
+                total_played += copy;
+                log_counter  += copy;
+                if (pending_chunk_offset == pending_chunk.size) {
+                    heap_caps_free(pending_chunk.data);
+                    pending_chunk = StreamAudioChunk{};
+                    pending_chunk_offset = 0;
+                }
+            } else {
+                pending_decoder_input_bytes_.store(input_bytes_left_);
             }
         }
 
@@ -1113,7 +1154,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
         }
 
         /* Decode */
-        bool eos = (!is_source_active_ && buffer_size_ == 0);
+        bool eos = (!is_source_active_ && buffer_size_.load() == 0);
 
         esp_audio_simple_dec_raw_t raw = {};
         raw.buffer   = input_buffer_;
@@ -1134,10 +1175,14 @@ void AudioStreamPlayer::PlayLoopCompressed()
         out.decoded_size = 0;
         out.needed_size  = 0;
 
-        const uint32_t decoded_trace_sequence = input_trace_spans_.empty()
-                                                    ? 0
-                                                    : input_trace_spans_.front()
-                                                          .trace_sequence;
+        uint32_t decoded_trace_sequence = 0;
+        {
+            std::lock_guard<std::mutex> lock(trace_mutex_);
+            if (!input_trace_spans_.empty()) {
+                decoded_trace_sequence =
+                    input_trace_spans_.front().trace_sequence;
+            }
+        }
         const uint32_t decode_generation = playback_generation;
         esp_audio_err_t ret = esp_audio_simple_dec_process(decoder_, &raw, &out);
 
@@ -1161,29 +1206,56 @@ void AudioStreamPlayer::PlayLoopCompressed()
         }
 
         if (raw.consumed > 0) {
+            discard_incomplete_decoder_tail_ = false;
             ConsumeTraceInputBytes(raw.consumed);
             input_bytes_left_ -= raw.consumed;
             if (input_bytes_left_ > 0)
                 memmove(input_buffer_, input_buffer_ + raw.consumed, input_bytes_left_);
         }
 
-        if (ret == ESP_AUDIO_ERR_DATA_LACK) { 
+        if (ret == ESP_AUDIO_ERR_DATA_LACK) {
+            if (discard_incomplete_decoder_tail_.exchange(false) &&
+                buffer_size_.load() == 0 && pending_chunk.data == nullptr) {
+                ESP_LOGW(TAG,
+                         "Bo %d byte tail loi sau DATA_LACK cuoi segment",
+                         input_bytes_left_);
+                if (input_bytes_left_ > 0) {
+                    ConsumeTraceInputBytes(input_bytes_left_);
+                }
+                input_bytes_left_ = 0;
+                pending_decoder_input_bytes_ = 0;
+                CleanupDecoder();
+                if (!InitDecoder(decoder_type_)) {
+                    ESP_LOGE(TAG, "Khong reset duoc decoder sau tail loi");
+                    is_playing_ = false;
+                    break;
+                }
+                continue;
+            }
             ESP_LOGI(TAG, "Decoder needs more data to continue");
+            pending_decoder_input_bytes_ = input_bytes_left_;
             vTaskDelay(pdMS_TO_TICKS(20)); continue; 
         }
 
         if (ret == ESP_AUDIO_ERR_CONTINUE) {
             ESP_LOGI(TAG, "Decoder requests to continue without new input");
+            pending_decoder_input_bytes_ = input_bytes_left_;
             continue;
         }
         
         if (ret != ESP_AUDIO_ERR_OK) {
             ESP_LOGE(TAG, "Decoder error: %d", ret);
             if (input_bytes_left_ > 0) {
-                input_bytes_left_--;
-                memmove(input_buffer_, input_buffer_ + 1, input_bytes_left_);
+                const size_t discard = FindCompressedSyncOffset(
+                    input_buffer_, static_cast<size_t>(input_bytes_left_));
+                ConsumeTraceInputBytes(discard);
+                input_bytes_left_ -= discard;
+                if (input_bytes_left_ > 0) {
+                    memmove(input_buffer_, input_buffer_ + discard,
+                            input_bytes_left_);
+                }
             }
-            vTaskDelay(pdMS_TO_TICKS(20));
+            pending_decoder_input_bytes_ = input_bytes_left_;
             continue;
         }
 
@@ -1191,6 +1263,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
         ret = esp_audio_simple_dec_get_info(decoder_, &dec_info_);
         if (ret != ESP_AUDIO_ERR_OK) {
             ESP_LOGE(TAG, "Failed to get decoder info: %d", ret);
+            pending_decoder_input_bytes_ = input_bytes_left_;
             continue;
         }
 
@@ -1202,7 +1275,10 @@ void AudioStreamPlayer::PlayLoopCompressed()
         }
 
         total_frames_decoded_++;
-        if (dec_info_.sample_rate == 0 || dec_info_.channel == 0) continue;
+        if (dec_info_.sample_rate == 0 || dec_info_.channel == 0) {
+            pending_decoder_input_bytes_ = input_bytes_left_;
+            continue;
+        }
 
         int bits  = (dec_info_.bits_per_sample > 0) ? dec_info_.bits_per_sample : 16;
         int chans = (dec_info_.channel > 0) ? dec_info_.channel : 1;
@@ -1218,13 +1294,17 @@ void AudioStreamPlayer::PlayLoopCompressed()
         ObserveDecodedPcm(decoded_trace_sequence);
         OnPcmFrame(current_play_time_ms_, dec_info_.sample_rate, chans);
 
+        decoder_output_in_flight_ = true;
         OutputPcmFrame(reinterpret_cast<int16_t*>(out.buffer),
                        total_samples, chans, dec_info_.sample_rate, frame_ms,
                        decode_generation);
+        decoder_output_in_flight_ = false;
+        pending_decoder_input_bytes_ = input_bytes_left_;
 
         if (log_counter >= AUDIO_LOG_INTERVAL) {
             log_counter = 0;
-            ESP_LOGI(TAG, "Played %zu bytes, buf=%zu", total_played, buffer_size_);
+            ESP_LOGI(TAG, "Played %zu bytes, buf=%zu", total_played,
+                     buffer_size_.load());
         }
 
         if (eos && input_bytes_left_ == 0) {
@@ -1233,6 +1313,12 @@ void AudioStreamPlayer::PlayLoopCompressed()
         }
     }
 
+    if (pending_chunk.data != nullptr) {
+        heap_caps_free(pending_chunk.data);
+    }
+    pending_decoder_input_bytes_ = 0;
+    decoder_output_in_flight_ = false;
+    discard_incomplete_decoder_tail_ = false;
     ESP_LOGI(TAG, "Compressed loop done, total=%zu", total_played);
 }
 
@@ -1263,7 +1349,8 @@ void AudioStreamPlayer::PlayLoopWav()
     OnStreamInfoReady(sr, wav_info_.bits_per_sample, ch, 0, 0);
 
     /* Wait for some data */
-    while (is_playing_ && buffer_size_ < AUDIO_FILE_BUF_MIN_SIZE && is_source_active_) {
+    while (is_playing_ && buffer_size_.load() < AUDIO_FILE_BUF_MIN_SIZE &&
+           is_source_active_) {
         xSemaphoreTake(buffer_data_sem_, pdMS_TO_TICKS(100));
     }
 
@@ -1286,7 +1373,7 @@ void AudioStreamPlayer::PlayLoopWav()
             if (!audio_buffer_.empty()) {
                 chunk = audio_buffer_.front();
                 audio_buffer_.pop();
-                buffer_size_ -= chunk.size;
+                buffer_size_.fetch_sub(chunk.size);
                 got = true;
             }
             xSemaphoreGive(buffer_mutex_);
@@ -1294,7 +1381,7 @@ void AudioStreamPlayer::PlayLoopWav()
         }
 
         if (!got) {
-            if (!is_source_active_ && buffer_size_ == 0) {
+            if (!is_source_active_ && buffer_size_.load() == 0) {
                 ESP_LOGI(TAG, "WAV source ended, total=%zu", total_played);
                 break;
             }
@@ -1344,8 +1431,11 @@ void AudioStreamPlayer::ClearAudioBuffer()
             audio_buffer_.pop();
             if (c.data) heap_caps_free(c.data);
         }
-        buffer_size_ = 0;
-        input_trace_spans_.clear();
+        buffer_size_.store(0);
+        {
+            std::lock_guard<std::mutex> lock(trace_mutex_);
+            input_trace_spans_.clear();
+        }
         xSemaphoreGive(buffer_mutex_);
     }
 }
@@ -1361,7 +1451,7 @@ void AudioStreamPlayer::DiscardQueuedAudio()
         audio_buffer_.pop();
         if (chunk.data) heap_caps_free(chunk.data);
     }
-    buffer_size_ = 0;
+    buffer_size_.store(0);
     xSemaphoreGive(buffer_mutex_);
 }
 
@@ -1452,9 +1542,57 @@ void AudioStreamPlayer::CleanupDecoder()
 bool AudioStreamPlayer::ResetCompressedPlaybackForGeneration()
 {
     input_bytes_left_ = 0;
-    input_trace_spans_.clear();
+    pending_decoder_input_bytes_ = 0;
+    decoder_output_in_flight_ = false;
+    discard_incomplete_decoder_tail_ = false;
+    {
+        std::lock_guard<std::mutex> lock(trace_mutex_);
+        input_trace_spans_.clear();
+    }
     CleanupDecoder();
     return InitDecoder(decoder_type_);
+}
+
+size_t AudioStreamPlayer::FindCompressedSyncOffset(
+    const uint8_t* data, size_t size) const
+{
+    if (data == nullptr || size == 0) {
+        return 0;
+    }
+
+    for (size_t offset = 1; offset < size; ++offset) {
+        if (decoder_type_ == AudioDecoderType::FLAC) {
+            if (offset + 4 <= size &&
+                memcmp(data + offset, "fLaC", 4) == 0) {
+                return offset;
+            }
+            // FLAC frame sync la 14-bit 0x3FFE; bit cuoi cua byte thu hai la
+            // blocking strategy nen co the bang 0 hoac 1.
+            if (offset + 2 <= size && data[offset] == 0xFF &&
+                (data[offset + 1] & 0xFE) == 0xF8) {
+                return offset;
+            }
+            continue;
+        }
+        if (decoder_type_ == AudioDecoderType::AAC) {
+            // ADTS: sync 12-bit 0xFFF va layer (bits 2..1) bat buoc bang 00.
+            if (offset + 2 <= size && data[offset] == 0xFF &&
+                (data[offset + 1] & 0xF6) == 0xF0) {
+                return offset;
+            }
+            continue;
+        }
+        if (offset + 2 <= size && data[offset] == 0xFF &&
+            (data[offset + 1] & 0xE0) == 0xE0) {
+            return offset;
+        }
+    }
+
+    // Giu lai marker co the bi cat o bien chunk. Moi lan loi van tien it nhat
+    // mot byte, khong bien N byte ID3/rac thanh N * 20ms im lang.
+    const size_t marker_tail =
+        decoder_type_ == AudioDecoderType::FLAC ? 3 : 1;
+    return size > marker_tail ? size - marker_tail : 1;
 }
 
 AudioDecoderType AudioStreamPlayer::DetectStreamType(const uint8_t* data, size_t len)

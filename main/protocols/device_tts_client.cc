@@ -145,7 +145,10 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body,
                static_cast<int>(queue_.size()));
       return;
     }
-    queue_.push_back(QueuedTtsSegment{tts_body, queued_trace});
+    // Dong dau generation ngay luc xep hang: neu Abort xay ra sau khi source
+    // task da dequeue cau nay thi no van nhan ra minh thuoc turn da chet.
+    queue_.push_back(
+        QueuedTtsSegment{tts_body, queued_trace, turn_generation_.load()});
     queue_depth = queue_.size();
   }
   LogAudioTraceQueue("queue", "enqueue", queued_trace, queue_depth);
@@ -173,7 +176,9 @@ void DeviceTtsClient::Abort() {
   // ranh gioi an toan; tuyet doi khong StopStream tu task Application.
   InterruptStream();
   ClearActiveTrace();
-  // Giao viec dong socket warm (co the block TLS) cho worker preconnect.
+  // Danh thuc worker de no mo lai socket warm neu cai cu da hong/qua gia.
+  // KHONG con dong socket warm o day: no khong thuoc turn vua bi huy, va vut
+  // no lam cau dau turn ke tiep phai bat tay TLS lai tu dau (~1,6s do 09/08).
   if (preconnect_events_ != nullptr) {
     xEventGroupSetBits(preconnect_events_, kPreconnectWakeBit);
   }
@@ -271,14 +276,17 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
       continue;
     }
     LogAudioTraceQueue("queue", "dequeue", segment.trace, queue_depth);
-    if (abort_.load()) {
-      continue; // Abort() da xoa hang doi; vong sau se thay het viec
+    if (abort_.load() ||
+        segment.turn_generation != turn_generation_.load()) {
+      // Abort() da xoa hang doi, hoac cau nay thuoc turn cu va lot qua khe hep
+      // giua dequeue va cho nay. Khong duoc mo socket cho no.
+      continue;
     }
 
     RegisterAudioTraceSegment(segment.trace);
     SetActiveTrace(segment.trace);
     synthesizing_ = true;
-    const bool ok = SynthesizeOne(segment.body);
+    const bool ok = SynthesizeOne(segment.body, segment.turn_generation);
     synthesizing_ = false;
 
     // Edge tren robot khong on dinh khi tai su dung socket. Dong socket active
@@ -346,7 +354,7 @@ bool DeviceTtsClient::HasQueuedSentence() {
   return !queue_.empty();
 }
 
-bool DeviceTtsClient::EnsureConnected() {
+bool DeviceTtsClient::EnsureConnected(uint32_t segment_generation) {
   if (websocket_ && websocket_->IsConnected()) {
     return true;
   }
@@ -359,8 +367,13 @@ bool DeviceTtsClient::EnsureConnected() {
   // Worker co the dang o 100-200ms cuoi cua TLS. Doi dung ket qua do thay vi
   // mo them mot ket noi trung lap. Trong luc doi, task phat core 1 van tieu thu
   // PCM cau truoc, nen day van la overlap chu khong khoa loa.
+  //
+  // Dieu kien thoat dung `turn_generation_` chu KHONG dung `abort_`: sau Abort
+  // thi `Enqueue()` cua turn moi xoa `abort_` ngay, nen co do se lam vong nay
+  // tiep tuc cho ho mot segment da chet.
   const int64_t wait_started = esp_timer_get_time();
-  while (running_.load() && !abort_.load() &&
+  while (running_.load() &&
+         turn_generation_.load() == segment_generation &&
          (preconnect_requested_.load() || preconnect_inflight_.load()) &&
          (esp_timer_get_time() - wait_started) / 1000 < kPreconnectWaitMs) {
     if (PromoteReadySocket()) {
@@ -370,6 +383,14 @@ bool DeviceTtsClient::EnsureConnected() {
   }
   if (PromoteReadySocket()) {
     return true;
+  }
+
+  // Segment da bi huy trong luc cho: KHONG duoc tra them mot lan bat tay dong
+  // bo ~1,5 giay cho no. Do 09/08: dung cho nay giu source worker 1.230ms roi
+  // moi dequeue cau dau cua turn moi.
+  if (!running_.load() || abort_.load() ||
+      turn_generation_.load() != segment_generation) {
+    return false;
   }
 
   // Worker vang/loi/qua han: fallback bat tay dong bo de khong lam mat cau.
@@ -406,8 +427,8 @@ void DeviceTtsClient::CloseReadySocket() {
     std::lock_guard<std::mutex> lock(ready_socket_mutex_);
     stale = std::move(ready_websocket_);
     ready_config_generation_ = 0;
-    ready_turn_generation_ = 0;
     ready_socket_generation_ = 0;
+    ready_socket_opened_us_ = 0;
   }
   if (stale) {
     stale->Close();
@@ -424,7 +445,6 @@ bool DeviceTtsClient::CaptureConnectionSnapshot(
   snapshot.config_frame = config_frame_;
   snapshot.headers = headers_;
   snapshot.config_generation = config_generation_.load();
-  snapshot.turn_generation = turn_generation_.load();
   snapshot.socket_generation = next_socket_generation_.fetch_add(1);
   return true;
 }
@@ -493,9 +513,13 @@ bool DeviceTtsClient::PromoteReadySocket() {
       return false;
     }
 
+    // Co tinh KHONG xet turn: socket warm chua gui SSML va chua gan OnData nen
+    // no khong thuoc turn nao. Chi URL/token moi hoac socket qua gia moi bo.
+    const int64_t age_ms =
+        (esp_timer_get_time() - ready_socket_opened_us_) / 1000;
     const bool valid = ready_websocket_->IsConnected() &&
                        ready_config_generation_ == config_generation_.load() &&
-                       ready_turn_generation_ == turn_generation_.load();
+                       age_ms < kReadySocketMaxAgeMs;
     if (!valid) {
       stale = std::move(ready_websocket_);
     } else {
@@ -511,8 +535,8 @@ bool DeviceTtsClient::PromoteReadySocket() {
           });
     }
     ready_config_generation_ = 0;
-    ready_turn_generation_ = 0;
     ready_socket_generation_ = 0;
+    ready_socket_opened_us_ = 0;
   }
 
   if (stale) {
@@ -535,10 +559,12 @@ void DeviceTtsClient::RequestPreconnect() {
 
   {
     std::lock_guard<std::mutex> lock(ready_socket_mutex_);
+    const int64_t age_ms =
+        (esp_timer_get_time() - ready_socket_opened_us_) / 1000;
     if (ready_websocket_ && ready_websocket_->IsConnected() &&
         ready_config_generation_ == config_generation_.load() &&
-        ready_turn_generation_ == turn_generation_.load()) {
-      return;
+        age_ms < kReadySocketMaxAgeMs) {
+      return; // da co socket dung duoc -- ke ca khi turn vua doi
     }
   }
 
@@ -564,14 +590,16 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
     std::unique_ptr<WebSocket> stale;
     {
       std::lock_guard<std::mutex> lock(ready_socket_mutex_);
+      const int64_t age_ms =
+          (esp_timer_get_time() - ready_socket_opened_us_) / 1000;
       already_ready = ready_websocket_ && ready_websocket_->IsConnected() &&
                       ready_config_generation_ == config_generation_.load() &&
-                      ready_turn_generation_ == turn_generation_.load();
+                      age_ms < kReadySocketMaxAgeMs;
       if (ready_websocket_ && !already_ready) {
         stale = std::move(ready_websocket_);
         ready_config_generation_ = 0;
-        ready_turn_generation_ = 0;
         ready_socket_generation_ = 0;
+        ready_socket_opened_us_ = 0;
       }
     }
     if (stale) {
@@ -587,13 +615,13 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
 
     if (socket) {
       std::lock_guard<std::mutex> lock(ready_socket_mutex_);
-      if (running_.load() && !abort_.load() && !ready_websocket_ &&
-          snapshot.config_generation == config_generation_.load() &&
-          snapshot.turn_generation == turn_generation_.load()) {
+      // Khong xet turn: mot socket vua bat tay xong van dung duoc cho turn moi.
+      if (running_.load() && !ready_websocket_ &&
+          snapshot.config_generation == config_generation_.load()) {
         ready_websocket_ = std::move(socket);
         ready_config_generation_ = snapshot.config_generation;
-        ready_turn_generation_ = snapshot.turn_generation;
         ready_socket_generation_ = snapshot.socket_generation;
+        ready_socket_opened_us_ = esp_timer_get_time();
       }
     }
     if (socket) {
@@ -612,11 +640,11 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
   vTaskDelete(nullptr);
 }
 
-bool DeviceTtsClient::SynthesizeOne(const std::string &body) {
+bool DeviceTtsClient::SynthesizeOne(const std::string &body,
+                                    uint32_t synthesis_generation) {
   const AudioTraceContext trace = GetActiveTrace();
-  const uint32_t synthesis_generation = turn_generation_.load();
   LogAudioTraceEvent("connect_begin", trace);
-  if (!EnsureConnected()) {
+  if (!EnsureConnected(synthesis_generation)) {
     return false;
   }
   if (abort_.load() ||

@@ -128,12 +128,26 @@ private:
    */
   static constexpr int kDrainGraceMs = 300;
 
+  /**
+   * Tuoi toi da cua socket warm chua dung. Do 09/08 cho thay socket warm song
+   * qua ranh gioi turn tiet kiem ~1,6s cho cau dau moi turn, nhung giu qua lau
+   * thi gap TCP nua song: `IsConnected()` van true, gui SSML vao do khong bao
+   * gio co byte tra ve va phai an tron `kNoAudioTimeoutMs`. 120s du cho khoang
+   * nghi giua hai luot va van nam trong khoi token 5 phut cua nha cung cap.
+   */
+  static constexpr int64_t kReadySocketMaxAgeMs = 120 * 1000;
+
   bool EnsureStarted();
-  bool EnsureConnected();
+  /**
+   * @param segment_generation `turn_generation_` luc segment duoc xep hang.
+   *        Moi vong cho/bat tay phai bo ngay khi generation hien tai da khac:
+   *        `abort_` KHONG dung duoc lam tin hieu huy vi `Enqueue()` xoa no.
+   */
+  bool EnsureConnected(uint32_t segment_generation);
   bool HasQueuedSentence();
   void CloseSocket();
   void CloseReadySocket();
-  bool SynthesizeOne(const std::string &body);
+  bool SynthesizeOne(const std::string &body, uint32_t synthesis_generation);
   void HandleData(const char *data, size_t len, bool binary);
   void RequestPreconnect();
   void PreconnectTaskRoutine();
@@ -143,7 +157,6 @@ private:
     std::string config_frame;
     std::vector<std::pair<std::string, std::string>> headers;
     uint32_t config_generation = 0;
-    uint32_t turn_generation = 0;
     uint32_t socket_generation = 0;
   };
 
@@ -155,6 +168,8 @@ private:
   struct QueuedTtsSegment {
     std::string body;
     AudioTraceContext trace;
+    /** `turn_generation_` luc xep hang -- cau cua turn da abort khong duoc doc. */
+    uint32_t turn_generation = 0;
   };
 
   AudioTraceContext GetActiveTrace();
@@ -184,7 +199,9 @@ private:
   std::atomic<bool> running_{true};
   std::atomic<bool> abort_{false};
   std::atomic<bool> synthesizing_{false};
-  // Tang moi lan Abort de socket warm cua turn cu khong lot sang turn moi.
+  // Tang moi lan Abort. Day la tin hieu HUY duy nhat dang tin cay cho segment
+  // dang cho/dang tong hop (`abort_` bi `Enqueue()` xoa ngay sau do). KHONG
+  // dung no de danh gia socket warm -- xem chu thich o `ready_websocket_`.
   std::atomic<uint32_t> turn_generation_{1};
   std::atomic<uint32_t> next_socket_generation_{1};
   std::atomic<uint32_t> active_socket_generation_{0};
@@ -200,11 +217,16 @@ private:
 
   // Worker chi ghi slot ready; source task chi lay/move slot nay. Socket active
   // van chi do source task dong/mo, giu nguyen bat bien chong use-after-free.
+  //
+  // Socket warm SONG QUA RANH GIOI TURN co chu dich: no chua gui SSML va chua
+  // gan OnData nen khong mang danh tinh turn nao. Chi `config_generation_`
+  // (server doi URL/token) va tuoi socket moi duoc phep vo hieu hoa no. Ban cu
+  // vut socket theo `turn_generation_` -> cau dau moi turn tra lai ~1,6s TLS.
   std::mutex ready_socket_mutex_;
   std::unique_ptr<WebSocket> ready_websocket_;
   uint32_t ready_config_generation_ = 0;
-  uint32_t ready_turn_generation_ = 0;
   uint32_t ready_socket_generation_ = 0;
+  int64_t ready_socket_opened_us_ = 0;
   std::atomic<bool> preconnect_requested_{false};
   std::atomic<bool> preconnect_inflight_{false};
   EventGroupHandle_t preconnect_events_ = nullptr;

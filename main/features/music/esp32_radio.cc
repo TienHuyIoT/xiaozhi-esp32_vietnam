@@ -51,27 +51,27 @@ void Esp32Radio::Initialize(AudioCodec* codec)
 
 void Esp32Radio::InitializeRadioStations()
 {
-    /* === VOV - National channels === */
-    radio_stations_["VOV1"]         = RadioStation("VOV 1 - Thời sự",                   "https://stream.vovmedia.vn/vov-1",       "Tin tức & thời sự quốc gia",               "News/Talk",            4.5f);
-    radio_stations_["VOV2"]         = RadioStation("VOV 2 - Văn hóa & Giáo dục",        "https://stream.vovmedia.vn/vov-2",       "Văn hóa - giáo dục - xã hội",              "Culture/Education",    4.0f);
-    radio_stations_["VOV3"]         = RadioStation("VOV 3 - Âm nhạc & Giải trí",        "https://stream.vovmedia.vn/vov-3",       "Nhạc & giải trí tổng hợp",                 "Music/Entertainment",  4.4f);
-    radio_stations_["VOV5"]         = RadioStation("VOV 5 - Đối ngoại",                 "https://stream.vovmedia.vn/vov5",        "Kênh tiếng Việt & quốc tế",                "International",        4.1f);
-    
-    /* === VOV Traffic === */
-    radio_stations_["VOV_GT_HN"]    = RadioStation("VOV Giao thông Hà Nội",             "https://stream.vovmedia.vn/vovgt-hn",    "Giao thông & đời sống Hà Nội",             "Traffic",              4.7f);
-    radio_stations_["VOV_GT_HCM"]   = RadioStation("VOV Giao thông TP.HCM",             "https://stream.vovmedia.vn/vovgt-hcm",   "Giao thông & đời sống TP.HCM",             "Traffic",              4.7f);
+    // /* === VOV - National channels === */
+    // radio_stations_["VOV1"]         = RadioStation("VOV 1 - Thời sự",                   "https://stream.vovmedia.vn/vov-1",       "Tin tức & thời sự quốc gia",               "News/Talk",            4.5f);
+    // radio_stations_["VOV2"]         = RadioStation("VOV 2 - Văn hóa & Giáo dục",        "https://stream.vovmedia.vn/vov-2",       "Văn hóa - giáo dục - xã hội",              "Culture/Education",    4.0f);
+    // radio_stations_["VOV3"]         = RadioStation("VOV 3 - Âm nhạc & Giải trí",        "https://stream.vovmedia.vn/vov-3",       "Nhạc & giải trí tổng hợp",                 "Music/Entertainment",  4.4f);
+    // radio_stations_["VOV5"]         = RadioStation("VOV 5 - Đối ngoại",                 "https://stream.vovmedia.vn/vov5",        "Kênh tiếng Việt & quốc tế",                "International",        4.1f);
+    // 
+    // /* === VOV Traffic === */
+    // radio_stations_["VOV_GT_HN"]    = RadioStation("VOV Giao thông Hà Nội",             "https://stream.vovmedia.vn/vovgt-hn",    "Giao thông & đời sống Hà Nội",             "Traffic",              4.7f);
+    // radio_stations_["VOV_GT_HCM"]   = RadioStation("VOV Giao thông TP.HCM",             "https://stream.vovmedia.vn/vovgt-hcm",   "Giao thông & đời sống TP.HCM",             "Traffic",              4.7f);
 
-    /* === VOV Regional (VOV4) === */
-    radio_stations_["VOV_MEKONG"]       = RadioStation("VOV Mekong FM",                 "https://stream.vovmedia.vn/vovmekong",   "Miền Tây - Đồng bằng sông Cửu Long",       "Regional",             4.6f);
-    radio_stations_["VOV4_MIENTRUNG"]   = RadioStation("VOV4 Miền Trung",               "https://stream.vovmedia.vn/vov4mt",      "Dân tộc - Miền Trung",                      "Regional",             4.3f);
-    radio_stations_["VOV4_TAYBAC"]      = RadioStation("VOV4 Tây Bắc",                  "https://stream.vovmedia.vn/vov4tb",      "Dân tộc - Tây Bắc",                         "Regional",             4.4f);
-    radio_stations_["VOV4_DONGBAC"]     = RadioStation("VOV4 Đông Bắc",                 "https://stream.vovmedia.vn/vov4db",      "Dân tộc - Đông Bắc",                        "Regional",             4.4f);
-    radio_stations_["VOV4_TAYNGUYEN"]   = RadioStation("VOV4 Tây Nguyên",               "https://stream.vovmedia.vn/vov4tn",      "Dân tộc - Tây Nguyên",                      "Regional",             4.5f);
-    radio_stations_["VOV4_DBSCL"]       = RadioStation("VOV4 ĐBSCL",                    "https://stream.vovmedia.vn/vov4dbscl",   "Dân tộc - Đồng bằng sông Cửu Long",         "Regional",             4.5f);
-    radio_stations_["VOV4_HCM"]         = RadioStation("VOV4 TP.HCM",                   "https://stream.vovmedia.vn/vov4hcm",     "Dân tộc - TP.HCM",                          "Regional",             4.5f);
+    // /* === VOV Regional (VOV4) === */
+    // radio_stations_["VOV_MEKONG"]       = RadioStation("VOV Mekong FM",                 "https://stream.vovmedia.vn/vovmekong",   "Miền Tây - Đồng bằng sông Cửu Long",       "Regional",             4.6f);
+    // radio_stations_["VOV4_MIENTRUNG"]   = RadioStation("VOV4 Miền Trung",               "https://stream.vovmedia.vn/vov4mt",      "Dân tộc - Miền Trung",                      "Regional",             4.3f);
+    // radio_stations_["VOV4_TAYBAC"]      = RadioStation("VOV4 Tây Bắc",                  "https://stream.vovmedia.vn/vov4tb",      "Dân tộc - Tây Bắc",                         "Regional",             4.4f);
+    // radio_stations_["VOV4_DONGBAC"]     = RadioStation("VOV4 Đông Bắc",                 "https://stream.vovmedia.vn/vov4db",      "Dân tộc - Đông Bắc",                        "Regional",             4.4f);
+    // radio_stations_["VOV4_TAYNGUYEN"]   = RadioStation("VOV4 Tây Nguyên",               "https://stream.vovmedia.vn/vov4tn",      "Dân tộc - Tây Nguyên",                      "Regional",             4.5f);
+    // radio_stations_["VOV4_DBSCL"]       = RadioStation("VOV4 ĐBSCL",                    "https://stream.vovmedia.vn/vov4dbscl",   "Dân tộc - Đồng bằng sông Cửu Long",         "Regional",             4.5f);
+    // radio_stations_["VOV4_HCM"]         = RadioStation("VOV4 TP.HCM",                   "https://stream.vovmedia.vn/vov4hcm",     "Dân tộc - TP.HCM",                          "Regional",             4.5f);
 
-    /* === VOV English === */
-    radio_stations_["VOV5_ENGLISH"]     = RadioStation("VOV 5 – English 24/7",          "https://stream.vovmedia.vn/vov247",      "Kênh tiếng Anh quốc tế",                   "International",        4.0f);
+    // /* === VOV English === */
+    // radio_stations_["VOV5_ENGLISH"]     = RadioStation("VOV 5 – English 24/7",          "https://stream.vovmedia.vn/vov247",      "Kênh tiếng Anh quốc tế",                   "International",        4.0f);
 
     ESP_LOGI(TAG, "Initialised %d radio stations", (int)radio_stations_.size());
 }

@@ -83,6 +83,36 @@ void Protocol::SendMcpMessage(const std::string& payload) {
     SendText(message);
 }
 
+void Protocol::SendTtsSegmentFailed(const char* turn_id,
+                                    const char* segment_id,
+                                    const char* reason) {
+    if (turn_id == nullptr || segment_id == nullptr || reason == nullptr) {
+        return;
+    }
+    // `segment_id` la thu duy nhat cho server biet doc bu cau nao; "-" la gia tri
+    // mac dinh cua AudioTraceContext khi chua co danh tinh -> gui di cung bi server
+    // vut, chi ton mot roundtrip.
+    if (segment_id[0] == '\0' || strcmp(segment_id, "-") == 0 ||
+        turn_id[0] == '\0' || strcmp(turn_id, "-") == 0) {
+        return;
+    }
+    cJSON* root = cJSON_CreateObject();
+    if (root == nullptr) {
+        return;
+    }
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "tts_segment_failed");
+    cJSON_AddStringToObject(root, "turn_id", turn_id);
+    cJSON_AddStringToObject(root, "segment_id", segment_id);
+    cJSON_AddStringToObject(root, "reason", reason);
+    char* message = cJSON_PrintUnformatted(root);
+    if (message != nullptr) {
+        SendText(message);
+        cJSON_free(message);
+    }
+    cJSON_Delete(root);
+}
+
 void Protocol::SendAudioPlaybackState(const char* state,
                                       const char* turn_id,
                                       const char* segment_id,

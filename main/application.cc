@@ -591,6 +591,9 @@ if (ota.HasWebsocketConfig()) {
         // Capability/config chi co gia tri trong mot WebSocket session. Thu hoi
         // truoc connect de backend cu khong nhan ACK va bien no thanh loi be.
         playback_ack_enabled_.store(false);
+        // T1: capability cung chi song trong mot phien. Backend cu khong khai
+        // `device_tts_fallback` -> giu false thi khong bao gio gui nham.
+        device_tts_fallback_enabled_.store(false);
         playback_ack_session_epoch_.fetch_add(1);
         std::lock_guard<std::mutex> lock(audio_playback_state_mutex_);
         audio_playback_state_head_ = 0;
@@ -620,6 +623,34 @@ if (ota.HasWebsocketConfig()) {
     device_tts_client_->OnIdle([this]() {
         Schedule([this]() { CheckSpeakingFinished(); });
     });
+    // T1 — cau tong hop hong thi bao server doc bu, thay vi de be nghe khoang lang.
+    device_tts_client_->OnSegmentFailed(
+        [this](const std::string& turn_id, const std::string& segment_id,
+               const char* reason) {
+            // BAT BIEN: backend cu KHONG biet type `tts_segment_failed` -> no cho
+            // goi roi xuong nhanh `payload = raw_text` va nguyen cuc JSON thanh
+            // "loi be" gui vao LLM (dung loi MCP 18/07). Chi gui khi server da khai
+            // `device_tts_fallback` trong `interaction_config`.
+            if (!device_tts_fallback_enabled_.load()) {
+                return;
+            }
+            // Callback nay no tren task nguon cua DeviceTtsClient (hoac task goi
+            // Enqueue), khong phai main task -> hop ve main task moi duoc dung
+            // protocol_. Copy chuoi vao lambda vi trace se doi sang cau khac ngay.
+            std::string safe_turn_id = turn_id;
+            std::string safe_segment_id = segment_id;
+            const char* safe_reason = reason;
+            Schedule([this, safe_turn_id, safe_segment_id, safe_reason]() {
+                // Kenh co the da dong trong luc cho main task chay.
+                if (protocol_ == nullptr ||
+                    !device_tts_fallback_enabled_.load()) {
+                    return;
+                }
+                protocol_->SendTtsSegmentFailed(safe_turn_id.c_str(),
+                                                safe_segment_id.c_str(),
+                                                safe_reason);
+            });
+        });
 
     protocol_->OnIncomingJson([this, display](const cJSON* root) {
         // Parse JSON data
@@ -644,6 +675,19 @@ if (ota.HasWebsocketConfig()) {
             playback_ack_enabled_.store(enabled);
             ESP_LOGI(TAG, "Playback acknowledgement: %s",
                      enabled ? "enabled" : "disabled");
+            // T1 — co RIENG: server co the bat ack ma chua bat fallback (va nguoc
+            // lai). Thieu field = backend cu = phai TAT, khong duoc suy tu
+            // `playback_ack`.
+            const cJSON* device_tts_fallback =
+                cJSON_GetObjectItem(root, "device_tts_fallback");
+            const bool fallback_enabled =
+                cJSON_IsNumber(version) && version->valueint == 1 &&
+                version->valuedouble == 1.0 &&
+                cJSON_IsBool(device_tts_fallback) &&
+                cJSON_IsTrue(device_tts_fallback);
+            device_tts_fallback_enabled_.store(fallback_enabled);
+            ESP_LOGI(TAG, "Device TTS fallback report: %s",
+                     fallback_enabled ? "enabled" : "disabled");
             return;
         } else if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");

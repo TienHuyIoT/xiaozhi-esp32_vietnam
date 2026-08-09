@@ -85,6 +85,17 @@ public:
                                 const char* segment_id,
                                 const char* audio_source,
                                 uint32_t generation);
+    /**
+     * T1 — bao server biet mot cau device TTS tong hop hong de server doc bu.
+     *
+     * Khac `SendAudioPlaybackState`: `segment_id` BAT BUOC (hong luon gan voi dung
+     * mot cau) va khong co `generation` (cau chua bao gio den duong phat).
+     * ⚠️ Nguoi goi phai tu gac capability `device_tts_fallback`: backend cu khong
+     * biet type nay se coi nguyen cuc JSON la loi be.
+     */
+    void SendTtsSegmentFailed(const char* turn_id,
+                              const char* segment_id,
+                              const char* reason);
 
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;

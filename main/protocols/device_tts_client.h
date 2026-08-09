@@ -90,6 +90,28 @@ public:
    */
   void OnIdle(std::function<void()> callback) { on_idle_ = std::move(callback); }
 
+  /**
+   * T1 — mot cau tong hop hong, be se khong nghe gi neu khong ai doc bu.
+   *
+   * Do 09/08 tren robot COM5: 34 cau gui di, 27 cau ra tieng. Truoc day firmware
+   * chi ESP_LOGW roi di tiep nen server khong he biet.
+   *
+   * ⚠️ Callback no tren TASK NGUON (hoac task cua Application voi
+   * `stream_start_failed`), KHONG phai main task -- nguoi nhan phai tu hop ve
+   * main task truoc khi dung WebSocket.
+   *
+   * @param reason mot trong 4 chuoi tinh: "connect_failed", "no_audio_timeout",
+   *        "stream_start_failed", "synthesis_failed". Phai khop allowlist cua
+   *        backend (`_TTS_SEGMENT_FAILURE_REASONS`), lech chinh ta thi server vut
+   *        im lang.
+   */
+  void OnSegmentFailed(
+      std::function<void(const std::string &turn_id,
+                         const std::string &segment_id, const char *reason)>
+          callback) {
+    on_segment_failed_ = std::move(callback);
+  }
+
   /** Dung han, dong socket. Goi khi ket thuc phien / tat may. */
   void Shutdown();
 
@@ -242,6 +264,26 @@ private:
   std::atomic<bool> preconnect_task_exited_{true};
 
   std::function<void()> on_idle_;
+  std::function<void(const std::string &turn_id, const std::string &segment_id,
+                     const char *reason)>
+      on_segment_failed_;
+
+  /**
+   * T1 — nguyen nhan hong cua cau DANG tong hop, hoac nullptr = chua hong.
+   *
+   * Chi chua con tro toi chuoi hang (immortal) nen doc/ghi cheo task an toan ma
+   * khong can khoa: `stream_start_failed` duoc ghi tu task nhan cua WebSocket,
+   * cac ly do con lai tu task nguon.
+   *
+   * nullptr sau khi `SynthesizeOne` tra false = cau bi HUY CO Y (abort / doi
+   * generation / tat may), KHONG phai hong -> khong duoc bao len server.
+   */
+  std::atomic<const char *> failure_reason_{nullptr};
+  /** Nguyen nhan dau tien thang: watchdog no sau khong duoc de len that bai goc. */
+  void SetFailureReasonIfUnset(const char *reason) {
+    const char *expected = nullptr;
+    failure_reason_.compare_exchange_strong(expected, reason);
+  }
 };
 
 #endif // DEVICE_TTS_CLIENT_H

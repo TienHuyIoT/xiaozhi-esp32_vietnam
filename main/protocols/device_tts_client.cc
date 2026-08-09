@@ -160,6 +160,12 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body,
   RequestPreconnect();
   if (!EnsureStarted()) {
     ESP_LOGE(TAG, "khong bat duoc duong phat -> be se khong nghe gi");
+    // T1: khong co task nguon thi cau nay nam chet trong hang doi, `SynthesizeOne`
+    // khong bao gio chay -> phai bao ngay tai day chu khong doi vong lap.
+    if (on_segment_failed_) {
+      on_segment_failed_(queued_trace.turn_id, queued_trace.segment_id,
+                         "stream_start_failed");
+    }
   }
 }
 
@@ -303,6 +309,13 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
     CloseSocket();
     if (!ok) {
       ESP_LOGW(TAG, "tong hop cau that bai; cau sau se dung socket warm/fallback");
+      // T1: bao len server de no doc bu. `failure_reason_` == nullptr nghia la cau
+      // bi HUY CO Y (abort / doi turn / tat may) -- khong co gi de doc bu, va bao
+      // len se lam server doc lai cau ma be vua co tinh cat.
+      const char *reason = failure_reason_.load();
+      if (reason != nullptr && on_segment_failed_) {
+        on_segment_failed_(segment.trace.turn_id, segment.trace.segment_id, reason);
+      }
     }
 
     if (!HasQueuedSentence()) {
@@ -684,8 +697,12 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
 bool DeviceTtsClient::SynthesizeOne(const std::string &body,
                                     uint32_t synthesis_generation) {
   const AudioTraceContext trace = GetActiveTrace();
+  // T1: moi cau bat dau lai tu "chua hong". Cac nhanh abort/doi generation co y
+  // KHONG dat ly do -- nullptr o cuoi nghia la huy co y, khong phai hong.
+  failure_reason_.store(nullptr);
   LogAudioTraceEvent("connect_begin", trace);
   if (!EnsureConnected(synthesis_generation)) {
+    SetFailureReasonIfUnset("connect_failed");
     return false;
   }
   if (abort_.load() ||
@@ -702,6 +719,7 @@ bool DeviceTtsClient::SynthesizeOne(const std::string &body,
   // ota.cc cong timezone_offset vao epoch truoc khi settimeofday().
   if (!websocket_->Send(body)) {
     ESP_LOGE(TAG, "gui cau that bai");
+    SetFailureReasonIfUnset("synthesis_failed");
     return false;
   }
 
@@ -723,15 +741,18 @@ bool DeviceTtsClient::SynthesizeOne(const std::string &body,
     }
     if (!websocket_->IsConnected()) {
       ESP_LOGW(TAG, "socket dut giua cau");
+      SetFailureReasonIfUnset("synthesis_failed");
       return false;
     }
     const TickType_t now = xTaskGetTickCount();
     if ((now - last_data_tick_.load()) > no_data_timeout) {
       ESP_LOGE(TAG, "watchdog: %dms khong nhan them du lieu", kNoAudioTimeoutMs);
+      SetFailureReasonIfUnset("no_audio_timeout");
       return false;
     }
     if ((now - started) > total_timeout) {
       ESP_LOGE(TAG, "watchdog: qua han ca cau");
+      SetFailureReasonIfUnset("no_audio_timeout");
       return false;
     }
     vTaskDelay(pdMS_TO_TICKS(20));

@@ -258,6 +258,10 @@ private:
     uint32_t speech_audio_generation_ = 0;
     // Observer playback chi day metadata vao ring co tran; main task moi gui WS.
     std::atomic<bool> playback_ack_enabled_{false};
+    // T1 — server co hieu `tts_segment_failed` khong. Co RIENG, khong dung chung
+    // `playback_ack_enabled_`: hai tinh nang, hai co doc lap o backend, va bat
+    // nham dong nghia gui message toi backend cu -> no coi la loi be.
+    std::atomic<bool> device_tts_fallback_enabled_{false};
     std::atomic<uint32_t> playback_ack_session_epoch_{0};
     std::atomic<uint32_t> next_server_opus_trace_sequence_{1};
     std::atomic<uint32_t> server_opus_completed_generation_{0};

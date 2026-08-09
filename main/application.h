@@ -11,6 +11,8 @@
 #include <deque>
 #include <memory>
 #include <cstdint>
+#include <atomic>
+#include <array>
 
 #include "protocol.h"
 #include "ota.h"
@@ -42,6 +44,8 @@ namespace spectrum { class SpectrumManager; }
 #define MAIN_EVENT_ERROR (1 << 4)
 #define MAIN_EVENT_CHECK_NEW_VERSION_DONE (1 << 5)
 #define MAIN_EVENT_CLOCK_TICK (1 << 6)
+#define MAIN_EVENT_AUDIO_PLAYBACK_STATE (1 << 7)
+#define MAIN_EVENT_SERVER_OPUS_FINISHED (1 << 8)
 
 
 enum AecMode {
@@ -209,6 +213,26 @@ private:
         uint32_t generation = 0;
     };
 
+    enum class AudioPlaybackStateKind : uint8_t {
+        kQueued = 0,
+        kStarted,
+        kFinished,
+        kAborted,
+        kDroppedStale,
+    };
+
+    static constexpr size_t kAudioPlaybackFieldCapacity = 65;
+    struct AudioPlaybackState {
+        AudioPlaybackStateKind state = AudioPlaybackStateKind::kQueued;
+        std::array<char, kAudioPlaybackFieldCapacity> turn_id{};
+        std::array<char, kAudioPlaybackFieldCapacity> segment_id{};
+        std::array<char, kAudioPlaybackFieldCapacity> audio_source{};
+        uint32_t generation = 0;
+        uint32_t session_epoch = 0;
+    };
+
+    static constexpr size_t kAudioPlaybackStateRingCapacity = 16;
+
     Application();
     ~Application();
 
@@ -232,6 +256,17 @@ private:
     SpeechAudioSource speech_audio_source_ = SpeechAudioSource::kNone;
     std::string speech_audio_turn_id_;
     uint32_t speech_audio_generation_ = 0;
+    // Observer playback chi day metadata vao ring co tran; main task moi gui WS.
+    std::atomic<bool> playback_ack_enabled_{false};
+    std::atomic<uint32_t> playback_ack_session_epoch_{0};
+    std::atomic<uint32_t> next_server_opus_trace_sequence_{1};
+    std::atomic<uint32_t> server_opus_completed_generation_{0};
+    std::mutex audio_playback_state_mutex_;
+    std::array<AudioPlaybackState, kAudioPlaybackStateRingCapacity>
+        audio_playback_state_ring_{};
+    size_t audio_playback_state_head_ = 0;
+    size_t audio_playback_state_count_ = 0;
+    std::atomic<uint32_t> audio_playback_state_drop_count_{0};
     std::mutex audio_trace_mutex_;
     AudioTraceContext active_audio_trace_;
     std::string audio_trace_source_ = "none";
@@ -294,6 +329,10 @@ private:
         const SpeechAudioLease& lease,
         const std::string& body,
         const AudioTraceContext& trace);
+    void ObserveAudioTrace(const char* event, const char* action,
+                           const AudioTraceContext& trace);
+    void DrainAudioPlaybackStates();
+    void HandleServerOpusPlaybackFinished();
     void RevokeSpeechAudio();
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();

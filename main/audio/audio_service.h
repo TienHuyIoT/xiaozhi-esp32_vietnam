@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <mutex>
+#include <array>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -22,6 +23,7 @@
 #include "processors/audio_debugger.h"
 #include "wake_word.h"
 #include "protocol.h"
+#include "features/music/audio_stream_player.h"
 
 #include "high_pass_filter.h"
 
@@ -61,6 +63,7 @@ struct AudioServiceCallbacks {
     std::function<void(const std::string&)> on_wake_word_detected;
     std::function<void(bool)> on_vad_change;
     std::function<void(void)> on_audio_testing_queue_full;
+    std::function<void(uint32_t)> on_server_opus_playback_finished;
 };
 
 
@@ -74,6 +77,7 @@ struct AudioTask {
     AudioTaskType type;
     std::vector<int16_t> pcm;
     uint32_t timestamp;
+    uint32_t audio_trace_sequence = 0;
 };
 
 struct DebugStatistics {
@@ -112,6 +116,9 @@ public:
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
     void ResetDecoder();
+    bool RegisterServerOpusTrace(const AudioTraceContext& trace);
+    void RequestServerOpusTraceFinish();
+    bool IsServerOpusPlaybackBusy();
     void UpdateOutputTimestamp();
     void SetModelsList(srmodel_list_t* models_list);
     void SetHighPassFilter(HighPassFilter* high_pass_filter) { high_pass_filter_ = high_pass_filter; }
@@ -161,6 +168,19 @@ private:
     uint32_t audio_decode_generation_ = 0;
     bool audio_decode_in_flight_ = false;
     bool audio_output_in_flight_ = false;
+    static constexpr size_t kMaxServerOpusTraceSlots = 16;
+    struct ServerOpusTraceSlot {
+        bool used = false;
+        AudioTraceContext trace;
+    };
+    std::array<ServerOpusTraceSlot, kMaxServerOpusTraceSlots>
+        server_opus_trace_slots_{};
+    uint32_t active_server_opus_trace_sequence_ = 0;
+    uint32_t latest_server_opus_trace_sequence_ = 0;
+    uint32_t server_opus_playback_generation_ = 0;
+    int64_t server_opus_last_pcm_timestamp_us_ = 0;
+    bool server_opus_finish_requested_ = false;
+    bool server_opus_trace_event_in_flight_ = false;
     // For server AEC
     std::deque<uint32_t> timestamp_queue_;
 
@@ -179,6 +199,10 @@ private:
     void OpusCodecTask();
     void PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm);
     void SetDecodeSampleRate(int sample_rate, int frame_duration);
+    ServerOpusTraceSlot* FindServerOpusTraceLocked(uint32_t trace_sequence);
+    void MaybeFinishServerOpusTraceLocked(
+        std::unique_lock<std::mutex>& lock);
+    void ClearServerOpusTracesLocked();
     void CheckAndUpdateAudioPowerState();
 };
 

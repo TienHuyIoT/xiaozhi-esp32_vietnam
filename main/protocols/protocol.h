@@ -15,6 +15,8 @@ struct AudioStreamPacket {
     // nay additive de firmware moi van nhan duoc backend cu gui Opus raw.
     uint64_t speech_turn_token = 0;
     bool speech_turn_token_present = false;
+    // Correlation noi bo metadata-only; khong duoc serialize vao frame wire.
+    uint32_t audio_trace_sequence = 0;
     std::vector<uint8_t> payload;
 };
 
@@ -61,6 +63,7 @@ public:
 
     void OnIncomingAudio(std::function<void(std::unique_ptr<AudioStreamPacket> packet)> callback);
     void OnIncomingJson(std::function<void(const cJSON* root)> callback);
+    void OnAudioChannelOpening(std::function<void()> callback);
     void OnAudioChannelOpened(std::function<void()> callback);
     void OnAudioChannelClosed(std::function<void()> callback);
     void OnNetworkError(std::function<void(const std::string& message)> callback);
@@ -77,10 +80,16 @@ public:
     virtual void SendStopListening();
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
+    void SendAudioPlaybackState(const char* state,
+                                const char* turn_id,
+                                const char* segment_id,
+                                const char* audio_source,
+                                uint32_t generation);
 
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;
     std::function<void(std::unique_ptr<AudioStreamPacket> packet)> on_incoming_audio_;
+    std::function<void()> on_audio_channel_opening_;
     std::function<void()> on_audio_channel_opened_;
     std::function<void()> on_audio_channel_closed_;
     std::function<void(const std::string& message)> on_network_error_;

@@ -29,6 +29,13 @@ namespace {
 constexpr size_t kMaxAudioTraceFieldLength = 64;
 constexpr int64_t kAudioTraceFinishQuietUs = 100 * 1000;
 std::atomic<uint32_t> audio_trace_event_sequence{1};
+AudioTraceObserver audio_trace_observer_;
+}
+
+void SetAudioTraceObserver(AudioTraceObserver observer)
+{
+    // Application dang ky mot lan truoc khi playback task phat event dau tien.
+    audio_trace_observer_ = std::move(observer);
 }
 
 std::string SanitizeAudioTraceField(const std::string& value)
@@ -47,8 +54,16 @@ std::string SanitizeAudioTraceField(const std::string& value)
     return safe.empty() ? "-" : safe;
 }
 
+void NotifyAudioTraceEvent(const char* event,
+                           const AudioTraceContext& context)
+{
+    if (audio_trace_observer_) {
+        audio_trace_observer_(event, nullptr, context);
+    }
+}
+
 void LogAudioTraceEvent(const char* event, const AudioTraceContext& context,
-                        int64_t timestamp_us)
+                        int64_t timestamp_us, bool notify_observer)
 {
     const int64_t monotonic_us =
         timestamp_us >= 0 ? timestamp_us : esp_timer_get_time();
@@ -62,6 +77,9 @@ void LogAudioTraceEvent(const char* event, const AudioTraceContext& context,
              event, static_cast<long long>(monotonic_us),
              static_cast<unsigned long>(event_sequence), turn_id.c_str(),
              segment_id.c_str(), audio_source.c_str());
+    if (notify_observer) {
+        NotifyAudioTraceEvent(event, context);
+    }
 }
 
 void LogAudioTraceQueue(const char* event, const char* action,
@@ -79,6 +97,9 @@ void LogAudioTraceQueue(const char* event, const char* action,
              static_cast<unsigned long>(event_sequence), turn_id.c_str(),
              segment_id.c_str(), audio_source.c_str(), action,
              static_cast<unsigned int>(queue_depth));
+    if (audio_trace_observer_) {
+        audio_trace_observer_(event, action, context);
+    }
 }
 
 /* ================================================================== */

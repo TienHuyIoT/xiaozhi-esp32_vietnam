@@ -101,6 +101,9 @@ void WebsocketProtocol::CloseAudioChannel() {
 }
 
 bool WebsocketProtocol::OpenAudioChannel() {
+    if (on_audio_channel_opening_ != nullptr) {
+        on_audio_channel_opening_();
+    }
     Settings settings("websocket", false);
     std::string url = settings.GetString("url");
     std::string token = settings.GetString("token");
@@ -131,6 +134,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
     // Neu rollback firmware, header bien mat va backend tu dong gui Opus raw.
     if (version_ == 1) {
         websocket_->SetHeader("Speech-Audio-Frame-Version", "1");
+        websocket_->SetHeader("Audio-State-Version", "1");
     }
     websocket_->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
     websocket_->SetHeader("Client-Id", Board::GetInstance().GetUuid().c_str());

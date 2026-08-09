@@ -320,6 +320,145 @@ void AudioService::AudioInputTask() {
     ESP_LOGW(TAG, "Audio input task stopped");
 }
 
+AudioService::ServerOpusTraceSlot* AudioService::FindServerOpusTraceLocked(
+    uint32_t trace_sequence) {
+    if (trace_sequence == 0) {
+        return nullptr;
+    }
+    for (auto& slot : server_opus_trace_slots_) {
+        if (slot.used && slot.trace.trace_sequence == trace_sequence) {
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+void AudioService::ClearServerOpusTracesLocked() {
+    for (auto& slot : server_opus_trace_slots_) {
+        slot.used = false;
+    }
+    active_server_opus_trace_sequence_ = 0;
+    latest_server_opus_trace_sequence_ = 0;
+    server_opus_playback_generation_ = 0;
+    server_opus_last_pcm_timestamp_us_ = 0;
+    server_opus_finish_requested_ = false;
+    server_opus_trace_event_in_flight_ = false;
+}
+
+void AudioService::MaybeFinishServerOpusTraceLocked(
+    std::unique_lock<std::mutex>& lock) {
+    if (!server_opus_finish_requested_ ||
+        !audio_decode_queue_.empty() || audio_decode_in_flight_ ||
+        !audio_playback_queue_.empty() || audio_output_in_flight_ ||
+        server_opus_trace_event_in_flight_) {
+        return;
+    }
+
+    const uint32_t trace_sequence =
+        active_server_opus_trace_sequence_ != 0
+            ? active_server_opus_trace_sequence_
+            : latest_server_opus_trace_sequence_;
+    const int64_t timestamp_us = server_opus_last_pcm_timestamp_us_;
+    ServerOpusTraceSlot* slot =
+        FindServerOpusTraceLocked(trace_sequence);
+    const uint32_t playback_generation =
+        slot != nullptr ? slot->trace.playback_generation
+                        : server_opus_playback_generation_;
+
+    // Giu slot song trong luc log/observer chay ngoai audio_queue_mutex_.
+    server_opus_trace_event_in_flight_ = true;
+    const AudioTraceContext* trace = slot != nullptr ? &slot->trace : nullptr;
+    if (trace != nullptr && active_server_opus_trace_sequence_ != 0 &&
+        timestamp_us > 0) {
+        lock.unlock();
+        NotifyAudioTraceEvent("last_pcm", *trace);
+        LogAudioTraceEvent("last_pcm", *trace, timestamp_us, false);
+        lock.lock();
+    }
+
+    for (auto& candidate : server_opus_trace_slots_) {
+        candidate.used = false;
+    }
+    server_opus_finish_requested_ = false;
+    active_server_opus_trace_sequence_ = 0;
+    latest_server_opus_trace_sequence_ = 0;
+    server_opus_playback_generation_ = 0;
+    server_opus_last_pcm_timestamp_us_ = 0;
+    server_opus_trace_event_in_flight_ = false;
+    audio_queue_cv_.notify_all();
+
+    // Callback chi set event bit; generation giup main task bo completion stale.
+    lock.unlock();
+    if (playback_generation != 0 &&
+        callbacks_.on_server_opus_playback_finished) {
+        callbacks_.on_server_opus_playback_finished(playback_generation);
+    }
+    lock.lock();
+}
+
+bool AudioService::RegisterServerOpusTrace(const AudioTraceContext& trace) {
+    if (trace.trace_sequence == 0 || !trace.playback_generation_present ||
+        trace.audio_source != "server_opus") {
+        return false;
+    }
+
+    size_t queue_depth = 0;
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        latest_server_opus_trace_sequence_ = trace.trace_sequence;
+        server_opus_playback_generation_ = trace.playback_generation;
+        ServerOpusTraceSlot* slot =
+            FindServerOpusTraceLocked(trace.trace_sequence);
+        if (slot == nullptr) {
+            for (auto& candidate : server_opus_trace_slots_) {
+                if (!candidate.used) {
+                    slot = &candidate;
+                    break;
+                }
+            }
+        }
+        if (slot == nullptr) {
+            return false;
+        }
+        slot->trace = trace;
+        slot->used = true;
+        for (const auto& candidate : server_opus_trace_slots_) {
+            if (candidate.used) {
+                ++queue_depth;
+            }
+        }
+    }
+    LogAudioTraceQueue("queue", "enqueue", trace, queue_depth);
+    return true;
+}
+
+void AudioService::RequestServerOpusTraceFinish() {
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    if (server_opus_playback_generation_ == 0) {
+        // Device TTS dung cung tts:stop; khong duoc cho nham queue am thanh
+        // local cua AudioService, vi se khong co server-opus completion callback.
+        server_opus_finish_requested_ = false;
+        return;
+    }
+    server_opus_finish_requested_ = true;
+    MaybeFinishServerOpusTraceLocked(lock);
+}
+
+bool AudioService::IsServerOpusPlaybackBusy() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    if (server_opus_finish_requested_ ||
+        server_opus_trace_event_in_flight_ ||
+        active_server_opus_trace_sequence_ != 0) {
+        return true;
+    }
+    for (const auto& slot : server_opus_trace_slots_) {
+        if (slot.used) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void AudioService::AudioOutputTask() {
     while (true) {
         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
@@ -332,6 +471,31 @@ void AudioService::AudioOutputTask() {
         audio_playback_queue_.pop_front();
         audio_output_in_flight_ = true;
         audio_queue_cv_.notify_all();
+        const AudioTraceContext* previous_trace = nullptr;
+        const AudioTraceContext* current_trace = nullptr;
+        uint32_t previous_trace_sequence = 0;
+        int64_t previous_last_pcm_us = 0;
+        if (task->audio_trace_sequence != 0) {
+            if (active_server_opus_trace_sequence_ !=
+                task->audio_trace_sequence) {
+                previous_trace_sequence =
+                    active_server_opus_trace_sequence_;
+                previous_last_pcm_us =
+                    server_opus_last_pcm_timestamp_us_;
+                ServerOpusTraceSlot* previous_slot =
+                    FindServerOpusTraceLocked(previous_trace_sequence);
+                if (previous_slot != nullptr && previous_last_pcm_us > 0) {
+                    previous_trace = &previous_slot->trace;
+                }
+                ServerOpusTraceSlot* current_slot =
+                    FindServerOpusTraceLocked(task->audio_trace_sequence);
+                if (current_slot != nullptr) {
+                    current_trace = &current_slot->trace;
+                }
+                active_server_opus_trace_sequence_ =
+                    task->audio_trace_sequence;
+            }
+        }
         lock.unlock();
 
         if (!codec_->output_enabled()) {
@@ -340,14 +504,44 @@ void AudioService::AudioOutputTask() {
             ESP_LOGW(TAG, "%s Enabling audio output for playback", __func__);
             codec_->EnableOutput(true);
         }
+
+        // Observer chi day fixed ring + event bit: previous finished sau frame cu
+        // va current started sat truoc call phat frame moi, khong chen ESP_LOGI.
+        const int64_t output_started_us = esp_timer_get_time();
+        if (previous_trace != nullptr) {
+            NotifyAudioTraceEvent("last_pcm", *previous_trace);
+        }
+        if (current_trace != nullptr) {
+            NotifyAudioTraceEvent("first_decoded_pcm", *current_trace);
+        }
         codec_->OutputData(task->pcm);
+        const int64_t output_finished_us = esp_timer_get_time();
 
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
         debug_statistics_.playback_count++;
 
+        // OutputData da tra ve: timestamp first ghi truoc call, nhung log/observer
+        // da notify dung mot lan, nen serial log khong chen jitter vao PCM.
+        if (previous_trace != nullptr) {
+            LogAudioTraceEvent(
+                "last_pcm", *previous_trace, previous_last_pcm_us, false);
+        }
+        if (current_trace != nullptr) {
+            LogAudioTraceEvent(
+                "first_decoded_pcm", *current_trace, output_started_us, false);
+        }
         lock.lock();
-        audio_output_in_flight_ = false;
+        if (task->audio_trace_sequence != 0) {
+            server_opus_last_pcm_timestamp_us_ = output_finished_us;
+        }
+        if (previous_trace_sequence != 0) {
+            ServerOpusTraceSlot* previous_slot =
+                FindServerOpusTraceLocked(previous_trace_sequence);
+            if (previous_slot != nullptr) {
+                previous_slot->used = false;
+            }
+        }
 
 #if CONFIG_USE_SERVER_AEC
         /* Record the timestamp for server AEC */
@@ -355,6 +549,8 @@ void AudioService::AudioOutputTask() {
             timestamp_queue_.push_back(task->timestamp);
         }
 #endif
+        audio_output_in_flight_ = false;
+        MaybeFinishServerOpusTraceLocked(lock);
         audio_queue_cv_.notify_all();
     }
 
@@ -385,6 +581,7 @@ void AudioService::OpusCodecTask() {
             auto task = std::make_unique<AudioTask>();
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
+            task->audio_trace_sequence = packet->audio_trace_sequence;
 
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             const bool decoded =
@@ -406,6 +603,7 @@ void AudioService::OpusCodecTask() {
                 ESP_LOGE(TAG, "Failed to decode audio");
             }
             audio_decode_in_flight_ = false;
+            MaybeFinishServerOpusTraceLocked(lock);
             audio_queue_cv_.notify_all();
             debug_statistics_.decode_count++;
         }
@@ -703,6 +901,7 @@ bool AudioService::IsIdle() {
 void AudioService::ResetDecoder() {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     ++audio_decode_generation_;
+    server_opus_finish_requested_ = false;
     timestamp_queue_.clear();
     audio_decode_queue_.clear();
     audio_playback_queue_.clear();
@@ -713,9 +912,11 @@ void AudioService::ResetDecoder() {
     // OutputData. Doi hai critical section do ket thuc; generation o tren dam
     // bao ket qua decode cu khong duoc day nguoc vao playback queue.
     audio_queue_cv_.wait(lock, [this]() {
-        return !audio_decode_in_flight_ && !audio_output_in_flight_;
+        return !audio_decode_in_flight_ && !audio_output_in_flight_ &&
+               !server_opus_trace_event_in_flight_;
     });
     opus_decoder_->ResetState();
+    ClearServerOpusTracesLocked();
 
     // Loai ca packet local/PlaySound neu no chen vao trong luc wait tha mutex.
     timestamp_queue_.clear();

@@ -280,6 +280,7 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
         segment.turn_generation != turn_generation_.load()) {
       // Abort() da xoa hang doi, hoac cau nay thuoc turn cu va lot qua khe hep
       // giua dequeue va cho nay. Khong duoc mo socket cho no.
+      LogAudioTraceEvent("drop_stale", segment.trace);
       continue;
     }
 

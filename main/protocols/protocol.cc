@@ -1,6 +1,7 @@
 #include "protocol.h"
 
 #include <esp_log.h>
+#include <cstring>
 
 #define TAG "Protocol"
 
@@ -10,6 +11,10 @@ void Protocol::OnIncomingJson(std::function<void(const cJSON* root)> callback) {
 
 void Protocol::OnIncomingAudio(std::function<void(std::unique_ptr<AudioStreamPacket> packet)> callback) {
     on_incoming_audio_ = callback;
+}
+
+void Protocol::OnAudioChannelOpening(std::function<void()> callback) {
+    on_audio_channel_opening_ = callback;
 }
 
 void Protocol::OnAudioChannelOpened(std::function<void()> callback) {
@@ -76,6 +81,33 @@ void Protocol::SendStopListening() {
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
     SendText(message);
+}
+
+void Protocol::SendAudioPlaybackState(const char* state,
+                                      const char* turn_id,
+                                      const char* segment_id,
+                                      const char* audio_source,
+                                      uint32_t generation) {
+    cJSON* root = cJSON_CreateObject();
+    if (root == nullptr) {
+        return;
+    }
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "audio_state");
+    cJSON_AddStringToObject(root, "state", state);
+    cJSON_AddStringToObject(root, "turn_id", turn_id);
+    if (segment_id != nullptr && segment_id[0] != '\0' &&
+        strcmp(segment_id, "-") != 0) {
+        cJSON_AddStringToObject(root, "segment_id", segment_id);
+    }
+    cJSON_AddStringToObject(root, "audio_source", audio_source);
+    cJSON_AddNumberToObject(root, "generation", generation);
+    char* message = cJSON_PrintUnformatted(root);
+    if (message != nullptr) {
+        SendText(message);
+        cJSON_free(message);
+    }
+    cJSON_Delete(root);
 }
 
 bool Protocol::IsTimeout() const {

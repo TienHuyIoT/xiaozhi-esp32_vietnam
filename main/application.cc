@@ -80,6 +80,30 @@ AudioTraceContext ReadAudioTraceContext(const cJSON* root,
     return trace;
 }
 
+template <size_t N>
+bool CopyAudioPlaybackField(std::array<char, N>& destination,
+                            const std::string& value,
+                            bool allow_missing) {
+    if (value.empty() || value == "-") {
+        destination[0] = '\0';
+        return allow_missing;
+    }
+    if (value.size() >= N) {
+        destination[0] = '\0';
+        return false;
+    }
+    for (size_t index = 0; index < value.size(); ++index) {
+        const unsigned char c = static_cast<unsigned char>(value[index]);
+        const bool allowed =
+            (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' ||
+            c == ':';
+        destination[index] = allowed ? static_cast<char>(c) : '_';
+    }
+    destination[value.size()] = '\0';
+    return true;
+}
+
 uint64_t AudioTurnToken(const std::string& turn_id) {
     // FNV-1a 64-bit: cung thuat toan voi backend, khong can dua UUID/text day du
     // vao tung frame. Token chi de correlation/loai frame den muon, khong la secret.
@@ -94,6 +118,11 @@ uint64_t AudioTurnToken(const std::string& turn_id) {
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
+    SetAudioTraceObserver(
+        [this](const char* event, const char* action,
+               const AudioTraceContext& trace) {
+            ObserveAudioTrace(event, action, trace);
+        });
 
 #if CONFIG_USE_DEVICE_AEC && CONFIG_USE_SERVER_AEC
 #error "CONFIG_USE_DEVICE_AEC and CONFIG_USE_SERVER_AEC cannot be enabled at the same time"
@@ -452,6 +481,12 @@ void Application::Start() {
     callbacks.on_vad_change = [this](bool speaking) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
+    callbacks.on_server_opus_playback_finished =
+        [this](uint32_t playback_generation) {
+            server_opus_completed_generation_.store(playback_generation);
+            xEventGroupSetBits(
+                event_group_, MAIN_EVENT_SERVER_OPUS_FINISHED);
+        };
     audio_service_.SetCallbacks(callbacks);
 
     // Start the main event loop task with priority 3
@@ -552,6 +587,15 @@ if (ota.HasWebsocketConfig()) {
             AcceptServerOpusPacket(std::move(packet));
         }
     });
+    protocol_->OnAudioChannelOpening([this]() {
+        // Capability/config chi co gia tri trong mot WebSocket session. Thu hoi
+        // truoc connect de backend cu khong nhan ACK va bien no thanh loi be.
+        playback_ack_enabled_.store(false);
+        playback_ack_session_epoch_.fetch_add(1);
+        std::lock_guard<std::mutex> lock(audio_playback_state_mutex_);
+        audio_playback_state_head_ = 0;
+        audio_playback_state_count_ = 0;
+    });
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
         board.SetPowerSaveMode(false);
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
@@ -588,8 +632,20 @@ if (ota.HasWebsocketConfig()) {
                 device_tts_client_->Configure(root);
             }
             return;
-        }
-        if (strcmp(type->valuestring, "tts") == 0) {
+        } else if (strcmp(type->valuestring, "interaction_config") == 0) {
+            const cJSON* version = cJSON_GetObjectItem(root, "version");
+            const cJSON* playback_ack =
+                cJSON_GetObjectItem(root, "playback_ack");
+            const bool enabled =
+                cJSON_IsNumber(version) && version->valueint == 1 &&
+                version->valuedouble == 1.0 &&
+                cJSON_IsBool(playback_ack) && cJSON_IsTrue(playback_ack);
+            // Message thieu/hong phai thu hoi ack dang bat; field M2/M3 duoc bo qua.
+            playback_ack_enabled_.store(enabled);
+            ESP_LOGI(TAG, "Playback acknowledgement: %s",
+                     enabled ? "enabled" : "disabled");
+            return;
+        } else if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
@@ -600,22 +656,13 @@ if (ota.HasWebsocketConfig()) {
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
+                // WebSocket bao da gui het Opus; AudioService chi ket thuc trace
+                // sau frame PCM cuoi that su ra loa.
+                audio_service_.RequestServerOpusTraceFinish();
                 Schedule([this]() {
                     tts_stop_received_ = true;
-                    // Duong TTS thiet bi: server gui `tts:stop` ngay sau cau cuoi
-                    // vi no khong con nhin thay tieng nua. Phai doi tieng phat het
-                    // roi moi doi trang thai, khong thi cau cuoi bi cat cut.
-                    if (device_tts_client_ && device_tts_client_->IsConfigured()) {
-                        CheckSpeakingFinished();
-                        return;
-                    }
-                    if (device_state_ == kDeviceStateSpeaking) {
-                        if (listening_mode_ == kListeningModeManualStop) {
-                            SetDeviceState(kDeviceStateIdle);
-                        } else {
-                            SetDeviceState(kDeviceStateListening);
-                        }
-                    }
+                    // Ca Device TTS va server Opus deu phai bao PCM da drain.
+                    CheckSpeakingFinished();
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 // `tts_body` la cong tac MOI CAU: co no thi robot tu lay tieng,
@@ -625,27 +672,58 @@ if (ota.HasWebsocketConfig()) {
                 auto tts_body = cJSON_GetObjectItem(root, "tts_body");
                 const bool has_device_tts_body =
                     cJSON_IsString(tts_body) && tts_body->valuestring != nullptr;
-                const AudioTraceContext trace = ReadAudioTraceContext(
+                AudioTraceContext trace = ReadAudioTraceContext(
                     root,
                     has_device_tts_body ? "device_tts" : "server_opus");
+                if (!has_device_tts_body) {
+                    trace.trace_sequence =
+                        next_server_opus_trace_sequence_.fetch_add(1);
+                    if (trace.trace_sequence == 0) {
+                        trace.trace_sequence =
+                            next_server_opus_trace_sequence_.fetch_add(1);
+                    }
+                }
                 LogAudioTraceEvent("json_receive", trace);
                 const SpeechAudioLease lease = TransitionSpeechAudio(trace);
+                // Dong dau lease vao context: last_pcm cua segment cu co the den
+                // sau khi global owner da tang generation cho turn moi.
+                trace.playback_generation = lease.generation;
+                trace.playback_generation_present = true;
                 bool source_changed = false;
+                bool trace_committed = false;
                 {
-                    std::lock_guard<std::mutex> lock(audio_trace_mutex_);
-                    source_changed = audio_trace_source_ != trace.audio_source;
-                    audio_trace_source_ = trace.audio_source;
-                    active_audio_trace_ = trace;
+                    // Abort/reconnect khong duoc chen giua lease check va commit:
+                    // neu khong, queue ACK stale co the xuat hien sau abort.
+                    std::lock_guard<std::mutex> transition_lock(
+                        speech_audio_transition_mutex_);
+                    if (IsSpeechAudioLeaseCurrent(lease)) {
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                audio_trace_mutex_);
+                            source_changed =
+                                audio_trace_source_ != trace.audio_source;
+                            audio_trace_source_ = trace.audio_source;
+                            active_audio_trace_ = trace;
+                        }
+                        if (!has_device_tts_body) {
+                            audio_service_.RegisterServerOpusTrace(trace);
+                        }
+                        trace_committed = true;
+                    }
                 }
-                if (source_changed) {
+                if (!trace_committed) {
+                    LogAudioTraceEvent("drop_stale", trace);
+                } else if (source_changed) {
                     LogAudioTraceEvent("source_transition", trace);
                 }
 
-                if (has_device_tts_body && device_tts_client_ != nullptr) {
-                    std::string body = tts_body->valuestring;
-                    Schedule([this, body, trace, lease]() {
-                        EnqueueDeviceTtsIfLeaseCurrent(lease, body, trace);
-                    });
+                if (trace_committed) {
+                    if (has_device_tts_body && device_tts_client_ != nullptr) {
+                        std::string body = tts_body->valuestring;
+                        Schedule([this, body, trace, lease]() {
+                            EnqueueDeviceTtsIfLeaseCurrent(lease, body, trace);
+                        });
+                    }
                 }
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
@@ -815,6 +893,119 @@ if (ota.HasWebsocketConfig()) {
     }
 }
 
+void Application::ObserveAudioTrace(const char* event, const char* action,
+                                    const AudioTraceContext& trace) {
+    if (!playback_ack_enabled_.load() || event == nullptr) {
+        return;
+    }
+    const uint32_t session_epoch = playback_ack_session_epoch_.load();
+
+    AudioPlaybackState ack;
+    if (strcmp(event, "queue") == 0 && action != nullptr &&
+        strcmp(action, "enqueue") == 0) {
+        ack.state = AudioPlaybackStateKind::kQueued;
+    } else if (strcmp(event, "first_decoded_pcm") == 0) {
+        ack.state = AudioPlaybackStateKind::kStarted;
+    } else if (strcmp(event, "last_pcm") == 0) {
+        ack.state = AudioPlaybackStateKind::kFinished;
+    } else if (strcmp(event, "abort") == 0) {
+        ack.state = AudioPlaybackStateKind::kAborted;
+    } else if (strcmp(event, "drop_stale") == 0) {
+        ack.state = AudioPlaybackStateKind::kDroppedStale;
+    } else {
+        return;
+    }
+
+    if ((trace.audio_source != "device_tts" &&
+         trace.audio_source != "server_opus") ||
+        !CopyAudioPlaybackField(ack.turn_id, trace.turn_id, false) ||
+        !CopyAudioPlaybackField(ack.segment_id, trace.segment_id, true) ||
+        !CopyAudioPlaybackField(ack.audio_source, trace.audio_source, false)) {
+        return;
+    }
+    if (!trace.playback_generation_present) {
+        return;
+    }
+    ack.generation = trace.playback_generation;
+    ack.session_epoch = session_epoch;
+
+    {
+        std::unique_lock<std::mutex> lock(audio_playback_state_mutex_,
+                                          std::try_to_lock);
+        if (!lock.owns_lock() || !playback_ack_enabled_.load() ||
+            session_epoch != playback_ack_session_epoch_.load() ||
+            audio_playback_state_count_ >= kAudioPlaybackStateRingCapacity) {
+            audio_playback_state_drop_count_.fetch_add(1);
+            return;
+        }
+        const size_t tail =
+            (audio_playback_state_head_ + audio_playback_state_count_) %
+            kAudioPlaybackStateRingCapacity;
+        audio_playback_state_ring_[tail] = ack;
+        ++audio_playback_state_count_;
+    }
+    xEventGroupSetBits(event_group_, MAIN_EVENT_AUDIO_PLAYBACK_STATE);
+}
+
+void Application::DrainAudioPlaybackStates() {
+    while (true) {
+        AudioPlaybackState ack;
+        {
+            std::lock_guard<std::mutex> lock(audio_playback_state_mutex_);
+            if (audio_playback_state_count_ == 0) {
+                return;
+            }
+            ack = audio_playback_state_ring_[audio_playback_state_head_];
+            audio_playback_state_head_ =
+                (audio_playback_state_head_ + 1) %
+                kAudioPlaybackStateRingCapacity;
+            --audio_playback_state_count_;
+        }
+
+        if (!playback_ack_enabled_.load() || protocol_ == nullptr ||
+            ack.session_epoch != playback_ack_session_epoch_.load()) {
+            continue;
+        }
+        const char* state = nullptr;
+        switch (ack.state) {
+            case AudioPlaybackStateKind::kQueued:
+                state = "playback_queued";
+                break;
+            case AudioPlaybackStateKind::kStarted:
+                state = "playback_started";
+                break;
+            case AudioPlaybackStateKind::kFinished:
+                state = "playback_finished";
+                break;
+            case AudioPlaybackStateKind::kAborted:
+                state = "playback_aborted";
+                break;
+            case AudioPlaybackStateKind::kDroppedStale:
+                state = "playback_dropped_stale";
+                break;
+        }
+        protocol_->SendAudioPlaybackState(
+            state, ack.turn_id.data(), ack.segment_id.data(),
+            ack.audio_source.data(), ack.generation);
+    }
+}
+
+void Application::HandleServerOpusPlaybackFinished() {
+    const uint32_t playback_generation =
+        server_opus_completed_generation_.exchange(0);
+    if (playback_generation == 0) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(speech_audio_mutex_);
+        if (speech_audio_source_ != SpeechAudioSource::kServerOpus ||
+            speech_audio_generation_ != playback_generation) {
+            return;
+        }
+    }
+    CheckSpeakingFinished();
+}
+
 // Add a async task to MainLoop
 void Application::Schedule(std::function<void()> callback) {
     {
@@ -834,7 +1025,10 @@ void Application::MainEventLoop() {
             MAIN_EVENT_WAKE_WORD_DETECTED |
             MAIN_EVENT_VAD_CHANGE |
             MAIN_EVENT_CLOCK_TICK |
-            MAIN_EVENT_ERROR, pdTRUE, pdFALSE, portMAX_DELAY);
+            MAIN_EVENT_ERROR |
+            MAIN_EVENT_AUDIO_PLAYBACK_STATE |
+            MAIN_EVENT_SERVER_OPUS_FINISHED,
+            pdTRUE, pdFALSE, portMAX_DELAY);
 
         if (bits & MAIN_EVENT_ERROR) {
             SetDeviceState(kDeviceStateIdle);
@@ -860,6 +1054,10 @@ void Application::MainEventLoop() {
             }
         }
 
+        if (bits & MAIN_EVENT_AUDIO_PLAYBACK_STATE) {
+            DrainAudioPlaybackStates();
+        }
+
         if (bits & MAIN_EVENT_SCHEDULE) {
             std::unique_lock<std::mutex> lock(mutex_);
             auto tasks = std::move(main_tasks_);
@@ -867,6 +1065,10 @@ void Application::MainEventLoop() {
             for (auto& task : tasks) {
                 task();
             }
+        }
+
+        if (bits & MAIN_EVENT_SERVER_OPUS_FINISHED) {
+            HandleServerOpusPlaybackFinished();
         }
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
@@ -1004,6 +1206,13 @@ bool Application::AcceptServerOpusPacket(
             return false;
         }
     }
+    {
+        std::lock_guard<std::mutex> lock(audio_trace_mutex_);
+        if (active_audio_trace_.audio_source == "server_opus") {
+            packet->audio_trace_sequence =
+                active_audio_trace_.trace_sequence;
+        }
+    }
     return audio_service_.PushPacketToDecodeQueue(std::move(packet));
 }
 
@@ -1018,6 +1227,7 @@ bool Application::EnqueueDeviceTtsIfLeaseCurrent(
         !IsSpeechAudioLeaseCurrent(lease) ||
         device_tts_client_ == nullptr) {
         ESP_LOGI(TAG, "Bo segment Device TTS den muon: lease da bi thu hoi");
+        LogAudioTraceEvent("drop_stale", trace);
         return false;
     }
     device_tts_client_->Enqueue(body, trace);
@@ -1070,11 +1280,17 @@ void Application::CheckSpeakingFinished() {
     if (device_state_ != kDeviceStateSpeaking) {
         return;
     }
+    if (aborted_) {
+        return;
+    }
     if (!tts_stop_received_) {
         return; // server con dang nha cau, chua het luot
     }
     if (device_tts_client_ && device_tts_client_->IsBusy()) {
         return; // con cau trong hang doi hoac tieng chua phat het
+    }
+    if (audio_service_.IsServerOpusPlaybackBusy()) {
+        return; // Opus con decode/cho phat, chua duoc bat mic va cat duoi
     }
     SetDeviceState(listening_mode_ == kListeningModeManualStop
                        ? kDeviceStateIdle

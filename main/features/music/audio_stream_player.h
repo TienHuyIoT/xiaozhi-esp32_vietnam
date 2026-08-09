@@ -162,17 +162,31 @@ struct StreamAudioChunk {
 /** Metadata de noi cac moc audio ma khong ghi noi dung hoi thoai/payload TTS. */
 struct AudioTraceContext {
     uint32_t trace_sequence = 0;
+    uint32_t playback_generation = 0;
+    bool playback_generation_present = false;
     std::string turn_id = "-";
     std::string segment_id = "-";
     std::string audio_source = "unknown";
 };
 
+/** Observer metadata-only; callback co the chay tren playback/source task. */
+using AudioTraceObserver = std::function<void(
+    const char* event,
+    const char* action,
+    const AudioTraceContext& context)>;
+
+/** Dang ky mot observer toan cuc truoc khi cac audio worker bat dau. */
+void SetAudioTraceObserver(AudioTraceObserver observer);
+
 /** Chuan hoa truong correlation truoc khi dua vao serial log. */
 std::string SanitizeAudioTraceField(const std::string& value);
 
 /** Structured event dung dong ho monotonic cua ESP-IDF. */
+void NotifyAudioTraceEvent(const char* event,
+                           const AudioTraceContext& context);
 void LogAudioTraceEvent(const char* event, const AudioTraceContext& context,
-                        int64_t timestamp_us = -1);
+                        int64_t timestamp_us = -1,
+                        bool notify_observer = true);
 void LogAudioTraceQueue(const char* event, const char* action,
                         const AudioTraceContext& context, size_t queue_depth);
 

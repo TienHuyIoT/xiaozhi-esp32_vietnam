@@ -12,13 +12,14 @@
 
 ## 🌐 Cộng Đồng & Hỗ Trợ
 
-Tham gia cộng đồng Xiaozhi AI-IoT Vietnam để nhận hỗ trợ, chia sẻ kinh nghiệm và cập nhật tính năng mới:
+Các nhóm Zalo cũ hiện đã tạm dừng hoạt động để tái tổ chức cộng đồng.
+Nhóm mới và/hoặc Discord sẽ được công bố trong thời gian tới để hỗ trợ và tương tác tốt hơn.
 
 | Nền tảng | Link | Mô tả |
 |----------|------|-------|
-| 📱 **Website** | [xiaozhi-ai-iot.vn](https://xiaozhi-ai-iot.vn/#) | XiaoZhi AI IoT Việt Nam |
-| 📱 **Zalo** | [Tham gia nhóm](https://zalo.me/g/qlvffa015) | Nhóm hỗ trợ người mới bắt đầu |
-| 📱 **Zalo** | [Tham gia nhóm](https://zalo.me/g/fsyuiz890) | Nhóm hỗ trợ chính thức |
+| 📱 **Website** | Tạm dừng | Website đang được xây dựng lại, sẽ cập nhật trong thời gian tới |
+| 📱 **Zalo** | Tạm dừng | Các nhóm cũ đã disable, sẽ mở nhóm mới sau |
+| 💬 **Discord** | Sắp cập nhật | Dự kiến mở server Discord để thảo luận theo chủ đề |
 | 📘 **Facebook** | [Fanpage](https://www.facebook.com/XiaozhiAI.IoTVietnam/) | Xiaozhi AI-IoT Vietnam |
 | 📘 **Facebook** | [Tham gia nhóm](https://www.facebook.com/groups/2655614131443031) | Xiaozhi AI-IoT Vietnam 🇻🇳 | Cộng đồng Chia Sẻ |
 | 🎥 **YouTube** | [Xem hướng dẫn](https://youtu.be/g7Lh-LpxElU) | Video build chi tiết |
@@ -119,7 +120,7 @@ Các tính năng sau đây đang được phát triển tích cực và sẽ đ�
 | Tính năng | Mô tả | Trạng thái |
 |-----------|-------|------------|
 | 💾 **Play music from SD card** | Phát nhạc trực tiếp từ thẻ nhớ SD | ✅ https://github.com/NTC95-Xiaozhi-Esp32/Xiaozhi_NTC_SDCARD |
-| 🎬 **Play video from SD** | Phát video từ thẻ nhớ SD trên màn hình LCD | 🔨 Đang phát triển |
+| 🎬 **Play video from SD** | Đã hỗ trợ phát video từ thẻ nhớ SD trên màn hình LCD | ✅ Đã phát triển |
 | 🔊 **Phát nhạc qua Bluetooth** | Kết nối và phát nhạc qua loa Bluetooth | 🔨 Đang phát triển |
 
 ### 💰 Tích Hợp Thanh Toán & Tiện Ích Tin Tức
@@ -309,7 +310,8 @@ Bạn có thể:
 
 ## 📞 Liên Hệ
 
-- 📱 **Zalo Group**: [https://zalo.me/g/fsyuiz890](https://zalo.me/g/fsyuiz890)
+- 📱 **Zalo Group**: Tạm dừng (nhóm cũ đã disable)
+- 💬 **Discord**: Sắp cập nhật link server mới
 - 📘 **Facebook Group**: [https://www.facebook.com/share/1BhraxqFBb/](https://www.facebook.com/share/1BhraxqFBb/)
 - 💻 **GitHub Issues**: [Tạo issue mới](https://github.com/TienHuyIoT/xiaozhi-esp32_vietnam/issues)
 

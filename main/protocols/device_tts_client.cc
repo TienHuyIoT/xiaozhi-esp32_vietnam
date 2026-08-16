@@ -159,13 +159,11 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body,
   // Neu turn truoc vua abort thi worker co the chua kip mo lai socket warm.
   RequestPreconnect();
   if (!EnsureStarted()) {
-    ESP_LOGE(TAG, "khong bat duoc duong phat -> be se khong nghe gi");
-    // T1: khong co task nguon thi cau nay nam chet trong hang doi, `SynthesizeOne`
-    // khong bao gio chay -> phai bao ngay tai day chu khong doi vong lap.
-    if (on_segment_failed_) {
-      on_segment_failed_(queued_trace.turn_id, queued_trace.segment_id,
-                         "stream_start_failed");
-    }
+    // Khong co task nguon thi cau nay nam chet trong hang doi, `SynthesizeOne`
+    // khong bao gio chay -> phai ghi nhan ngay tai day chu khong doi vong lap.
+    ESP_LOGE(TAG, "khong bat duoc duong phat -> be se khong nghe gi: segment=%s "
+                  "reason=stream_start_failed",
+             queued_trace.segment_id.c_str());
   }
 }
 
@@ -309,12 +307,14 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
     CloseSocket();
     if (!ok) {
       ESP_LOGW(TAG, "tong hop cau that bai; cau sau se dung socket warm/fallback");
-      // T1: bao len server de no doc bu. `failure_reason_` == nullptr nghia la cau
-      // bi HUY CO Y (abort / doi turn / tat may) -- khong co gi de doc bu, va bao
-      // len se lam server doc lai cau ma be vua co tinh cat.
+      // `failure_reason_` == nullptr nghia la cau bi HUY CO Y (abort / doi turn /
+      // tat may), khong phai hong -- chi log khi hong that.
+      // T1 (bao len server de no doc bu) da BO 16/08: server tuyet doi khong lam
+      // TTS. Cau hong phai duoc xu ly ngay tai day, tren robot.
       const char *reason = failure_reason_.load();
-      if (reason != nullptr && on_segment_failed_) {
-        on_segment_failed_(segment.trace.turn_id, segment.trace.segment_id, reason);
+      if (reason != nullptr) {
+        ESP_LOGW(TAG, "cau hong: segment=%s reason=%s",
+                 segment.trace.segment_id.c_str(), reason);
       }
     }
 

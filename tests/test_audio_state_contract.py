@@ -460,9 +460,17 @@ def test_server_opus_completion_ve_main_task_dung_generation_va_chi_mot_lan():
         "void Application::HandleServerOpusPlaybackFinished",
         "void Application::Schedule",
     )
-    assert "speech_audio_generation_" in handler
-    assert "SpeechAudioSource::kServerOpus" in handler
+    # HOP DONG DOI 16/08 -- ghi ly do vao day chu khong phai sua test cho vua
+    # code: ban cu bat main task BO QUA completion khi lease da doi generation.
+    # Review 16/08 dem duoc do la chot #4 trong nam duong gay ket Speaking --
+    # sau mot lan doi nguon giua luot thi khong con su kien nao goi lai
+    # CheckSpeakingFinished. Bo dieu kien do an toan vi CheckSpeakingFinished
+    # doc lai trang thai SONG (tts_stop_received_, hai co busy) chu khong tin
+    # vao danh tinh cua completion. AudioService van chuyen generation qua
+    # callback de dam bao "mot lan mot" -- hai assert phia tren van khoa cho do.
+    assert "server_opus_completed_generation_" in handler
     assert "CheckSpeakingFinished();" in handler
+    assert "speech_audio_generation_ !=" not in handler
 
 
 def test_abort_reset_khong_phat_completion_stale():

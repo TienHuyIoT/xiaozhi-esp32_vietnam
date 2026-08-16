@@ -233,6 +233,19 @@ private:
 
     static constexpr size_t kAudioPlaybackStateRingCapacity = 16;
 
+    /**
+     * Watchdog thoat Speaking. Dem GIAY KHONG CO TIEN TRIEN, khong phai tong
+     * thoi gian noi -- mot luot bai hoc dai la binh thuong, cat no la lam hong.
+     *
+     * Log som (5s) vi muc dich chinh cua watchdog nay la BANG CHUNG: review
+     * 16/08 dem duoc nam chot noi tiep trong `CheckSpeakingFinished`, va hai
+     * lan va truoc do deu phai doc lai ma nguon vi serial khong noi duoc guard
+     * nao dang giu. Cuong buc muon (20s) vi phai cho DeviceTtsClient het han
+     * cua no truoc: `kNoAudioTimeoutMs` 7s va `kTotalTimeoutMinMs` 15s.
+     */
+    static constexpr int kSpeakingStallLogSeconds = 5;
+    static constexpr int kSpeakingStallTimeoutSeconds = 20;
+
     Application();
     ~Application();
 
@@ -273,6 +286,14 @@ private:
     // Server gui `tts:stop` NGAY sau cau cuoi (no khong con nhin thay tieng nua)
     // -> phai nho co nay va doi DeviceTtsClient bao het viec moi doi trang thai.
     bool tts_stop_received_ = false;
+    // Anh chup tien trien cua lan tick truoc, chi main task doc/ghi. Ba tin
+    // hieu doc lap: PCM da phat them chua, byte cua nha cung cap con ve khong,
+    // hai co busy co doi khong. Bat cu cai nao doi = con song, dem lai tu 0.
+    int speaking_stall_ticks_ = 0;
+    int64_t speaking_stall_play_time_ms_ = -1;
+    size_t speaking_stall_buffer_bytes_ = 0;
+    bool speaking_stall_device_tts_busy_ = false;
+    bool speaking_stall_opus_busy_ = false;
     Esp32Music* music_ = nullptr;
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
@@ -343,6 +364,14 @@ private:
      * Go ham nay = cau cuoi cua moi luot free chat bi cat cut.
      */
     void CheckSpeakingFinished();
+    /**
+     * Luoi cuoi cho ca LOP loi "ket Speaking": `CheckSpeakingFinished` co nam
+     * guard noi tiep nhung chi duoc goi tu ba diem su kien, nen guard nao
+     * khong nha thi khong con ai hoi lai. Ham nay chay moi giay, log dich danh
+     * guard dang chan, va cuong buc roi Speaking khi server da het luot ma
+     * robot dung yen qua lau.
+     */
+    void CheckSpeakingStall();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
 

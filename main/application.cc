@@ -999,13 +999,12 @@ void Application::HandleServerOpusPlaybackFinished() {
     if (playback_generation == 0) {
         return;
     }
-    {
-        std::lock_guard<std::mutex> lock(speech_audio_mutex_);
-        if (speech_audio_source_ != SpeechAudioSource::kServerOpus ||
-            speech_audio_generation_ != playback_generation) {
-            return;
-        }
-    }
+    // Completion cua generation CU van co nghia: duong Opus da drain xong. Ban
+    // truoc `return` o day khi lease da doi -- va do la mot trong cac duong ket
+    // Speaking, vi sau khi turn doi nguon giua chung thi khong con su kien nao
+    // goi lai `CheckSpeakingFinished`. Goi thang la an toan: ham do doc lai
+    // trang thai song (tts_stop_received_, hai co busy) chu khong tin vao danh
+    // tinh cua completion, nen mot completion stale khong the ket luan sai.
     CheckSpeakingFinished();
 }
 
@@ -1076,6 +1075,8 @@ void Application::MainEventLoop() {
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
             clock_ticks_++;
+            // Nhip mot giay san co -- khong dung timer rieng cho watchdog nay.
+            CheckSpeakingStall();
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
 
@@ -1277,6 +1278,20 @@ void Application::AbortSpeaking(AbortReason reason) {
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
     }
+
+    // Abort PHAI tu roi Speaking, khong duoc trong ai goi ho. Ba duong deu tac:
+    //   - `aborted_` chi duoc xoa o nhanh `tts:start`, ma `CheckSpeakingFinished`
+    //     lai `return` ngay khi thay co do;
+    //   - `DeviceTtsClient::SourceDataLoop` chi ban `on_idle_()` khi `!abort_`,
+    //     ma `Abort()` o tren vua dat dung co day;
+    //   - nut BOOT va ca hai duong wake-word goi ham nay roi khong doi state.
+    // Ket qua truoc day: robot dung im o Speaking, mic khong bao gio mo lai.
+    // Luat doi state giu Y HET `CheckSpeakingFinished` de hai duong khong lech.
+    if (device_state_ == kDeviceStateSpeaking) {
+        SetDeviceState(listening_mode_ == kListeningModeManualStop
+                           ? kDeviceStateIdle
+                           : kDeviceStateListening);
+    }
 }
 
 void Application::CheckSpeakingFinished() {
@@ -1295,6 +1310,73 @@ void Application::CheckSpeakingFinished() {
     if (audio_service_.IsServerOpusPlaybackBusy()) {
         return; // Opus con decode/cho phat, chua duoc bat mic va cat duoi
     }
+    SetDeviceState(listening_mode_ == kListeningModeManualStop
+                       ? kDeviceStateIdle
+                       : kDeviceStateListening);
+}
+
+void Application::CheckSpeakingStall() {
+    if (device_state_ != kDeviceStateSpeaking) {
+        speaking_stall_ticks_ = 0;
+        speaking_stall_play_time_ms_ = -1;
+        return;
+    }
+
+    const bool device_tts_busy =
+        device_tts_client_ != nullptr && device_tts_client_->IsBusy();
+    const bool opus_busy = audio_service_.IsServerOpusPlaybackBusy();
+    // Ba tin hieu tien trien doc lap. Do TIEN TRIEN chu khong do tong thoi gian
+    // o Speaking: mot luot bai hoc dai la binh thuong, cat no la lam hong.
+    const int64_t play_time_ms =
+        device_tts_client_ != nullptr ? device_tts_client_->GetPlayTimeMs() : 0;
+    const size_t buffer_bytes =
+        device_tts_client_ != nullptr ? device_tts_client_->GetBufferSize() : 0;
+
+    if (play_time_ms != speaking_stall_play_time_ms_ ||
+        buffer_bytes != speaking_stall_buffer_bytes_ ||
+        device_tts_busy != speaking_stall_device_tts_busy_ ||
+        opus_busy != speaking_stall_opus_busy_) {
+        speaking_stall_play_time_ms_ = play_time_ms;
+        speaking_stall_buffer_bytes_ = buffer_bytes;
+        speaking_stall_device_tts_busy_ = device_tts_busy;
+        speaking_stall_opus_busy_ = opus_busy;
+        speaking_stall_ticks_ = 0;
+        return;
+    }
+
+    ++speaking_stall_ticks_;
+    if (speaking_stall_ticks_ < kSpeakingStallLogSeconds ||
+        speaking_stall_ticks_ % kSpeakingStallLogSeconds != 0) {
+        return;
+    }
+
+    // Day moi la ly do chinh ham nay ton tai: noi RA guard nao dang giu, de lan
+    // ket sau khong phai doc lai ma nguon moi biet.
+    const bool turn_finished = tts_stop_received_ || aborted_;
+    ESP_LOGW(TAG,
+             "Speaking dung yen %ds: aborted=%d tts_stop=%d device_tts_busy=%d "
+             "opus_busy=%d play_ms=%lld buf=%zu",
+             speaking_stall_ticks_, aborted_ ? 1 : 0,
+             tts_stop_received_ ? 1 : 0, device_tts_busy ? 1 : 0,
+             opus_busy ? 1 : 0, (long long)play_time_ms, buffer_bytes);
+
+    // Server con dang nha cau thi im lang la viec cua server -- cuong buc luc
+    // do se lam segment ke tiep bi `EnqueueDeviceTtsIfLeaseCurrent` bo (no doi
+    // state == Speaking), tuc bien "chua ket" thanh "mat cau".
+    if (!turn_finished ||
+        speaking_stall_ticks_ < kSpeakingStallTimeoutSeconds) {
+        return;
+    }
+
+    ESP_LOGE(TAG, "Cuong buc roi Speaking sau %ds khong tien trien",
+             speaking_stall_ticks_);
+    speaking_stall_ticks_ = 0;
+    aborted_ = false;
+    tts_stop_received_ = false;
+    // Thu hoi producer truoc khi mo mic, giong AbortSpeaking. Revoke cung goi
+    // ResetDecoder -> ClearServerOpusTracesLocked, tuc xoa luon slot trace bi
+    // ro -- chinh cho lam `IsServerOpusPlaybackBusy()` ket true vinh vien.
+    RevokeSpeechAudio();
     SetDeviceState(listening_mode_ == kListeningModeManualStop
                        ? kDeviceStateIdle
                        : kDeviceStateListening);

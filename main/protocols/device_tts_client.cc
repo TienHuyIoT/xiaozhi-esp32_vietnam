@@ -295,7 +295,19 @@ void DeviceTtsClient::SourceDataLoop(const std::string & /*source*/) {
     // cua cau nay co the bi danh dau eos oan va decoder flush nua frame.
     ClearSourceSegmentComplete();
     synthesizing_ = true;
-    const bool ok = SynthesizeOne(segment.body, segment.turn_generation);
+    bool ok = SynthesizeOne(segment.body, segment.turn_generation);
+    if (!ok && ShouldRetrySegment(segment.turn_generation)) {
+      // Do 16/08: 7/33 segment bat tay xong nhung khong nhan mot byte nao, moi
+      // cai dot tron han cho roi cau bi VUT LUON -- be mat han noi dung cau do.
+      // Thu lai bien cai MAT thanh cai CHAM. Phai dong socket cu truoc, neu
+      // khong `EnsureConnected` thay `IsConnected()` con true va gui SSML vao
+      // cai xac. Dung MOT lan: hong hai lan lien la hong that.
+      ESP_LOGW(TAG, "thu lai cau tren socket moi: segment=%s reason=%s",
+               segment.trace.segment_id.c_str(),
+               failure_reason_.load() ? failure_reason_.load() : "?");
+      CloseSocket();
+      ok = SynthesizeOne(segment.body, segment.turn_generation);
+    }
     synthesizing_ = false;
     // Edge da gui turn.end -- hoac cau nay hong nen se khong con byte nao nua.
     // Bao cho task playback de decode cuoi cung duoc dat eos va nha not frame
@@ -694,6 +706,22 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
   vTaskDelete(nullptr);
 }
 
+bool DeviceTtsClient::ShouldRetrySegment(uint32_t synthesis_generation) const {
+  if (!running_.load() || abort_.load()) {
+    return false;
+  }
+  if (turn_generation_.load() != synthesis_generation) {
+    return false;
+  }
+  // Da co byte ra loa roi thi thu lai = be nghe cau do hai lan. Tha mat khuc
+  // duoi con hon doc lap.
+  if (first_provider_byte_seen_.load()) {
+    return false;
+  }
+  // nullptr = huy CO Y (abort / doi turn / tat may), khong phai hong.
+  return failure_reason_.load() != nullptr;
+}
+
 bool DeviceTtsClient::SynthesizeOne(const std::string &body,
                                     uint32_t synthesis_generation) {
   const AudioTraceContext trace = GetActiveTrace();
@@ -727,6 +755,7 @@ bool DeviceTtsClient::SynthesizeOne(const std::string &body,
   // co delay ngan de viec gui SSML va byte audio dau khong bi chen boi TLS.
   RequestPreconnect();
 
+  const TickType_t first_byte_timeout = pdMS_TO_TICKS(kFirstByteTimeoutMs);
   const TickType_t no_data_timeout = pdMS_TO_TICKS(kNoAudioTimeoutMs);
   const TickType_t total_timeout =
       pdMS_TO_TICKS(std::max<size_t>(kTotalTimeoutMinMs, body.size() * 60));
@@ -745,8 +774,16 @@ bool DeviceTtsClient::SynthesizeOne(const std::string &body,
       return false;
     }
     const TickType_t now = xTaskGetTickCount();
-    if ((now - last_data_tick_.load()) > no_data_timeout) {
-      ESP_LOGE(TAG, "watchdog: %dms khong nhan them du lieu", kNoAudioTimeoutMs);
+    // Hai giai doan, hai ban chat: cho Edge TONG HOP xong cau (do duoc ~3s, la
+    // cua nha cung cap chu khong phai cua robot) khac han cho manh byte KE TIEP
+    // cua mot dong dang chay.
+    const bool da_co_byte_dau = first_provider_byte_seen_.load();
+    const TickType_t idle_timeout =
+        da_co_byte_dau ? no_data_timeout : first_byte_timeout;
+    if ((now - last_data_tick_.load()) > idle_timeout) {
+      ESP_LOGE(TAG, "watchdog: %dms khong nhan %s",
+               da_co_byte_dau ? kNoAudioTimeoutMs : kFirstByteTimeoutMs,
+               da_co_byte_dau ? "them du lieu" : "byte dau");
       SetFailureReasonIfUnset("no_audio_timeout");
       return false;
     }

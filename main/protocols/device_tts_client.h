@@ -115,7 +115,25 @@ private:
   static constexpr int kPreconnectTaskStack = 10 * 1024;
   static constexpr EventBits_t kPreconnectWakeBit = BIT0;
 
-  /** Khong nhan them byte nao trong ngan nay -> coi nhu chet (half-open TCP). */
+  /**
+   * Han CHO BYTE DAU, tinh tu luc gui xong SSML.
+   *
+   * Do 16/08 (robot COM5, n=26): `connect_ready -> first_byte` p50 3082ms,
+   * p90 4884, **max 5377**. Doi chung tu PC cung mang, cung URL/header/SSML:
+   * p50 3281ms -- tuc ~3s nay la cua EDGE/MANG, KHONG phai cua ngan xep TLS/WS
+   * tren ESP32. Vi vay dung ha xuong 3000ms de "cho nhanh": cat o do la giet
+   * oan 14/26 cau von se ra tieng. 6000ms giet oan 0/26.
+   *
+   * Muon doi so nay thi DO lai truoc, dung suy.
+   */
+  static constexpr int kFirstByteTimeoutMs = 6000;
+
+  /**
+   * Khong nhan them byte nao trong ngan nay -> coi nhu chet (half-open TCP).
+   * Chi ap dung SAU khi da co byte dau: luc do Edge dang stream lien tuc nen
+   * mot khoang lang dai la dau hieu dut that. Chua co so do ve khoang cach
+   * giua cac byte nen giu nguyen 7000ms, khong siet mu.
+   */
   static constexpr int kNoAudioTimeoutMs = 7000;
 
   /** Toi da cho mot cau, ty le do dai text de cau dai khong bi cat oan. */
@@ -155,6 +173,17 @@ private:
   void CloseSocket();
   void CloseReadySocket();
   bool SynthesizeOne(const std::string &body, uint32_t synthesis_generation);
+  /**
+   * Cau vua hong co dang thu lai tren socket moi khong.
+   *
+   * Do 16/08: 7/33 segment bat tay xong nhung KHONG nhan mot byte nao, moi cai
+   * dot tron 7s roi cau bi VUT LUON -- be mat han noi dung cau do. Thu lai bien
+   * cai mat thanh cai cham.
+   *
+   * Chi thu lai khi CHUA co byte nao ra loa (`first_provider_byte_seen_`):
+   * thu lai giua chung = be nghe cau do hai lan.
+   */
+  bool ShouldRetrySegment(uint32_t synthesis_generation) const;
   void HandleData(const char *data, size_t len, bool binary);
   void RequestPreconnect();
   void PreconnectTaskRoutine();

@@ -70,7 +70,11 @@ def test_preconnect_khong_dong_socket_warm_khi_turn_doi():
     routine = _function(
         source,
         "void DeviceTtsClient::PreconnectTaskRoutine()",
-        "bool DeviceTtsClient::SynthesizeOne",
+        # Moc ket thuc phai la ham NGAY SAU routine. 16/08 chen
+        # `ShouldRetrySegment` vao truoc `SynthesizeOne`, va ham do dung
+        # `turn_generation_` mot cach chinh dang -> cat toi `SynthesizeOne` se
+        # nuot no vao lat va bao duong tinh gia. Bat bien khong doi.
+        "bool DeviceTtsClient::ShouldRetrySegment",
     )
 
     assert "config_generation_.load()" in request

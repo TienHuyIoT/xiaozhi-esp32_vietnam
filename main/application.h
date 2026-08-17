@@ -72,7 +72,13 @@ public:
     void SetDeviceState(DeviceState state);
     void Alert(const char* status, const char* message, const char* emotion = "", const std::string_view& sound = "");
     void DismissAlert();
-    void AbortSpeaking(AbortReason reason);
+    /**
+     * @param source Ten duong goi, in ra log duoi khoa `abort_src=`. BAT BUOC,
+     *        khong co mac dinh: do 17/08 co 3 dong `Abort speaking` ma chi truy
+     *        duoc nguon cua 2, vi hai cho goi khong ghi gi. Thieu tham so nay
+     *        thi khong bien dich duoc -- chac hon quy uoc "nho ghi log".
+     */
+    void AbortSpeaking(AbortReason reason, const char* source);
     void ToggleChatState();
     void StartListening();
     void StopListening();

@@ -373,7 +373,7 @@ void Application::ToggleChatState() {
         });
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
-            AbortSpeaking(kAbortReasonNone);
+            AbortSpeaking(kAbortReasonNone, "nut_toggle_chat");
             ESP_LOGI(TAG, "Stopped speaking by user");
         });
     } else if (device_state_ == kDeviceStateListening) {
@@ -412,7 +412,7 @@ void Application::StartListening() {
         });
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
-            AbortSpeaking(kAbortReasonNone);
+            AbortSpeaking(kAbortReasonNone, "nut_start_listening");
             SetListeningMode(kListeningModeManualStop);
         });
     }
@@ -1128,7 +1128,7 @@ void Application::OnWakeWordDetected() {
         audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
 #endif
     } else if (device_state_ == kDeviceStateSpeaking) {
-        AbortSpeaking(kAbortReasonWakeWordDetected);
+        AbortSpeaking(kAbortReasonWakeWordDetected, "wake_word_afe");
     } else if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
     }
@@ -1261,8 +1261,12 @@ void Application::RevokeSpeechAudio() {
     }
 }
 
-void Application::AbortSpeaking(AbortReason reason) {
-    ESP_LOGI(TAG, "Abort speaking");
+void Application::AbortSpeaking(AbortReason reason, const char* source) {
+    // Do 17/08: 3 dong `Abort speaking` ma chi 2 dong truy duoc nguon, vi hai
+    // cho goi khong ghi gi -> "co abort" bi doc nham thanh "wake word chay".
+    // Khoa `abort_src=` de grep duoc; giu nguyen cum "Abort speaking" vi bo thu
+    // serial dang loc theo no.
+    ESP_LOGI(TAG, "Abort speaking: abort_src=%s", source);
     AudioTraceContext aborted_trace;
     {
         std::lock_guard<std::mutex> lock(audio_trace_mutex_);
@@ -1589,9 +1593,11 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 #endif
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
-            AbortSpeaking(kAbortReasonNone);
+            // Nhanh Idle o tren CO log "Wake word detected", nhanh nay thi khong
+            // -> dem so dong do de suy ra wake word co no hay khong la SAI.
+            AbortSpeaking(kAbortReasonNone, "wake_word_invoke");
         });
-    } else if (device_state_ == kDeviceStateListening) {   
+    } else if (device_state_ == kDeviceStateListening) {
         Schedule([this]() {
             if (protocol_) {
                 protocol_->CloseAudioChannel();

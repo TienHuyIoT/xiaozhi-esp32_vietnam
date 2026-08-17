@@ -158,13 +158,16 @@ void DeviceTtsClient::Enqueue(const std::string &tts_body,
   abort_ = false;
   // Neu turn truoc vua abort thi worker co the chua kip mo lai socket warm.
   RequestPreconnect();
-  if (!EnsureStarted()) {
-    // Khong co task nguon thi cau nay nam chet trong hang doi, `SynthesizeOne`
-    // khong bao gio chay -> phai ghi nhan ngay tai day chu khong doi vong lap.
-    ESP_LOGE(TAG, "khong bat duoc duong phat -> be se khong nghe gi: segment=%s "
-                  "reason=stream_start_failed",
-             queued_trace.segment_id.c_str());
-  }
+  // Ham nay TUYET DOI khong duoc chan. `EnsureStarted()` di qua
+  // `StartStream -> StopStream`, va `StopStream` cho worker cu thoat toi 5s
+  // (`for i<50` x 100ms). Do 16/08 tren COM5, cung mot segment:
+  //     16631.889 queue enqueue  ->  16637.432 stream_start_failed  = 5543ms.
+  // Application goi Enqueue trong luc giu `speech_audio_transition_mutex_` nen
+  // ca cum so huu audio dung hinh theo. Te hon nua: ban cu tra false roi VUT
+  // luon cau -- 7 cau mat han, roi vao 6/7 luot va lan nao cung la cau DAU.
+  // Cau da nam trong hang doi; task preconnect se bat duong phat va source
+  // worker se doc no. Khong ai duoc phep lam no boc hoi o day.
+  RequestStart();
 }
 
 void DeviceTtsClient::Abort() {
@@ -617,6 +620,24 @@ bool DeviceTtsClient::PromoteReadySocket() {
   return false;
 }
 
+void DeviceTtsClient::RequestStart() {
+  if (!running_.load() || !configured_.load()) {
+    return;
+  }
+  if (preconnect_events_ == nullptr || preconnect_task_handle_ == nullptr) {
+    // Task preconnect khong tao duoc luc khoi tao (da log ERROR o constructor).
+    // Luc do khong con task nao khac de nho -> chap nhan bat dong bo, vi cham
+    // van hon cam. Truong hop nay khong xay ra tren phan cung binh thuong.
+    EnsureStarted();
+    return;
+  }
+  // Duong danh thuc RIENG. Khong dung `RequestPreconnect()` vi ham do thoat som
+  // khi socket am con dung duoc -- dung luc thuong gap nhat -- va nhu vay yeu
+  // cau bat player se khong bao gio toi tay worker.
+  start_requested_.store(true);
+  xEventGroupSetBits(preconnect_events_, kPreconnectWakeBit);
+}
+
 void DeviceTtsClient::RequestPreconnect() {
   if (!running_.load() || abort_.load() || !configured_.load() ||
       preconnect_events_ == nullptr || preconnect_task_handle_ == nullptr) {
@@ -646,6 +667,23 @@ void DeviceTtsClient::PreconnectTaskRoutine() {
                         portMAX_DELAY);
     if (!running_.load()) {
       break;
+    }
+
+    // Bat duong phat o day chu khong o `Enqueue()`: `StopStream()` ben trong
+    // co the cho toi 5s, va `Enqueue()` chay tren duong cua Application. Task
+    // nay khong phai worker audio nen `StopStream()` chap nhan lenh (no tu
+    // choi khi bi goi tu chinh source/play task). Lam truoc khi nghi
+    // `kPreconnectDelayMs` de cau dau khong tre them.
+    if (start_requested_.exchange(false) && HasQueuedSentence()) {
+      if (!EnsureStarted() && HasQueuedSentence()) {
+        // Worker cu chua thoat (thuong la dang ket trong `SynthesizeOne` cho
+        // Edge). Cau van nam trong hang doi -> KHONG vut, chi hen lai.
+        ESP_LOGW(TAG, "chua bat duoc duong phat, thu lai sau %dms",
+                 kStartRetryDelayMs);
+        vTaskDelay(pdMS_TO_TICKS(kStartRetryDelayMs));
+        start_requested_.store(true);
+        xEventGroupSetBits(preconnect_events_, kPreconnectWakeBit);
+      }
     }
 
     preconnect_inflight_ = true;

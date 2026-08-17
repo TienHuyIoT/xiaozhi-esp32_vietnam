@@ -140,6 +140,16 @@ private:
   static constexpr int kTotalTimeoutMinMs = 15000;
 
   /**
+   * Nghi giua hai lan thu bat duong phat.
+   *
+   * `EnsureStarted()` co the that bai vi worker cu chua thoat (no dang ket
+   * trong `SynthesizeOne` cho Edge). Cau van nam trong hang doi nen KHONG duoc
+   * vut; chi can hen lai. Ngan de cau dau khong tre them dang ke, nhung khac 0
+   * de khong quay nong CPU khi ly do that bai la tuc thi (vd chua Configure).
+   */
+  static constexpr int kStartRetryDelayMs = 100;
+
+  /**
    * Cho them chung nay truoc khi bao "het viec". GetBufferSize()==0 chi noi
    * buffer nen da can, CHUA noi loa da keu xong: PCM cuoi con nam trong DMA cua
    * I2S. Bao som thi cau cuoi cut vai chu.
@@ -185,6 +195,14 @@ private:
    */
   bool ShouldRetrySegment(uint32_t synthesis_generation) const;
   void HandleData(const char *data, size_t len, bool binary);
+  /**
+   * Nho task preconnect bat duong phat ho.
+   *
+   * KHONG duoc goi `EnsureStarted()` tu `Enqueue()`: no di qua
+   * `StartStream -> StopStream`, ma `StopStream` cho worker cu thoat toi 5s.
+   * Do 16/08 tren COM5: dung 5543ms, va cau bi vut luon.
+   */
+  void RequestStart();
   void RequestPreconnect();
   void PreconnectTaskRoutine();
 
@@ -263,6 +281,8 @@ private:
   uint32_t ready_config_generation_ = 0;
   uint32_t ready_socket_generation_ = 0;
   int64_t ready_socket_opened_us_ = 0;
+  /** Co cau dang doi ma duong phat chua bat -- task preconnect se lo. */
+  std::atomic<bool> start_requested_{false};
   std::atomic<bool> preconnect_requested_{false};
   std::atomic<bool> preconnect_inflight_{false};
   EventGroupHandle_t preconnect_events_ = nullptr;

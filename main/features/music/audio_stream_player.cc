@@ -1322,6 +1322,31 @@ void AudioStreamPlayer::PlayLoopCompressed()
         }
 
         if (eos && input_bytes_left_ == 0) {
+            // `eos` chi noi HET MOT DOAN. Voi Device TTS thi mot phien co nhieu
+            // cau, va `source_segment_complete_` duoc dat sau TUNG cau -- thoat
+            // o day la giet ca duong phat ngay sau cau dau.
+            //
+            // Do 17/08 tren COM5: `EOS reached` -> `PlayLoop finished`, nhung
+            // source task van song. Luot sau `EnsureStarted()` thay IsPlaying()
+            // false nen phai StartStream -> StopStream, va StopStream cho source
+            // task (dang ket cho Edge) thoat mat 2,2-4,3s -- cong thang vao am
+            // dau. Hai luot dinh do duoc 9743ms va 15919ms so voi p50 2161ms.
+            //
+            // Nhac/radio/SD khong doi hanh vi: chi DeviceTtsClient goi
+            // MarkSourceSegmentComplete(), nen eos cua chung luon di kem
+            // !is_source_active_ -> roi thang xuong nhanh thoat ben duoi.
+            if (is_source_active_) {
+                // Decoder vua bi flush bang raw.eos; nhet byte doan moi vao ma
+                // khong nap lai thi ra tieng rac. Giong nhanh bo tail loi o tren.
+                CleanupDecoder();
+                if (!InitDecoder(decoder_type_)) {
+                    ESP_LOGE(TAG, "Khong nap lai duoc decoder sau EOS cua doan");
+                    is_playing_ = false;
+                    break;
+                }
+                ESP_LOGI(TAG, "Het mot doan, giu duong phat cho doan ke tiep");
+                continue;
+            }
             ESP_LOGI(TAG, "EOS reached");
             break;
         }

@@ -40,6 +40,17 @@ def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _code_only(text: str) -> str:
+    """Bo chu thich truoc khi soi.
+
+    Test nay tung TU BAT CHINH NO: chu thich giai thich "reset thuoc ve
+    RevokeSpeechAudio()" co chua chuoi `ResetDecoder()`, va phep kiem chuoi tho
+    coi do la mot loi goi. Hop dong noi ve MA, khong noi ve van xuoi.
+    """
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", " ", text)
+
+
 def _function_body(source: str, signature: str) -> str:
     """Than ham tinh theo do sau ngoac nhon, khong dung regex ngay tho."""
     start = source.index(signature)
@@ -60,9 +71,9 @@ def _function_body(source: str, signature: str) -> str:
 # --------------------------------------------------------------------------
 
 def test_enable_voice_processing_khong_goi_ResetDecoder():
-    body = _function_body(
+    body = _code_only(_function_body(
         _text(AUDIO_SERVICE), "void AudioService::EnableVoiceProcessing(bool enable)"
-    )
+    ))
     assert "ResetDecoder()" not in body, (
         "Mo mic dang keo theo viec vut sach audio_decode_queue_ + "
         "audio_playback_queue_. Reset thuoc ve chuyen quyen so huu / abort, "
@@ -82,9 +93,9 @@ def test_enable_voice_processing_van_giu_warmup_va_start_processor():
 
 def test_khong_tao_duong_reset_gian_tiep_trong_EnableVoiceProcessing():
     """Chan cach lach: goi thang cac ham xoa hang doi thay vi ResetDecoder()."""
-    body = _function_body(
+    body = _code_only(_function_body(
         _text(AUDIO_SERVICE), "void AudioService::EnableVoiceProcessing(bool enable)"
-    )
+    ))
     for banned in (
         "audio_decode_queue_.clear()",
         "audio_playback_queue_.clear()",
@@ -104,7 +115,7 @@ def test_chuyen_quyen_so_huu_va_thu_hoi_van_con_ResetDecoder():
         "Application::TransitionSpeechAudio",
         "Application::RevokeSpeechAudio",
     ):
-        body = _function_body(source, signature)
+        body = _code_only(_function_body(source, signature))
         assert "audio_service_.ResetDecoder()" in body, (
             f"{signature} mat ResetDecoder -> audio cua luot cu se chen sang luot moi"
         )
@@ -115,7 +126,9 @@ def test_chuyen_quyen_so_huu_va_thu_hoi_van_con_ResetDecoder():
 # --------------------------------------------------------------------------
 
 def test_CheckSpeakingFinished_giu_du_hai_guard_ban_ron():
-    body = _function_body(_text(APPLICATION), "void Application::CheckSpeakingFinished()")
+    body = _code_only(
+        _function_body(_text(APPLICATION), "void Application::CheckSpeakingFinished()")
+    )
     assert "device_tts_client_->IsBusy()" in body, (
         "Mat guard nay thi mic mo trong luc device TTS con cau trong hang doi."
     )
@@ -137,7 +150,7 @@ def test_moi_duong_vao_Listening_deu_co_chot():
     Listening -- them cho moi thi phai doc lai va cap nhat co y thuc, chu khong
     de no lot im lang.
     """
-    source = _text(APPLICATION)
+    source = _code_only(_text(APPLICATION))
     # Chi dem cho DAT state, khong dem cho SO SANH state. Ca bon cho deu nam
     # trong mot loi goi SetDeviceState(...), ke ca dang ternary.
     setters = re.findall(

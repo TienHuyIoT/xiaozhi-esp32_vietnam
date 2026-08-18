@@ -755,8 +755,20 @@ void AudioService::EnableVoiceProcessing(bool enable) {
             audio_processor_initialized_ = true;
         }
 
-        /* We should make sure no audio is playing */
-        ResetDecoder();
+        // M3.2 (19/08): KHONG reset decoder o day nua. "Mo mic" va "vut audio
+        // dang phat" la hai viec khac nhau; buoc chung vao nhau thi M3.3 (mic mo
+        // trong luc robot dang noi) se cat duoi cau ngay tu lan bat dau tien.
+        // Reset thuoc ve chuyen quyen so huu tieng noi (TransitionSpeechAudio)
+        // va abort tuong minh (RevokeSpeechAudio) -- ca hai van goi no.
+        //
+        // Bo duoc vi moi duong vao kDeviceStateListening da co chot rieng:
+        //   - qua AbortSpeaking()/RevokeSpeechAudio() -> da ResetDecoder() that;
+        //   - qua CheckSpeakingFinished() -> guard: tu choi doi state khi
+        //     device_tts_client_->IsBusy() hoac IsServerOpusPlaybackBusy();
+        //   - tu kDeviceStateIdle -> Idle da EnableVoiceProcessing(false).
+        //
+        // Hai guard tren gio CHIU LUC. Go chung la cat duoi cau.
+        // Khoa boi tests/test_mic_lifecycle_contract.py.
         audio_input_need_warmup_ = true;
         audio_processor_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);

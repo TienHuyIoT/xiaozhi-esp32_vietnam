@@ -245,3 +245,102 @@ def test_reboot_giua_run_khong_gay_interval_am(analyzer):
     for interval in report["intervals"]:
         if interval["end_host"] is not None:
             assert interval["end_host"] >= interval["start_host"]
+
+
+# --------------------------------------------------------------------------
+# 3. Collector phai SONG SOT khi robot re-enumerate USB
+# --------------------------------------------------------------------------
+# Do that 23/08: robot reboot -> USB-Serial/JTAG re-enumerate -> pyserial nem
+# `SerialException: ClearCommError failed (PermissionError(13))` -> collector
+# CHET HAN. Hau qua: mat toan bo bang chung firmware cho phan con lai cua run.
+# Trong phien 100 luot thi mot lan reboot la hong ca buoi. Reboot la chuyen
+# BINH THUONG trong phep do nay (watchdog, abort, cam lai day) nen collector
+# phai noi lai duoc, va phai de lai dau cho biet co khoang trong.
+
+
+class _FakePort:
+    """Cong gia: tra vai dong roi nem SerialException nhu USB rot that."""
+
+    def __init__(self, lines, fail_after=None):
+        self._lines = [l.encode() + b"\n" for l in lines]
+        self._fail_after = fail_after
+        self._reads = 0
+        self.closed = False
+
+    def readline(self):
+        if self._fail_after is not None and self._reads >= self._fail_after:
+            import serial
+            raise serial.SerialException("ClearCommError failed")
+        if not self._lines:
+            import serial
+            raise serial.SerialException("cong bien mat")
+        self._reads += 1
+        return self._lines.pop(0)
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def test_collector_noi_lai_duoc_khi_usb_rot(collector, tmp_path):
+    out = tmp_path / "serial.log"
+    stop = tmp_path / "stop.flag"
+    truoc = "I (100) Application: STATE: speaking"
+    sau = "I (200) Application: STATE: listening"
+    ports = [
+        _FakePort([truoc], fail_after=1),   # tra 1 dong roi rot USB
+        _FakePort([sau]),                    # cong moi sau khi robot boot lai
+    ]
+
+    def factory():
+        if not ports:
+            stop.touch()          # het cong gia -> ket thuc vong lap
+            return _FakePort([])
+        return ports.pop(0)
+
+    collector.run_collector(
+        port_factory=factory, output_path=out, stop_file=stop, sleep=lambda _s: None
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "STATE: speaking" in text, "mat dong TRUOC khi rot USB"
+    assert "STATE: listening" in text, "collector khong noi lai duoc sau khi USB rot"
+    assert "collector_reconnect" in text, (
+        "phai de lai dau khoang trong, neu khong nguoi doc log tuong la robot im"
+    )
+
+
+def test_collector_dung_khi_co_stop_file(collector, tmp_path):
+    out = tmp_path / "serial.log"
+    stop = tmp_path / "stop.flag"
+    stop.touch()
+    collector.run_collector(
+        port_factory=lambda: _FakePort(["x"]), output_path=out, stop_file=stop,
+        sleep=lambda _s: None,
+    )
+    assert "collector_stop_utc" in out.read_text(encoding="utf-8")
+
+
+def test_mo_cong_that_bai_van_thu_lai_chu_khong_chet(collector, tmp_path):
+    """Robot boot mat vai giay -- mo cong that bai la BINH THUONG, khong duoc thoat."""
+    out = tmp_path / "serial.log"
+    stop = tmp_path / "stop.flag"
+    lan = {"n": 0}
+
+    def factory():
+        import serial
+        lan["n"] += 1
+        if lan["n"] < 3:
+            raise serial.SerialException("could not open port")
+        stop.touch()
+        return _FakePort(["I (300) Application: STATE: idle"])
+
+    collector.run_collector(
+        port_factory=factory, output_path=out, stop_file=stop, sleep=lambda _s: None
+    )
+    assert lan["n"] >= 3, "phai thu lai khi mo cong that bai"

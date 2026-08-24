@@ -19,3 +19,4 @@ mmap_generate_*.h
 *.rqmt
 scripts/open-idf-shell.bat
 mcp_calculator_local/
+.codegraph/

@@ -1,1565 +1,1635 @@
 #include "application.h"
+#include "assets.h"
+#include "assets/lang_config.h"
+#include "audio_codec.h"
 #include "board.h"
 #include "display.h"
-#include "system_info.h"
-#include "audio_codec.h"
-#include "mqtt_protocol.h"
-#include "websocket_protocol.h"
-#include "assets/lang_config.h"
-#include "mcp_server.h"
-#include "assets.h"
-#include "settings.h"
-#include "ota_server.h"
-#include "wifi_station.h"
-#include "sd_card.h"
+#include "display/lvgl_display/lvgl_display.h"
 #include "esp32_sd_music.h"
+#include "features/QRCode/qrcode_display.h"
+#include "features/alarm_clock/alarm_manager.h"
+#include "features/alarm_clock/server_alarm_client.h"
 #include "features/mcp_server_features.h"
+#include "features/mp4/mp4_player.h"
 #include "features/music/audio_stream_player.h"
-#include "lcd_display.h"
-#include "oled_display.h"
-#include "lvgl_theme.h"
 #include "features/music/music_visualizer.h"
 #include "features/spectrum/spectrum_manager.h"
 #include "features/video/video_player.h"
-#include "features/mp4/mp4_player.h"
-#include "features/QRCode/qrcode_display.h"
-#include "features/alarm_clock/alarm_manager.h"
+#include "features/weather/weather_ui.h"
 #include "features/why_questions/image_display.h"
-#include "display/lvgl_display/lvgl_display.h"
-#include <esp_lvgl_port.h>
+#include "lcd_display.h"
+#include "lvgl_theme.h"
+#include "mcp_server.h"
+#include "ml307_board.h"
+#include "mqtt_protocol.h"
+#include "oled_display.h"
+#include "ota_server.h"
+#include "sd_card.h"
+#include "settings.h"
+#include "system_info.h"
+#include "websocket_protocol.h"
+#include "wifi_station.h"
+#include <arpa/inet.h>
+#include <cJSON.h>
 #include <cmath>
 #include <cstring>
-#include <esp_log.h>
-#include <cJSON.h>
 #include <driver/gpio.h>
-#include <arpa/inet.h>
+#include <esp_log.h>
+#include <esp_lvgl_port.h>
 #include <font_awesome.h>
-#include "features/weather/weather_ui.h"
-#include "ml307_board.h"
+
 #define TAG "Application"
 
-
-static const char* const STATE_STRINGS[] = {
-    "unknown",
-    "starting",
-    "configuring",
-    "idle",
-    "connecting",
-    "listening",
-    "speaking",
-    "upgrading",
-    "activating",
-    "audio_testing",
-    "fatal_error",
-    "invalid_state"
-};
+static const char *const STATE_STRINGS[] = {
+    "unknown",    "starting",      "configuring", "idle",
+    "connecting", "listening",     "speaking",    "upgrading",
+    "activating", "audio_testing", "fatal_error", "invalid_state"};
 
 Application::Application() {
-    event_group_ = xEventGroupCreate();
+  event_group_ = xEventGroupCreate();
 
 #if CONFIG_USE_DEVICE_AEC && CONFIG_USE_SERVER_AEC
-#error "CONFIG_USE_DEVICE_AEC and CONFIG_USE_SERVER_AEC cannot be enabled at the same time"
+#error                                                                         \
+    "CONFIG_USE_DEVICE_AEC and CONFIG_USE_SERVER_AEC cannot be enabled at the same time"
 #elif CONFIG_USE_DEVICE_AEC
-    aec_mode_ = kAecOnDeviceSide;
+  aec_mode_ = kAecOnDeviceSide;
 #elif CONFIG_USE_SERVER_AEC
-    aec_mode_ = kAecOnServerSide;
+  aec_mode_ = kAecOnServerSide;
 #else
-    aec_mode_ = kAecOff;
+  aec_mode_ = kAecOff;
 #endif
 
-    esp_timer_create_args_t clock_timer_args = {
-        .callback = [](void* arg) {
-            Application* app = (Application*)arg;
+  esp_timer_create_args_t clock_timer_args = {
+      .callback =
+          [](void *arg) {
+            Application *app = (Application *)arg;
             xEventGroupSetBits(app->event_group_, MAIN_EVENT_CLOCK_TICK);
-        },
-        .arg = this,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "clock_timer",
-        .skip_unhandled_events = true
-    };
-    esp_timer_create(&clock_timer_args, &clock_timer_handle_);
+          },
+      .arg = this,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "clock_timer",
+      .skip_unhandled_events = true};
+  esp_timer_create(&clock_timer_args, &clock_timer_handle_);
 }
 
 Application::~Application() {
-    if (clock_timer_handle_ != nullptr) {
-        esp_timer_stop(clock_timer_handle_);
-        esp_timer_delete(clock_timer_handle_);
-    }
-    vEventGroupDelete(event_group_);
+  if (server_alarm_client_) {
+    server_alarm_client_->Stop();
+  }
+  if (clock_timer_handle_ != nullptr) {
+    esp_timer_stop(clock_timer_handle_);
+    esp_timer_delete(clock_timer_handle_);
+  }
+  vEventGroupDelete(event_group_);
 }
 
 void Application::CheckAssetsVersion() {
-    auto& board = Board::GetInstance();
-    auto display = board.GetDisplay();
-    auto& assets = Assets::GetInstance();
+  auto &board = Board::GetInstance();
+  auto display = board.GetDisplay();
+  auto &assets = Assets::GetInstance();
 
-    if (!assets.partition_valid()) {
-        ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);
-        return;
-    }
-    
-    Settings settings("assets", true);
-    // Check if there is a new assets need to be downloaded
-    std::string download_url = settings.GetString("download_url");
+  if (!assets.partition_valid()) {
+    ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);
+    return;
+  }
 
-    if (!download_url.empty()) {
-        settings.EraseKey("download_url");
+  Settings settings("assets", true);
+  // Check if there is a new assets need to be downloaded
+  std::string download_url = settings.GetString("download_url");
 
-        char message[256];
-        snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
-        Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
-        
-        // Wait for the audio service to be idle for 3 seconds
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        SetDeviceState(kDeviceStateUpgrading);
-        board.SetPowerSaveMode(false);
-        display->SetChatMessage("system", Lang::Strings::PLEASE_WAIT);
+  if (!download_url.empty()) {
+    settings.EraseKey("download_url");
 
-        bool success = assets.Download(download_url, [display](int progress, size_t speed) -> void {
-            std::thread([display, progress, speed]() {
-                char buffer[32];
-                snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
-                display->SetChatMessage("system", buffer);
-            }).detach();
+    char message[256];
+    snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS,
+             download_url.c_str());
+    Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down",
+          Lang::Sounds::OGG_UPGRADE);
+
+    // Wait for the audio service to be idle for 3 seconds
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    SetDeviceState(kDeviceStateUpgrading);
+    board.SetPowerSaveMode(false);
+    display->SetChatMessage("system", Lang::Strings::PLEASE_WAIT);
+
+    bool success = assets.Download(
+        download_url, [display](int progress, size_t speed) -> void {
+          std::thread([display, progress, speed]() {
+            char buffer[32];
+            snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress,
+                     speed / 1024);
+            display->SetChatMessage("system", buffer);
+          }).detach();
         });
 
-        board.SetPowerSaveMode(true);
+    board.SetPowerSaveMode(true);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    if (!success) {
+      Alert(Lang::Strings::ERROR, Lang::Strings::DOWNLOAD_ASSETS_FAILED,
+            "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      return;
+    }
+  }
+
+  // Apply assets
+  assets.Apply();
+  display->SetChatMessage("system", "");
+  display->SetEmotion("microchip_ai");
+}
+
+void Application::CheckNewVersion(Ota &ota) {
+  const int MAX_RETRY = 10;
+  int retry_count = 0;
+  int retry_delay = 10; // Initial retry delay is 10 seconds
+
+  auto &board = Board::GetInstance();
+  while (true) {
+    SetDeviceState(kDeviceStateActivating);
+    auto display = board.GetDisplay();
+    display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
+
+    std::string url = CONFIG_OTA_URL;
+    if (!ota.CheckVersion(url)) {
+      retry_count++;
+      if (retry_count >= MAX_RETRY) {
+        ESP_LOGE(TAG, "Too many retries, exit version check");
+        return;
+      }
+
+      char buffer[256];
+      snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED,
+               retry_delay, ota.GetCheckVersionUrl().c_str());
+      Alert(Lang::Strings::ERROR, buffer, "cloud_slash",
+            Lang::Sounds::OGG_EXCLAMATION);
+
+      ESP_LOGW(TAG, "Check new version failed, retry in %d seconds (%d/%d)",
+               retry_delay, retry_count, MAX_RETRY);
+      for (int i = 0; i < retry_delay; i++) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-
-        if (!success) {
-            Alert(Lang::Strings::ERROR, Lang::Strings::DOWNLOAD_ASSETS_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            return;
+        if (device_state_ == kDeviceStateIdle) {
+          break;
         }
+      }
+      retry_delay *= 2; // The delay time doubles after each retry.
+      continue;
     }
 
-    // Apply assets
-    assets.Apply();
-    display->SetChatMessage("system", "");
-    display->SetEmotion("microchip_ai");
+    ota.CheckVersion(std::string() = "");
+
+    retry_count = 0;
+    retry_delay = 10; // Reset retry delay time
+
+    if (ota.HasNewVersion()) {
+      if (UpgradeFirmware(ota)) {
+        return; // This line will never be reached after reboot
+      }
+      // If upgrade failed, continue to normal operation (don't break, just fall
+      // through)
+    }
+
+    // No new version, mark the current version as valid
+    ota.MarkCurrentVersionValid();
+    if (!ota.HasActivationCode() && !ota.HasActivationChallenge()) {
+      xEventGroupSetBits(event_group_, MAIN_EVENT_CHECK_NEW_VERSION_DONE);
+      // Exit the loop if done checking new version
+      break;
+    }
+
+    display->SetStatus(Lang::Strings::ACTIVATION);
+    // Activation code is shown to the user and waiting for the user to input
+    if (ota.HasActivationCode()) {
+      ShowActivationCode(ota.GetActivationCode(), ota.GetActivationMessage());
+    }
+
+    // This will block the loop until the activation is done or timeout
+    for (int i = 0; i < 10; ++i) {
+      ESP_LOGI(TAG, "Activating... %d/%d", i + 1, 10);
+      esp_err_t err = ota.Activate();
+      if (err == ESP_OK) {
+        xEventGroupSetBits(event_group_, MAIN_EVENT_CHECK_NEW_VERSION_DONE);
+        break;
+      } else if (err == ESP_ERR_TIMEOUT) {
+        vTaskDelay(pdMS_TO_TICKS(3000));
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+      }
+      if (device_state_ == kDeviceStateIdle) {
+        break;
+      }
+    }
+  }
 }
 
-void Application::CheckNewVersion(Ota& ota) {
-    const int MAX_RETRY = 10;
-    int retry_count = 0;
-    int retry_delay = 10; // Initial retry delay is 10 seconds
+void Application::ShowActivationCode(const std::string &code,
+                                     const std::string &message) {
+  struct digit_sound {
+    char digit;
+    const std::string_view &sound;
+  };
+  static const std::array<digit_sound, 10> digit_sounds{
+      {digit_sound{'0', Lang::Sounds::OGG_0},
+       digit_sound{'1', Lang::Sounds::OGG_1},
+       digit_sound{'2', Lang::Sounds::OGG_2},
+       digit_sound{'3', Lang::Sounds::OGG_3},
+       digit_sound{'4', Lang::Sounds::OGG_4},
+       digit_sound{'5', Lang::Sounds::OGG_5},
+       digit_sound{'6', Lang::Sounds::OGG_6},
+       digit_sound{'7', Lang::Sounds::OGG_7},
+       digit_sound{'8', Lang::Sounds::OGG_8},
+       digit_sound{'9', Lang::Sounds::OGG_9}}};
 
-    auto& board = Board::GetInstance();
-    while (true) {
-        SetDeviceState(kDeviceStateActivating);
-        auto display = board.GetDisplay();
-        display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
+  // This sentence uses 9KB of SRAM, so we need to wait for it to finish
+  Alert(Lang::Strings::ACTIVATION, message.c_str(), "link",
+        Lang::Sounds::OGG_ACTIVATION);
 
-        std::string url = CONFIG_OTA_URL;
-        if (!ota.CheckVersion(url)) {
-            retry_count++;
-            if (retry_count >= MAX_RETRY) {
-                ESP_LOGE(TAG, "Too many retries, exit version check");
-                return;
-            }
-
-            char buffer[256];
-            snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED, retry_delay, ota.GetCheckVersionUrl().c_str());
-            Alert(Lang::Strings::ERROR, buffer, "cloud_slash", Lang::Sounds::OGG_EXCLAMATION);
-
-            ESP_LOGW(TAG, "Check new version failed, retry in %d seconds (%d/%d)", retry_delay, retry_count, MAX_RETRY);
-            for (int i = 0; i < retry_delay; i++) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                if (device_state_ == kDeviceStateIdle) {
-                    break;
-                }
-            }
-            retry_delay *= 2; // The delay time doubles after each retry.
-            continue;
-        }
-        
-        ota.CheckVersion(std::string() = "");
-
-        retry_count = 0;
-        retry_delay = 10; // Reset retry delay time
-
-        if (ota.HasNewVersion()) {
-            if (UpgradeFirmware(ota)) {
-                return; // This line will never be reached after reboot
-            }
-            // If upgrade failed, continue to normal operation (don't break, just fall through)
-        }
-
-        // No new version, mark the current version as valid
-        ota.MarkCurrentVersionValid();
-        if (!ota.HasActivationCode() && !ota.HasActivationChallenge()) {
-            xEventGroupSetBits(event_group_, MAIN_EVENT_CHECK_NEW_VERSION_DONE);
-            // Exit the loop if done checking new version
-            break;
-        }
-
-        display->SetStatus(Lang::Strings::ACTIVATION);
-        // Activation code is shown to the user and waiting for the user to input
-        if (ota.HasActivationCode()) {
-            ShowActivationCode(ota.GetActivationCode(), ota.GetActivationMessage());
-        }
-
-        // This will block the loop until the activation is done or timeout
-        for (int i = 0; i < 10; ++i) {
-            ESP_LOGI(TAG, "Activating... %d/%d", i + 1, 10);
-            esp_err_t err = ota.Activate();
-            if (err == ESP_OK) {
-                xEventGroupSetBits(event_group_, MAIN_EVENT_CHECK_NEW_VERSION_DONE);
-                break;
-            } else if (err == ESP_ERR_TIMEOUT) {
-                vTaskDelay(pdMS_TO_TICKS(3000));
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(10000));
-            }
-            if (device_state_ == kDeviceStateIdle) {
-                break;
-            }
-        }
+  for (const auto &digit : code) {
+    auto it = std::find_if(
+        digit_sounds.begin(), digit_sounds.end(),
+        [digit](const digit_sound &ds) { return ds.digit == digit; });
+    if (it != digit_sounds.end()) {
+      audio_service_.PlaySound(it->sound);
     }
+  }
 }
 
-void Application::ShowActivationCode(const std::string& code, const std::string& message) {
-    struct digit_sound {
-        char digit;
-        const std::string_view& sound;
-    };
-    static const std::array<digit_sound, 10> digit_sounds{{
-        digit_sound{'0', Lang::Sounds::OGG_0},
-        digit_sound{'1', Lang::Sounds::OGG_1}, 
-        digit_sound{'2', Lang::Sounds::OGG_2},
-        digit_sound{'3', Lang::Sounds::OGG_3},
-        digit_sound{'4', Lang::Sounds::OGG_4},
-        digit_sound{'5', Lang::Sounds::OGG_5},
-        digit_sound{'6', Lang::Sounds::OGG_6},
-        digit_sound{'7', Lang::Sounds::OGG_7},
-        digit_sound{'8', Lang::Sounds::OGG_8},
-        digit_sound{'9', Lang::Sounds::OGG_9}
-    }};
-
-    // This sentence uses 9KB of SRAM, so we need to wait for it to finish
-    Alert(Lang::Strings::ACTIVATION, message.c_str(), "link", Lang::Sounds::OGG_ACTIVATION);
-
-    for (const auto& digit : code) {
-        auto it = std::find_if(digit_sounds.begin(), digit_sounds.end(),
-            [digit](const digit_sound& ds) { return ds.digit == digit; });
-        if (it != digit_sounds.end()) {
-            audio_service_.PlaySound(it->sound);
-        }
-    }
-}
-
-void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
-    ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
-    auto display = Board::GetInstance().GetDisplay();
-    display->SetStatus(status);
-    display->SetEmotion(emotion);
-    display->SetChatMessage("system", message);
-    if (!sound.empty()) {
-        audio_service_.PlaySound(sound);
-    }
+void Application::Alert(const char *status, const char *message,
+                        const char *emotion, const std::string_view &sound) {
+  ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
+  auto display = Board::GetInstance().GetDisplay();
+  display->SetStatus(status);
+  display->SetEmotion(emotion);
+  display->SetChatMessage("system", message);
+  if (!sound.empty()) {
+    audio_service_.PlaySound(sound);
+  }
 }
 
 void Application::DismissAlert() {
-    if (device_state_ == kDeviceStateIdle) {
-        auto display = Board::GetInstance().GetDisplay();
-        display->SetStatus(Lang::Strings::STANDBY);
-        display->SetEmotion("neutral");
-        display->SetChatMessage("system", "");
-    }
+  if (device_state_ == kDeviceStateIdle) {
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetStatus(Lang::Strings::STANDBY);
+    display->SetEmotion("neutral");
+    display->SetChatMessage("system", "");
+  }
 }
 
 void Application::ToggleChatState() {
-    if (device_state_ == kDeviceStateActivating) {
-        SetDeviceState(kDeviceStateIdle);
-        return;
-    } else if (device_state_ == kDeviceStateWifiConfiguring) {
-        audio_service_.EnableAudioTesting(true);
-        SetDeviceState(kDeviceStateAudioTesting);
-        return;
-    } else if (device_state_ == kDeviceStateAudioTesting) {
-        audio_service_.EnableAudioTesting(false);
-        SetDeviceState(kDeviceStateWifiConfiguring);
-        return;
-    }
+  if (device_state_ == kDeviceStateActivating) {
+    SetDeviceState(kDeviceStateIdle);
+    return;
+  } else if (device_state_ == kDeviceStateWifiConfiguring) {
+    audio_service_.EnableAudioTesting(true);
+    SetDeviceState(kDeviceStateAudioTesting);
+    return;
+  } else if (device_state_ == kDeviceStateAudioTesting) {
+    audio_service_.EnableAudioTesting(false);
+    SetDeviceState(kDeviceStateWifiConfiguring);
+    return;
+  }
 
-    if (!protocol_) {
-        ESP_LOGE(TAG, "Protocol not initialized");
-        return;
-    }
+  if (!protocol_) {
+    ESP_LOGE(TAG, "Protocol not initialized");
+    return;
+  }
 
-    if (device_state_ == kDeviceStateIdle) {
-        Schedule([this]() {
-            if (!protocol_->IsAudioChannelOpened()) {
-                SetDeviceState(kDeviceStateConnecting);
-                if (!protocol_->OpenAudioChannel()) {
-                    return;
-                }
-            }
+  if (device_state_ == kDeviceStateIdle) {
+    Schedule([this]() {
+      if (!protocol_->IsAudioChannelOpened()) {
+        SetDeviceState(kDeviceStateConnecting);
+        if (!protocol_->OpenAudioChannel()) {
+          return;
+        }
+      }
 
-            SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-        });
-    } else if (device_state_ == kDeviceStateSpeaking) {
-        Schedule([this]() {
-            AbortSpeaking(kAbortReasonNone);
-            ESP_LOGI(TAG, "Stopped speaking by user");
-        });
-    } else if (device_state_ == kDeviceStateListening) {
-        Schedule([this]() {
-            protocol_->CloseAudioChannel();
-            ESP_LOGI(TAG, "Stopped listening by user");
-        });
-    }
+      SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop
+                                            : kListeningModeRealtime);
+    });
+  } else if (device_state_ == kDeviceStateSpeaking) {
+    Schedule([this]() {
+      AbortSpeaking(kAbortReasonNone);
+      ESP_LOGI(TAG, "Stopped speaking by user");
+    });
+  } else if (device_state_ == kDeviceStateListening) {
+    Schedule([this]() {
+      protocol_->CloseAudioChannel();
+      ESP_LOGI(TAG, "Stopped listening by user");
+    });
+  }
 }
 
 void Application::StartListening() {
-    if (device_state_ == kDeviceStateActivating) {
-        SetDeviceState(kDeviceStateIdle);
-        return;
-    } else if (device_state_ == kDeviceStateWifiConfiguring) {
-        audio_service_.EnableAudioTesting(true);
-        SetDeviceState(kDeviceStateAudioTesting);
-        return;
-    }
+  if (device_state_ == kDeviceStateActivating) {
+    SetDeviceState(kDeviceStateIdle);
+    return;
+  } else if (device_state_ == kDeviceStateWifiConfiguring) {
+    audio_service_.EnableAudioTesting(true);
+    SetDeviceState(kDeviceStateAudioTesting);
+    return;
+  }
 
-    if (!protocol_) {
-        ESP_LOGE(TAG, "Protocol not initialized");
-        return;
-    }
-    
-    if (device_state_ == kDeviceStateIdle) {
-        Schedule([this]() {
-            if (!protocol_->IsAudioChannelOpened()) {
-                SetDeviceState(kDeviceStateConnecting);
-                if (!protocol_->OpenAudioChannel()) {
-                    return;
-                }
-            }
+  if (!protocol_) {
+    ESP_LOGE(TAG, "Protocol not initialized");
+    return;
+  }
 
-            SetListeningMode(kListeningModeManualStop);
-        });
-    } else if (device_state_ == kDeviceStateSpeaking) {
-        Schedule([this]() {
-            AbortSpeaking(kAbortReasonNone);
-            SetListeningMode(kListeningModeManualStop);
-        });
-    }
+  if (device_state_ == kDeviceStateIdle) {
+    Schedule([this]() {
+      if (!protocol_->IsAudioChannelOpened()) {
+        SetDeviceState(kDeviceStateConnecting);
+        if (!protocol_->OpenAudioChannel()) {
+          return;
+        }
+      }
+
+      SetListeningMode(kListeningModeManualStop);
+    });
+  } else if (device_state_ == kDeviceStateSpeaking) {
+    Schedule([this]() {
+      AbortSpeaking(kAbortReasonNone);
+      SetListeningMode(kListeningModeManualStop);
+    });
+  }
 }
 
 void Application::StopListening() {
-    if (device_state_ == kDeviceStateAudioTesting) {
-        audio_service_.EnableAudioTesting(false);
-        SetDeviceState(kDeviceStateWifiConfiguring);
-        return;
-    }
+  if (device_state_ == kDeviceStateAudioTesting) {
+    audio_service_.EnableAudioTesting(false);
+    SetDeviceState(kDeviceStateWifiConfiguring);
+    return;
+  }
 
-    const std::array<int, 3> valid_states = {
-        kDeviceStateListening,
-        kDeviceStateSpeaking,
-        kDeviceStateIdle,
-    };
-    // If not valid, do nothing
-    if (std::find(valid_states.begin(), valid_states.end(), device_state_) == valid_states.end()) {
-        return;
-    }
+  const std::array<int, 3> valid_states = {
+      kDeviceStateListening,
+      kDeviceStateSpeaking,
+      kDeviceStateIdle,
+  };
+  // If not valid, do nothing
+  if (std::find(valid_states.begin(), valid_states.end(), device_state_) ==
+      valid_states.end()) {
+    return;
+  }
 
-    Schedule([this]() {
-        if (device_state_ == kDeviceStateListening) {
-            protocol_->SendStopListening();
-            SetDeviceState(kDeviceStateIdle);
-        }
-    });
+  Schedule([this]() {
+    if (device_state_ == kDeviceStateListening) {
+      protocol_->SendStopListening();
+      SetDeviceState(kDeviceStateIdle);
+    }
+  });
 }
 
 void Application::Start() {
-    auto& board = Board::GetInstance();
-    SetDeviceState(kDeviceStateStarting);
+  auto &board = Board::GetInstance();
+  SetDeviceState(kDeviceStateStarting);
 
-    /* Setup the display */
-    auto display = board.GetDisplay();
+  /* Setup the display */
+  auto display = board.GetDisplay();
 
-    // Print board name/version info
-    display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
+  // Print board name/version info
+  display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
 #if (0) // Test QR code display
-    qrcode::QRCodeDisplay::GetInstance().Show("http://192.168.1.100/ota", "192.168.1.100/ota");
-    return;
+  qrcode::QRCodeDisplay::GetInstance().Show("http://192.168.100.96/ota",
+                                            "192.168.100.96/ota");
+  return;
 #endif
 
-    /* Setup the audio service */
-    auto codec = board.GetAudioCodec();
-    audio_service_.Initialize(codec);
+  /* Setup the audio service */
+  auto codec = board.GetAudioCodec();
+  audio_service_.Initialize(codec);
 #ifdef CONFIG_MIC_HIGH_PASS_FILTER_ENABLE
-    // Enable high pass filter to reduce low frequency noise
-    {
-        float gain = CONFIG_MIC_HIGH_PASS_FILTER_GAIN / 100.0f;
-        audio_service_.SetHighPassFilter(new HighPassFilter(gain));
-    }
+  // Enable high pass filter to reduce low frequency noise
+  {
+    float gain = CONFIG_MIC_HIGH_PASS_FILTER_GAIN / 100.0f;
+    audio_service_.SetHighPassFilter(new HighPassFilter(gain));
+  }
 #endif
-    audio_service_.Start();
-    // codec->SetOutputVolume(10);
+  audio_service_.Start();
+  // codec->SetOutputVolume(10);
 
-    AudioServiceCallbacks callbacks;
-    callbacks.on_send_queue_available = [this]() {
-        xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
-    };
-    callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
-        xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
-    };
-    callbacks.on_vad_change = [this](bool speaking) {
-        xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
-    };
-    audio_service_.SetCallbacks(callbacks);
+  AudioServiceCallbacks callbacks;
+  callbacks.on_send_queue_available = [this]() {
+    xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
+  };
+  callbacks.on_wake_word_detected = [this](const std::string &wake_word) {
+    xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
+  };
+  callbacks.on_vad_change = [this](bool speaking) {
+    xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
+  };
+  audio_service_.SetCallbacks(callbacks);
 
-    // Start the main event loop task with priority 3
-    xTaskCreate([](void* arg) {
-        ((Application*)arg)->MainEventLoop();
+  // Start the main event loop task with priority 3
+  xTaskCreate(
+      [](void *arg) {
+        ((Application *)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 1024 * 5, this, 3, &main_event_loop_task_handle_);
+      },
+      "main_event_loop", 1024 * 5, this, 3, &main_event_loop_task_handle_);
 
-    /* Start the clock timer to update the status bar */
-    esp_timer_start_periodic(clock_timer_handle_, 1000000);
+  /* Start the clock timer to update the status bar */
+  esp_timer_start_periodic(clock_timer_handle_, 1000000);
 
-    /* Wait for the network to be ready */
-    board.StartNetwork();
+  /* Wait for the network to be ready */
+  board.StartNetwork();
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    // Start the independent weather idle display task after network is ready
-    StartWeatherIdleTask();
+  // Start the independent weather idle display task after network is ready
+  StartWeatherIdleTask();
 #endif
 
-    // Register network tool — pass overlay callback so the QR canvas can
-    // hide/restore the host display's normal UI while it is visible.
-    // SetMediaOverlayActive is virtual: works for both LCD and OLED.
-    McpFeatureTools::RegisterIp2QrCodeTool([display](bool active) {
-        display->SetMediaOverlayActive(active);
-    });
+  // Register network tool — pass overlay callback so the QR canvas can
+  // hide/restore the host display's normal UI while it is visible.
+  // SetMediaOverlayActive is virtual: works for both LCD and OLED.
+  McpFeatureTools::RegisterIp2QrCodeTool(
+      [display](bool active) { display->SetMediaOverlayActive(active); });
 
-    // Initialize media components and register their MCP tools
-    InitMusic();
-    InitRadio();
-    InitAlarm();
+  // Initialize media components and register their MCP tools
+  InitMusic();
+  InitRadio();
 
 #ifdef CONFIG_SD_CARD_ENABLE
-    auto sd_card = board.GetSdCard();
-    if (sd_card != nullptr) {
-        if (sd_card->Initialize() == ESP_OK) {
-            ESP_LOGI(TAG, "SD card mounted successfully");
-            InitSdMusic();
+  auto sd_card = board.GetSdCard();
+  if (sd_card != nullptr) {
+    if (sd_card->Initialize() == ESP_OK) {
+      ESP_LOGI(TAG, "SD card mounted successfully");
+      InitSdMusic();
 
 #if (0) // Test video playback avi video from SD card
-            InitVideo();
-            PlayVideo("/sdcard/videos/video_15s.avi");
-            vTaskDelay(pdMS_TO_TICKS(16000)); // Play for 15 seconds
+      InitVideo();
+      PlayVideo("/sdcard/videos/video_15s.avi");
+      vTaskDelay(pdMS_TO_TICKS(16000)); // Play for 15 seconds
 #endif
 #if (0) // Test video playback mp4 video from SD card
-            InitMp4Video();
-            if (PlayMp4Video("/sdcard/videos/video_30s.mp4")) {
-                ESP_LOGI(TAG, "Playing MP4 video");
-                vTaskDelay(pdMS_TO_TICKS(31000)); // Play for 31 seconds
-            } else {
-                ESP_LOGE(TAG, "Failed to play MP4 video");
-            }
+      InitMp4Video();
+      if (PlayMp4Video("/sdcard/videos/video_30s.mp4")) {
+        ESP_LOGI(TAG, "Playing MP4 video");
+        vTaskDelay(pdMS_TO_TICKS(31000)); // Play for 31 seconds
+      } else {
+        ESP_LOGE(TAG, "Failed to play MP4 video");
+      }
 #endif
-        } else {
-            ESP_LOGW(TAG, "Failed to mount SD card");
-        }
+    } else {
+      ESP_LOGW(TAG, "Failed to mount SD card");
     }
+  }
 #endif
 
-    // Update the status bar immediately to show the network state
-    display->UpdateStatusBar(true);
+  // Update the status bar immediately to show the network state
+  display->UpdateStatusBar(true);
 
-    // Check for new assets version
-    CheckAssetsVersion();
+  // Check for new assets version
+  CheckAssetsVersion();
 
-    // Check for new firmware version or get the MQTT broker address
-    Ota ota;
-    CheckNewVersion(ota);
+  // Check for new firmware version or get the MQTT broker address
+  Ota ota;
+  CheckNewVersion(ota);
 
-    // Start the OTA server
-    auto& ota_server = ota::OtaServer::GetInstance();
-    if (ota_server.Start() == ESP_OK) {
-        ESP_LOGI(TAG, "OTA server started successfully");
-    } else {
-        ESP_LOGE(TAG, "Failed to start OTA server");
+  // Start the OTA server
+  auto &ota_server = ota::OtaServer::GetInstance();
+  if (ota_server.Start() == ESP_OK) {
+    ESP_LOGI(TAG, "OTA server started successfully");
+  } else {
+    ESP_LOGE(TAG, "Failed to start OTA server");
+  }
+
+  // Initialize the protocol
+  display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
+
+  auto &wifi_station = WifiStation::GetInstance();
+  std::string ssid = "SSID: " + wifi_station.GetSsid();
+  std::string ip_address = "IP: " + wifi_station.GetIpAddress();
+  display->SetChatMessage("assistant", ssid.c_str());
+  display->SetChatMessage("assistant", ip_address.c_str());
+  vTaskDelay(pdMS_TO_TICKS(2000));
+
+  // Add MCP common tools before initializing the protocol
+  auto &mcp_server = McpServer::GetInstance();
+  mcp_server.AddCommonTools();
+  mcp_server.AddUserOnlyTools();
+  InitAlarm();
+
+  if (ota.HasMqttConfig()) {
+    protocol_ = std::make_unique<MqttProtocol>();
+  } else if (ota.HasWebsocketConfig()) {
+    protocol_ = std::make_unique<WebsocketProtocol>();
+  } else {
+    ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
+    protocol_ = std::make_unique<MqttProtocol>();
+  }
+
+  protocol_->OnConnected([this]() { DismissAlert(); });
+
+  protocol_->OnNetworkError([this](const std::string &message) {
+    last_error_message_ = message;
+    xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
+  });
+  protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
+    if (device_state_ == kDeviceStateSpeaking) {
+      audio_service_.PushPacketToDecodeQueue(std::move(packet));
     }
-
-    // Initialize the protocol
-    display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
-
-    auto& wifi_station = WifiStation::GetInstance();
-    std::string ssid = "SSID: " + wifi_station.GetSsid();
-    std::string ip_address = "IP: " + wifi_station.GetIpAddress();
-    display->SetChatMessage("assistant", ssid.c_str());
-    display->SetChatMessage("assistant", ip_address.c_str());
-    vTaskDelay(pdMS_TO_TICKS(2000));
-
-    // Add MCP common tools before initializing the protocol
-    auto& mcp_server = McpServer::GetInstance();
-    mcp_server.AddCommonTools();
-    mcp_server.AddUserOnlyTools();
-
-    if (ota.HasMqttConfig()) {
-        protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota.HasWebsocketConfig()) {
-        protocol_ = std::make_unique<WebsocketProtocol>();
-    } else {
-        ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
-        protocol_ = std::make_unique<MqttProtocol>();
+  });
+  protocol_->OnAudioChannelOpened([this, codec, &board]() {
+    board.SetPowerSaveMode(false);
+    if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
+      ESP_LOGW(TAG,
+               "Server sample rate %d does not match device output sample rate "
+               "%d, resampling may cause distortion",
+               protocol_->server_sample_rate(), codec->output_sample_rate());
     }
-
-    protocol_->OnConnected([this]() {
-        DismissAlert();
+  });
+  protocol_->OnAudioChannelClosed([this, &board]() {
+    board.SetPowerSaveMode(true);
+    Schedule([this]() {
+      auto display = Board::GetInstance().GetDisplay();
+      display->SetChatMessage("system", "");
+      SetDeviceState(kDeviceStateIdle);
     });
-
-    protocol_->OnNetworkError([this](const std::string& message) {
-        last_error_message_ = message;
-        xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
-    });
-    protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (device_state_ == kDeviceStateSpeaking) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
-        }
-    });
-    protocol_->OnAudioChannelOpened([this, codec, &board]() {
-        board.SetPowerSaveMode(false);
-        if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
-            ESP_LOGW(TAG, "Server sample rate %d does not match device output sample rate %d, resampling may cause distortion",
-                protocol_->server_sample_rate(), codec->output_sample_rate());
-        }
-    });
-    protocol_->OnAudioChannelClosed([this, &board]() {
-        board.SetPowerSaveMode(true);
+  });
+  protocol_->OnIncomingJson([this, display](const cJSON *root) {
+    // Parse JSON data
+    auto type = cJSON_GetObjectItem(root, "type");
+    if (strcmp(type->valuestring, "tts") == 0) {
+      auto state = cJSON_GetObjectItem(root, "state");
+      if (strcmp(state->valuestring, "start") == 0) {
         Schedule([this]() {
-            auto display = Board::GetInstance().GetDisplay();
-            display->SetChatMessage("system", "");
-            SetDeviceState(kDeviceStateIdle);
+          aborted_ = false;
+          if (device_state_ == kDeviceStateIdle ||
+              device_state_ == kDeviceStateListening) {
+            SetDeviceState(kDeviceStateSpeaking);
+          }
         });
-    });
-    protocol_->OnIncomingJson([this, display](const cJSON* root) {
-        // Parse JSON data
-        auto type = cJSON_GetObjectItem(root, "type");
-        if (strcmp(type->valuestring, "tts") == 0) {
-            auto state = cJSON_GetObjectItem(root, "state");
-            if (strcmp(state->valuestring, "start") == 0) {
-                Schedule([this]() {
-                    aborted_ = false;
-                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
-                        SetDeviceState(kDeviceStateSpeaking);
-                    }
-                });
-            } else if (strcmp(state->valuestring, "stop") == 0) {
-                Schedule([this]() {
-                    if (device_state_ == kDeviceStateSpeaking) {
-                        if (listening_mode_ == kListeningModeManualStop) {
-                            SetDeviceState(kDeviceStateIdle);
-                        } else {
-                            SetDeviceState(kDeviceStateListening);
-                        }
-                    }
-                });
-            } else if (strcmp(state->valuestring, "sentence_start") == 0) {
-                auto text = cJSON_GetObjectItem(root, "text");
-                if (cJSON_IsString(text)) {
-                    std::string msg = text->valuestring;
-                    ESP_LOGI(TAG, "<< %s", msg.c_str());
-                    // DEBUG: print full JSON when a tool notification arrives
-                    if (msg.rfind("% ", 0) == 0) {
-                        char* dbg = cJSON_PrintUnformatted(root);
-                        if (dbg) { ESP_LOGI(TAG, "TOOL_MSG: %s", dbg); cJSON_free(dbg); }
-                    }
-
-                    bool internal_tool_message = false;
-
-                    // Detect why-image tool-call notifications sent by the broker.
-                    // The broker sends `% show_why_image({"image_url":"..."})` as
-                    // sentence_start text (not TTS).  Terminal output may truncate
-                    // it but text->valuestring always holds the full string.
-                    if (msg.rfind("% show_why_image", 0) == 0) {
-                        internal_tool_message = true;
-                        auto* lvgl_disp = dynamic_cast<LvglDisplay*>(display);
-                        if (lvgl_disp) {
-                            // Parse image_url directly — no server URL needed.
-                            static const char kKey1[] = "\"image_url\": \"";
-                            static const char kKey2[] = "\"image_url\":\"";
-                            size_t kp = msg.find(kKey1);
-                            size_t klen = sizeof(kKey1) - 1;
-                            if (kp == std::string::npos) {
-                                kp = msg.find(kKey2);
-                                klen = sizeof(kKey2) - 1;
-                            }
-                            if (kp != std::string::npos) {
-                                size_t us = kp + klen;
-                                size_t ue = msg.find('"', us);
-                                if (ue != std::string::npos) {
-                                    std::string orig = msg.substr(us, ue - us);
-                                    // Percent-encode for wsrv.nl (ESP32 needs baseline JPEG)
-                                    std::string encoded;
-                                    encoded.reserve(orig.size() * 3);
-                                    for (unsigned char c : orig) {
-                                        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                                            (c >= '0' && c <= '9') ||
-                                            c == '-' || c == '_' || c == '.' || c == '~') {
-                                            encoded += static_cast<char>(c);
-                                        } else {
-                                            char hex[4];
-                                            snprintf(hex, sizeof(hex), "%%%02X", c);
-                                            encoded += hex;
-                                        }
-                                    }
-                                    std::string wsrv =
-                                        "https://wsrv.nl/?url=" + encoded +
-                                        "&output=jpg&q=75&w=400";
-                                    ESP_LOGI(TAG, "why_image: %s", wsrv.c_str());
-                                    StartImageDisplayTask(lvgl_disp, {wsrv});
-                                }
-                            } else {
-                                // Fallback: broker didn't include args — poll NVS-configured server
-                                Settings fb("system");
-                                std::string srv = fb.GetString("img_srv", "");
-                                if (!srv.empty()) {
-                                    StartImagePollingTask(lvgl_disp, srv);
-                                } else {
-                                    ESP_LOGW(TAG, "show_why_image: no image_url in text");
-                                }
-                            }
-                        }
-                    } else if (msg.rfind("% hide_why_image", 0) == 0) {
-                        internal_tool_message = true;
-                        auto* lvgl_disp = dynamic_cast<LvglDisplay*>(display);
-                        if (lvgl_disp) {
-                            StartImageDisplayTask(lvgl_disp, {""});
-                        }
-                    }
-
-                    if (!internal_tool_message) {
-                        Schedule([this, display, message = msg]() {
-                            display->SetChatMessage("assistant", message.c_str());
-                        });
-                    }
-                }
-            }
-        } else if (strcmp(type->valuestring, "stt") == 0) {
-            auto text = cJSON_GetObjectItem(root, "text");
-            if (cJSON_IsString(text)) {
-                ESP_LOGI(TAG, ">> %s", text->valuestring);
-                Schedule([this, display, message = std::string(text->valuestring)]() {
-                    display->SetChatMessage("user", message.c_str());
-                });
-            }
-        } else if (strcmp(type->valuestring, "llm") == 0) {
-            auto emotion = cJSON_GetObjectItem(root, "emotion");
-            if (cJSON_IsString(emotion)) {
-                Schedule([this, display, emotion_str = std::string(emotion->valuestring)]() {
-                    display->SetEmotion(emotion_str.c_str());
-                });
-            }
-        } else if (strcmp(type->valuestring, "mcp") == 0) {
-            auto payload = cJSON_GetObjectItem(root, "payload");
-            if (cJSON_IsObject(payload)) {
-                McpServer::GetInstance().ParseMessage(payload);
-            }
-        } else if (strcmp(type->valuestring, "system") == 0) {
-            auto command = cJSON_GetObjectItem(root, "command");
-            if (cJSON_IsString(command)) {
-                ESP_LOGI(TAG, "System command: %s", command->valuestring);
-                if (strcmp(command->valuestring, "reboot") == 0) {
-                    // Do a reboot if user requests a OTA update
-                    Schedule([this]() {
-                        Reboot();
-                    });
-                } else {
-                    ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
-                }
-            }
-        } else if (strcmp(type->valuestring, "alert") == 0) {
-            auto status = cJSON_GetObjectItem(root, "status");
-            auto message = cJSON_GetObjectItem(root, "message");
-            auto emotion = cJSON_GetObjectItem(root, "emotion");
-            if (cJSON_IsString(status) && cJSON_IsString(message) && cJSON_IsString(emotion)) {
-                Alert(status->valuestring, message->valuestring, emotion->valuestring, Lang::Sounds::OGG_VIBRATION);
+      } else if (strcmp(state->valuestring, "stop") == 0) {
+        Schedule([this]() {
+          if (device_state_ == kDeviceStateSpeaking) {
+            if (listening_mode_ == kListeningModeManualStop) {
+              SetDeviceState(kDeviceStateIdle);
             } else {
-                ESP_LOGW(TAG, "Alert command requires status, message and emotion");
+              SetDeviceState(kDeviceStateListening);
             }
-#if CONFIG_RECEIVE_CUSTOM_MESSAGE
-        } else if (strcmp(type->valuestring, "custom") == 0) {
-            auto payload = cJSON_GetObjectItem(root, "payload");
-            ESP_LOGI(TAG, "Received custom message: %s", cJSON_PrintUnformatted(root));
-            if (cJSON_IsObject(payload)) {
-                Schedule([this, display, payload_str = std::string(cJSON_PrintUnformatted(payload))]() {
-                    display->SetChatMessage("system", payload_str.c_str());
-                });
-            } else {
-                ESP_LOGW(TAG, "Invalid custom message format: missing payload");
+          }
+        });
+      } else if (strcmp(state->valuestring, "sentence_start") == 0) {
+        auto text = cJSON_GetObjectItem(root, "text");
+        if (cJSON_IsString(text)) {
+          std::string msg = text->valuestring;
+          ESP_LOGI(TAG, "<< %s", msg.c_str());
+          // DEBUG: print full JSON when a tool notification arrives
+          if (msg.rfind("% ", 0) == 0) {
+            char *dbg = cJSON_PrintUnformatted(root);
+            if (dbg) {
+              ESP_LOGI(TAG, "TOOL_MSG: %s", dbg);
+              cJSON_free(dbg);
             }
-#endif
-        } else if (strcmp(type->valuestring, "display_images") == 0) {
-            auto urls_arr    = cJSON_GetObjectItem(root, "urls");
-            auto duration_ms = cJSON_GetObjectItem(root, "duration_ms");
-            int  dur = cJSON_IsNumber(duration_ms) ? duration_ms->valueint : 5000;
-            std::vector<std::string> urls;
-            if (cJSON_IsArray(urls_arr)) {
-                cJSON* item;
-                cJSON_ArrayForEach(item, urls_arr) {
-                    if (cJSON_IsString(item) && item->valuestring[0] != '\0') {
-                        urls.emplace_back(item->valuestring);
+          }
+
+          bool internal_tool_message = false;
+
+          // Detect why-image tool-call notifications sent by the broker.
+          // The broker sends `% show_why_image({"image_url":"..."})` as
+          // sentence_start text (not TTS).  Terminal output may truncate
+          // it but text->valuestring always holds the full string.
+          if (msg.rfind("% show_why_image", 0) == 0) {
+            internal_tool_message = true;
+            auto *lvgl_disp = dynamic_cast<LvglDisplay *>(display);
+            if (lvgl_disp) {
+              // Parse image_url directly — no server URL needed.
+              static const char kKey1[] = "\"image_url\": \"";
+              static const char kKey2[] = "\"image_url\":\"";
+              size_t kp = msg.find(kKey1);
+              size_t klen = sizeof(kKey1) - 1;
+              if (kp == std::string::npos) {
+                kp = msg.find(kKey2);
+                klen = sizeof(kKey2) - 1;
+              }
+              if (kp != std::string::npos) {
+                size_t us = kp + klen;
+                size_t ue = msg.find('"', us);
+                if (ue != std::string::npos) {
+                  std::string orig = msg.substr(us, ue - us);
+                  // Percent-encode for wsrv.nl (ESP32 needs baseline JPEG)
+                  std::string encoded;
+                  encoded.reserve(orig.size() * 3);
+                  for (unsigned char c : orig) {
+                    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                        c == '.' || c == '~') {
+                      encoded += static_cast<char>(c);
+                    } else {
+                      char hex[4];
+                      snprintf(hex, sizeof(hex), "%%%02X", c);
+                      encoded += hex;
                     }
+                  }
+                  std::string wsrv = "https://wsrv.nl/?url=" + encoded +
+                                     "&output=jpg&q=75&w=400";
+                  ESP_LOGI(TAG, "why_image: %s", wsrv.c_str());
+                  StartImageDisplayTask(lvgl_disp, {wsrv});
                 }
-            }
-            if (!urls.empty()) {
-                auto* lvgl = dynamic_cast<LvglDisplay*>(display);
-                if (lvgl) {
-                    StartImageDisplayTask(lvgl, std::move(urls), dur);
+              } else {
+                // Fallback: broker didn't include args — poll NVS-configured
+                // server
+                Settings fb("system");
+                std::string srv = fb.GetString("img_srv", "");
+                if (!srv.empty()) {
+                  StartImagePollingTask(lvgl_disp, srv);
                 } else {
-                    ESP_LOGW(TAG, "display_images: not LvglDisplay");
+                  ESP_LOGW(TAG, "show_why_image: no image_url in text");
                 }
+              }
             }
-        } else {
-            ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
+          } else if (msg.rfind("% hide_why_image", 0) == 0) {
+            internal_tool_message = true;
+            auto *lvgl_disp = dynamic_cast<LvglDisplay *>(display);
+            if (lvgl_disp) {
+              StartImageDisplayTask(lvgl_disp, {""});
+            }
+          }
+
+          if (!internal_tool_message) {
+            Schedule([this, display, message = msg]() {
+              display->SetChatMessage("assistant", message.c_str());
+            });
+          }
         }
-    });
-    bool protocol_started = protocol_->Start();
-
-    SystemInfo::PrintHeapStats();
-    SetDeviceState(kDeviceStateIdle);
-
-    has_server_time_ = ota.HasServerTime();
-    if (protocol_started) {
-        std::string message = std::string(Lang::Strings::VERSION) + ota.GetCurrentVersion();
-        display->ShowNotification(message.c_str());
-        display->SetChatMessage("system", "");
-        // Play the success sound to indicate the device is ready
-        audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+      }
+    } else if (strcmp(type->valuestring, "stt") == 0) {
+      auto text = cJSON_GetObjectItem(root, "text");
+      if (cJSON_IsString(text)) {
+        ESP_LOGI(TAG, ">> %s", text->valuestring);
+        Schedule([this, display, message = std::string(text->valuestring)]() {
+          display->SetChatMessage("user", message.c_str());
+        });
+      }
+    } else if (strcmp(type->valuestring, "llm") == 0) {
+      auto emotion = cJSON_GetObjectItem(root, "emotion");
+      if (cJSON_IsString(emotion)) {
+        Schedule(
+            [this, display, emotion_str = std::string(emotion->valuestring)]() {
+              display->SetEmotion(emotion_str.c_str());
+            });
+      }
+    } else if (strcmp(type->valuestring, "mcp") == 0) {
+      auto payload = cJSON_GetObjectItem(root, "payload");
+      if (cJSON_IsObject(payload)) {
+        McpServer::GetInstance().ParseMessage(payload);
+      }
+    } else if (strcmp(type->valuestring, "system") == 0) {
+      auto command = cJSON_GetObjectItem(root, "command");
+      if (cJSON_IsString(command)) {
+        ESP_LOGI(TAG, "System command: %s", command->valuestring);
+        if (strcmp(command->valuestring, "reboot") == 0) {
+          // Do a reboot if user requests a OTA update
+          Schedule([this]() { Reboot(); });
+        } else {
+          ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
+        }
+      }
+    } else if (strcmp(type->valuestring, "alert") == 0) {
+      auto status = cJSON_GetObjectItem(root, "status");
+      auto message = cJSON_GetObjectItem(root, "message");
+      auto emotion = cJSON_GetObjectItem(root, "emotion");
+      if (cJSON_IsString(status) && cJSON_IsString(message) &&
+          cJSON_IsString(emotion)) {
+        Alert(status->valuestring, message->valuestring, emotion->valuestring,
+              Lang::Sounds::OGG_VIBRATION);
+      } else {
+        ESP_LOGW(TAG, "Alert command requires status, message and emotion");
+      }
+#if CONFIG_RECEIVE_CUSTOM_MESSAGE
+    } else if (strcmp(type->valuestring, "custom") == 0) {
+      auto payload = cJSON_GetObjectItem(root, "payload");
+      ESP_LOGI(TAG, "Received custom message: %s",
+               cJSON_PrintUnformatted(root));
+      if (cJSON_IsObject(payload)) {
+        Schedule(
+            [this, display,
+             payload_str = std::string(cJSON_PrintUnformatted(payload))]() {
+              display->SetChatMessage("system", payload_str.c_str());
+            });
+      } else {
+        ESP_LOGW(TAG, "Invalid custom message format: missing payload");
+      }
+#endif
+    } else if (strcmp(type->valuestring, "display_images") == 0) {
+      auto urls_arr = cJSON_GetObjectItem(root, "urls");
+      auto duration_ms = cJSON_GetObjectItem(root, "duration_ms");
+      int dur = cJSON_IsNumber(duration_ms) ? duration_ms->valueint : 5000;
+      std::vector<std::string> urls;
+      if (cJSON_IsArray(urls_arr)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, urls_arr) {
+          if (cJSON_IsString(item) && item->valuestring[0] != '\0') {
+            urls.emplace_back(item->valuestring);
+          }
+        }
+      }
+      if (!urls.empty()) {
+        auto *lvgl = dynamic_cast<LvglDisplay *>(display);
+        if (lvgl) {
+          StartImageDisplayTask(lvgl, std::move(urls), dur);
+        } else {
+          ESP_LOGW(TAG, "display_images: not LvglDisplay");
+        }
+      }
+    } else {
+      ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
     }
+  });
+  bool protocol_started = protocol_->Start();
+  InitServerAlarm();
+
+  SystemInfo::PrintHeapStats();
+  SetDeviceState(kDeviceStateIdle);
+
+  has_server_time_ = ota.HasServerTime();
+  if (protocol_started) {
+    std::string message =
+        std::string(Lang::Strings::VERSION) + ota.GetCurrentVersion();
+    display->ShowNotification(message.c_str());
+    display->SetChatMessage("system", "");
+    // Play the success sound to indicate the device is ready
+    audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+  }
 }
 
 // Add a async task to MainLoop
 void Application::Schedule(std::function<void()> callback) {
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        main_tasks_.push_back(std::move(callback));
-    }
-    xEventGroupSetBits(event_group_, MAIN_EVENT_SCHEDULE);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    main_tasks_.push_back(std::move(callback));
+  }
+  xEventGroupSetBits(event_group_, MAIN_EVENT_SCHEDULE);
 }
 
 // The Main Event Loop controls the chat state and websocket connection
 // If other tasks need to access the websocket or chat state,
 // they should use Schedule to call this function
 void Application::MainEventLoop() {
-    while (true) {
-        auto bits = xEventGroupWaitBits(event_group_, MAIN_EVENT_SCHEDULE |
-            MAIN_EVENT_SEND_AUDIO |
-            MAIN_EVENT_WAKE_WORD_DETECTED |
-            MAIN_EVENT_VAD_CHANGE |
-            MAIN_EVENT_CLOCK_TICK |
-            MAIN_EVENT_ERROR, pdTRUE, pdFALSE, portMAX_DELAY);
+  while (true) {
+    auto bits = xEventGroupWaitBits(
+        event_group_,
+        MAIN_EVENT_SCHEDULE | MAIN_EVENT_SEND_AUDIO |
+            MAIN_EVENT_WAKE_WORD_DETECTED | MAIN_EVENT_VAD_CHANGE |
+            MAIN_EVENT_CLOCK_TICK | MAIN_EVENT_ERROR,
+        pdTRUE, pdFALSE, portMAX_DELAY);
 
-        if (bits & MAIN_EVENT_ERROR) {
-            SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
-        }
-
-        if (bits & MAIN_EVENT_SEND_AUDIO) {
-            while (auto packet = audio_service_.PopPacketFromSendQueue()) {
-                if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
-                    break;
-                }
-            }
-        }
-
-        if (bits & MAIN_EVENT_WAKE_WORD_DETECTED) {
-            OnWakeWordDetected();
-        }
-
-        if (bits & MAIN_EVENT_VAD_CHANGE) {
-            if (device_state_ == kDeviceStateListening) {
-                auto led = Board::GetInstance().GetLed();
-                led->OnStateChanged();
-            }
-        }
-
-        if (bits & MAIN_EVENT_SCHEDULE) {
-            std::unique_lock<std::mutex> lock(mutex_);
-            auto tasks = std::move(main_tasks_);
-            lock.unlock();
-            for (auto& task : tasks) {
-                task();
-            }
-        }
-
-        if (bits & MAIN_EVENT_CLOCK_TICK) {
-            clock_ticks_++;
-            auto display = Board::GetInstance().GetDisplay();
-            display->UpdateStatusBar();
-
-            // Check alarm triggers every second
-            if (alarm_manager_) {
-                alarm_manager_->checkAlarms();
-            }
-
-            // Print the debug info every 10 seconds
-            if (clock_ticks_ % 10 == 0) {
-                // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));
-                // SystemInfo::PrintTaskList();
-                SystemInfo::PrintHeapStats();
-            }
-
-        }
+    if (bits & MAIN_EVENT_ERROR) {
+      SetDeviceState(kDeviceStateIdle);
+      Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "circle_xmark",
+            Lang::Sounds::OGG_EXCLAMATION);
     }
+
+    if (bits & MAIN_EVENT_SEND_AUDIO) {
+      while (auto packet = audio_service_.PopPacketFromSendQueue()) {
+        if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
+          break;
+        }
+      }
+    }
+
+    if (bits & MAIN_EVENT_WAKE_WORD_DETECTED) {
+      OnWakeWordDetected();
+    }
+
+    if (bits & MAIN_EVENT_VAD_CHANGE) {
+      if (device_state_ == kDeviceStateListening) {
+        auto led = Board::GetInstance().GetLed();
+        led->OnStateChanged();
+      }
+    }
+
+    if (bits & MAIN_EVENT_SCHEDULE) {
+      std::unique_lock<std::mutex> lock(mutex_);
+      auto tasks = std::move(main_tasks_);
+      lock.unlock();
+      for (auto &task : tasks) {
+        task();
+      }
+    }
+
+    if (bits & MAIN_EVENT_CLOCK_TICK) {
+      clock_ticks_++;
+      auto display = Board::GetInstance().GetDisplay();
+      display->UpdateStatusBar();
+
+      // Check alarm triggers every second
+      if (alarm_manager_) {
+        alarm_manager_->checkAlarms();
+      }
+
+      // Print the debug info every 10 seconds
+      if (clock_ticks_ % 10 == 0) {
+        // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));
+        // SystemInfo::PrintTaskList();
+        SystemInfo::PrintHeapStats();
+      }
+    }
+  }
 }
 
 void Application::OnWakeWordDetected() {
-    if (!protocol_) {
+  if (!protocol_) {
+    return;
+  }
+
+  if (device_state_ == kDeviceStateIdle) {
+    audio_service_.EncodeWakeWord();
+
+    if (!protocol_->IsAudioChannelOpened()) {
+      SetDeviceState(kDeviceStateConnecting);
+      if (!protocol_->OpenAudioChannel()) {
+        audio_service_.EnableWakeWordDetection(true);
         return;
+      }
     }
 
-    if (device_state_ == kDeviceStateIdle) {
-        audio_service_.EncodeWakeWord();
-
-        if (!protocol_->IsAudioChannelOpened()) {
-            SetDeviceState(kDeviceStateConnecting);
-            if (!protocol_->OpenAudioChannel()) {
-                audio_service_.EnableWakeWordDetection(true);
-                return;
-            }
-        }
-
-        auto wake_word = audio_service_.GetLastWakeWord();
-        ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
+    auto wake_word = audio_service_.GetLastWakeWord();
+    ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
-        // Encode and send the wake word data to the server
-        while (auto packet = audio_service_.PopWakeWordPacket()) {
-            protocol_->SendAudio(std::move(packet));
-        }
-        // Set the chat state to wake word detected
-        protocol_->SendWakeWordDetected(wake_word);
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-#else
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-        // Play the pop up sound to indicate the wake word is detected
-        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
-#endif
-    } else if (device_state_ == kDeviceStateSpeaking) {
-        AbortSpeaking(kAbortReasonWakeWordDetected);
-    } else if (device_state_ == kDeviceStateActivating) {
-        SetDeviceState(kDeviceStateIdle);
+    // Encode and send the wake word data to the server
+    while (auto packet = audio_service_.PopWakeWordPacket()) {
+      protocol_->SendAudio(std::move(packet));
     }
+    // Set the chat state to wake word detected
+    protocol_->SendWakeWordDetected(wake_word);
+    SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop
+                                          : kListeningModeRealtime);
+#else
+    SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop
+                                          : kListeningModeRealtime);
+    // Play the pop up sound to indicate the wake word is detected
+    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+#endif
+  } else if (device_state_ == kDeviceStateSpeaking) {
+    AbortSpeaking(kAbortReasonWakeWordDetected);
+  } else if (device_state_ == kDeviceStateActivating) {
+    SetDeviceState(kDeviceStateIdle);
+  }
 }
 
 void Application::AbortSpeaking(AbortReason reason) {
-    ESP_LOGI(TAG, "Abort speaking");
-    aborted_ = true;
-    if (protocol_) {
-        protocol_->SendAbortSpeaking(reason);
-    }
+  ESP_LOGI(TAG, "Abort speaking");
+  aborted_ = true;
+  if (protocol_) {
+    protocol_->SendAbortSpeaking(reason);
+  }
 }
 
 void Application::SetListeningMode(ListeningMode mode) {
-    listening_mode_ = mode;
-    SetDeviceState(kDeviceStateListening);
+  listening_mode_ = mode;
+  SetDeviceState(kDeviceStateListening);
 }
 
 void Application::SetDeviceState(DeviceState state) {
-    if (device_state_ == state) {
-        ESP_LOGI(TAG, "Device state already in %s, no need to change", STATE_STRINGS[state]);
-        return;
-    }
-    
-    clock_ticks_ = 0;
-    auto previous_state = device_state_;
-    device_state_ = state;
-    ESP_LOGI(TAG, "STATE: %s", STATE_STRINGS[device_state_]);
+  if (device_state_ == state) {
+    ESP_LOGI(TAG, "Device state already in %s, no need to change",
+             STATE_STRINGS[state]);
+    return;
+  }
 
-    // Send the state change event
-    DeviceStateEventManager::GetInstance().PostStateChangeEvent(previous_state, state);
+  clock_ticks_ = 0;
+  auto previous_state = device_state_;
+  device_state_ = state;
+  ESP_LOGI(TAG, "STATE: %s", STATE_STRINGS[device_state_]);
 
-    auto& board = Board::GetInstance();
-    auto display = board.GetDisplay();
+  // Send the state change event
+  DeviceStateEventManager::GetInstance().PostStateChangeEvent(previous_state,
+                                                              state);
+
+  auto &board = Board::GetInstance();
+  auto display = board.GetDisplay();
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-    // --- [ADD HIDDEN/SHOWABLE LOGIC FOR IDLE SCREEN] ---
-    if (state != kDeviceStateIdle) {
-        // If not Idle, hide the idle screen
-        ESP_LOGI(TAG, "Hiding idle screen due to state change: %s -> %s", 
-                STATE_STRINGS[previous_state], STATE_STRINGS[state]);
-        display->HideIdleCard();
-    }
-    // -----------------------------
+  // --- [ADD HIDDEN/SHOWABLE LOGIC FOR IDLE SCREEN] ---
+  if (state != kDeviceStateIdle) {
+    // If not Idle, hide the idle screen
+    ESP_LOGI(TAG, "Hiding idle screen due to state change: %s -> %s",
+             STATE_STRINGS[previous_state], STATE_STRINGS[state]);
+    display->HideIdleCard();
+  }
+  // -----------------------------
 #endif
 
-    auto led = board.GetLed();
-    led->OnStateChanged();
-    // Stop all active media and clear display overlays when leaving idle state
-    if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle) {
-        StopOtherMedia();
-        qrcode::QRCodeDisplay::GetInstance().Clear();
-    }																	   
-    switch (state) {
-        case kDeviceStateUnknown:
-        case kDeviceStateIdle:
-            display->SetStatus(Lang::Strings::STANDBY);
-            display->ClearPreviewImage();
-            display->SetEmotion("neutral");
-            audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
-            break;
-        case kDeviceStateConnecting:
-            display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("neutral");
-            display->SetChatMessage("system", "");
-            break;
-        case kDeviceStateListening:
-            display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
-            display->ClearPreviewImage();
+  auto led = board.GetLed();
+  led->OnStateChanged();
+  // Stop all active media and clear display overlays when leaving idle state
+  if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle) {
+    StopOtherMedia();
+    qrcode::QRCodeDisplay::GetInstance().Clear();
+  }
+  switch (state) {
+  case kDeviceStateUnknown:
+  case kDeviceStateIdle:
+    display->SetStatus(Lang::Strings::STANDBY);
+    display->ClearPreviewImage();
+    display->SetEmotion("neutral");
+    audio_service_.EnableVoiceProcessing(false);
+    audio_service_.EnableWakeWordDetection(true);
+    break;
+  case kDeviceStateConnecting:
+    display->SetStatus(Lang::Strings::CONNECTING);
+    display->SetEmotion("neutral");
+    display->SetChatMessage("system", "");
+    break;
+  case kDeviceStateListening:
+    display->SetStatus(Lang::Strings::LISTENING);
+    display->SetEmotion("neutral");
+    display->ClearPreviewImage();
 
-            // Make sure the audio processor is running
-            if (!audio_service_.IsAudioProcessorRunning()) {
-                // Send the start listening command
-                protocol_->SendStartListening(listening_mode_);
-                audio_service_.EnableVoiceProcessing(true);
-                audio_service_.EnableWakeWordDetection(false);
-            }
-            break;
-        case kDeviceStateSpeaking:
-            display->SetStatus(Lang::Strings::SPEAKING);
-
-            if (listening_mode_ != kListeningModeRealtime) {
-                audio_service_.EnableVoiceProcessing(false);
-                // Only AFE wake word can be detected in speaking mode
-                audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
-            }
-            audio_service_.ResetDecoder();
-            break;
-        default:
-            // Do nothing
-            break;
+    // Make sure the audio processor is running
+    if (!audio_service_.IsAudioProcessorRunning()) {
+      // Send the start listening command
+      protocol_->SendStartListening(listening_mode_);
+      audio_service_.EnableVoiceProcessing(true);
+      audio_service_.EnableWakeWordDetection(false);
     }
+    break;
+  case kDeviceStateSpeaking:
+    display->SetStatus(Lang::Strings::SPEAKING);
 
-    // Fire pending media playback when TTS finishes (SPEAKING → IDLE/LISTENING)
-    if (previous_state == kDeviceStateSpeaking &&
-        (state == kDeviceStateIdle || state == kDeviceStateListening) &&
-        !pending_media_url_.empty()) {
-        std::string url   = std::move(pending_media_url_);
-        std::string title = std::move(pending_media_title_);
-        Schedule([this, url, title]() {
-            PlayRadioUrl(url, title);
-        });
+    if (listening_mode_ != kListeningModeRealtime) {
+      audio_service_.EnableVoiceProcessing(false);
+      // Only AFE wake word can be detected in speaking mode
+      audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
     }
+    audio_service_.ResetDecoder();
+    break;
+  default:
+    // Do nothing
+    break;
+  }
+
+  // Fire pending media playback when TTS finishes (SPEAKING → IDLE/LISTENING)
+  if (previous_state == kDeviceStateSpeaking &&
+      (state == kDeviceStateIdle || state == kDeviceStateListening) &&
+      !pending_media_url_.empty()) {
+    std::string url = std::move(pending_media_url_);
+    std::string title = std::move(pending_media_title_);
+    Schedule([this, url, title]() { PlayRadioUrl(url, title); });
+  }
 }
 
 void Application::Reboot() {
-    ESP_LOGI(TAG, "Rebooting...");
-    // Disconnect the audio channel
-    if (protocol_ && protocol_->IsAudioChannelOpened()) {
-        protocol_->CloseAudioChannel();
-    }
-    protocol_.reset();
-    audio_service_.Stop();
+  ESP_LOGI(TAG, "Rebooting...");
+  // Disconnect the audio channel
+  if (protocol_ && protocol_->IsAudioChannelOpened()) {
+    protocol_->CloseAudioChannel();
+  }
+  protocol_.reset();
+  audio_service_.Stop();
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    esp_restart();
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  esp_restart();
 }
 
-bool Application::UpgradeFirmware(Ota& ota, const std::string& url) {
-    auto& board = Board::GetInstance();
-    auto display = board.GetDisplay();
-    
-    // Use provided URL or get from OTA object
-    std::string upgrade_url = url.empty() ? ota.GetFirmwareUrl() : url;
-    std::string version_info = url.empty() ? ota.GetFirmwareVersion() : "(Manual upgrade)";
-    
-    // Close audio channel if it's open
-    if (protocol_ && protocol_->IsAudioChannelOpened()) {
-        ESP_LOGI(TAG, "Closing audio channel before firmware upgrade");
-        protocol_->CloseAudioChannel();
-    }
-    ESP_LOGI(TAG, "Starting firmware upgrade from URL: %s", upgrade_url.c_str());
-    
-    Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "download", Lang::Sounds::OGG_UPGRADE);
-    vTaskDelay(pdMS_TO_TICKS(3000));
+bool Application::UpgradeFirmware(Ota &ota, const std::string &url) {
+  auto &board = Board::GetInstance();
+  auto display = board.GetDisplay();
 
-    SetDeviceState(kDeviceStateUpgrading);
-    
-    std::string message = std::string(Lang::Strings::NEW_VERSION) + version_info;
-    display->SetChatMessage("system", message.c_str());
+  // Use provided URL or get from OTA object
+  std::string upgrade_url = url.empty() ? ota.GetFirmwareUrl() : url;
+  std::string version_info =
+      url.empty() ? ota.GetFirmwareVersion() : "(Manual upgrade)";
 
-    board.SetPowerSaveMode(false);
-    audio_service_.Stop();
-    vTaskDelay(pdMS_TO_TICKS(1000));
+  // Close audio channel if it's open
+  if (protocol_ && protocol_->IsAudioChannelOpened()) {
+    ESP_LOGI(TAG, "Closing audio channel before firmware upgrade");
+    protocol_->CloseAudioChannel();
+  }
+  ESP_LOGI(TAG, "Starting firmware upgrade from URL: %s", upgrade_url.c_str());
 
-    bool upgrade_success = ota.StartUpgradeFromUrl(upgrade_url, [display](int progress, size_t speed) {
+  Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "download",
+        Lang::Sounds::OGG_UPGRADE);
+  vTaskDelay(pdMS_TO_TICKS(3000));
+
+  SetDeviceState(kDeviceStateUpgrading);
+
+  std::string message = std::string(Lang::Strings::NEW_VERSION) + version_info;
+  display->SetChatMessage("system", message.c_str());
+
+  board.SetPowerSaveMode(false);
+  audio_service_.Stop();
+  vTaskDelay(pdMS_TO_TICKS(1000));
+
+  bool upgrade_success = ota.StartUpgradeFromUrl(
+      upgrade_url, [display](int progress, size_t speed) {
         std::thread([display, progress, speed]() {
-            char buffer[32];
-            snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
-            display->SetChatMessage("system", buffer);
+          char buffer[32];
+          snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress,
+                   speed / 1024);
+          display->SetChatMessage("system", buffer);
         }).detach();
-    });
+      });
 
-    if (!upgrade_success) {
-        // Upgrade failed, restart audio service and continue running
-        ESP_LOGE(TAG, "Firmware upgrade failed, restarting audio service and continuing operation...");
-        audio_service_.Start(); // Restart audio service
-        board.SetPowerSaveMode(true); // Restore power save mode
-        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        return false;
-    } else {
-        // Upgrade success, reboot immediately
-        ESP_LOGI(TAG, "Firmware upgrade successful, rebooting...");
-        display->SetChatMessage("system", "Upgrade successful, rebooting...");
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Brief pause to show message
-        Reboot();
-        return true;
-    }
+  if (!upgrade_success) {
+    // Upgrade failed, restart audio service and continue running
+    ESP_LOGE(TAG, "Firmware upgrade failed, restarting audio service and "
+                  "continuing operation...");
+    audio_service_.Start();       // Restart audio service
+    board.SetPowerSaveMode(true); // Restore power save mode
+    Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "circle_xmark",
+          Lang::Sounds::OGG_EXCLAMATION);
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    return false;
+  } else {
+    // Upgrade success, reboot immediately
+    ESP_LOGI(TAG, "Firmware upgrade successful, rebooting...");
+    display->SetChatMessage("system", "Upgrade successful, rebooting...");
+    vTaskDelay(pdMS_TO_TICKS(1000)); // Brief pause to show message
+    Reboot();
+    return true;
+  }
 }
 
-void Application::WakeWordInvoke(const std::string& wake_word) {
-    if (!protocol_) {
+void Application::WakeWordInvoke(const std::string &wake_word) {
+  if (!protocol_) {
+    return;
+  }
+
+  if (device_state_ == kDeviceStateIdle) {
+    audio_service_.EncodeWakeWord();
+
+    if (!protocol_->IsAudioChannelOpened()) {
+      SetDeviceState(kDeviceStateConnecting);
+      if (!protocol_->OpenAudioChannel()) {
+        audio_service_.EnableWakeWordDetection(true);
         return;
+      }
     }
 
-    if (device_state_ == kDeviceStateIdle) {
-        audio_service_.EncodeWakeWord();
-
-        if (!protocol_->IsAudioChannelOpened()) {
-            SetDeviceState(kDeviceStateConnecting);
-            if (!protocol_->OpenAudioChannel()) {
-                audio_service_.EnableWakeWordDetection(true);
-                return;
-            }
-        }
-
-        ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
+    ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
 #if CONFIG_USE_AFE_WAKE_WORD || CONFIG_USE_CUSTOM_WAKE_WORD
-        // Encode and send the wake word data to the server
-        while (auto packet = audio_service_.PopWakeWordPacket()) {
-            protocol_->SendAudio(std::move(packet));
-        }
-        // Set the chat state to wake word detected
-        protocol_->SendWakeWordDetected(wake_word);
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-#else
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-        // Play the pop up sound to indicate the wake word is detected
-        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
-#endif
-    } else if (device_state_ == kDeviceStateSpeaking) {
-        Schedule([this]() {
-            AbortSpeaking(kAbortReasonNone);
-        });
-    } else if (device_state_ == kDeviceStateListening) {   
-        Schedule([this]() {
-            if (protocol_) {
-                protocol_->CloseAudioChannel();
-            }
-        });
+    // Encode and send the wake word data to the server
+    while (auto packet = audio_service_.PopWakeWordPacket()) {
+      protocol_->SendAudio(std::move(packet));
     }
+    // Set the chat state to wake word detected
+    protocol_->SendWakeWordDetected(wake_word);
+    SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop
+                                          : kListeningModeRealtime);
+#else
+    SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop
+                                          : kListeningModeRealtime);
+    // Play the pop up sound to indicate the wake word is detected
+    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+#endif
+  } else if (device_state_ == kDeviceStateSpeaking) {
+    Schedule([this]() { AbortSpeaking(kAbortReasonNone); });
+  } else if (device_state_ == kDeviceStateListening) {
+    Schedule([this]() {
+      if (protocol_) {
+        protocol_->CloseAudioChannel();
+      }
+    });
+  }
 }
 
 bool Application::CanEnterSleepMode() {
-    if (device_state_ != kDeviceStateIdle) {
-        return false;
-    }
+  if (device_state_ != kDeviceStateIdle) {
+    return false;
+  }
 
-    if (protocol_ && protocol_->IsAudioChannelOpened()) {
-        return false;
-    }
+  if (protocol_ && protocol_->IsAudioChannelOpened()) {
+    return false;
+  }
 
-    if (!audio_service_.IsIdle()) {
-        return false;
-    }
+  if (!audio_service_.IsIdle()) {
+    return false;
+  }
 
-    // Now it is safe to enter sleep mode
-    return true;
+  // Now it is safe to enter sleep mode
+  return true;
 }
 
-void Application::SendMcpMessage(const std::string& payload) {
-    if (protocol_ == nullptr) {
-        return;
-    }
+void Application::SendMcpMessage(const std::string &payload) {
+  if (protocol_ == nullptr) {
+    return;
+  }
 
-    // Make sure you are using main thread to send MCP message
-    if (xTaskGetCurrentTaskHandle() == main_event_loop_task_handle_) {
-        protocol_->SendMcpMessage(payload);
-    } else {
-        Schedule([this, payload = std::move(payload)]() {
-            protocol_->SendMcpMessage(payload);
-        });
-    }
+  // Make sure you are using main thread to send MCP message
+  if (xTaskGetCurrentTaskHandle() == main_event_loop_task_handle_) {
+    protocol_->SendMcpMessage(payload);
+  } else {
+    Schedule([this, payload = std::move(payload)]() {
+      protocol_->SendMcpMessage(payload);
+    });
+  }
 }
 
 void Application::SetAecMode(AecMode mode) {
-    aec_mode_ = mode;
-    Schedule([this]() {
-        auto& board = Board::GetInstance();
-        auto display = board.GetDisplay();
-        switch (aec_mode_) {
-        case kAecOff:
-            audio_service_.EnableDeviceAec(false);
-            display->ShowNotification(Lang::Strings::RTC_MODE_OFF);
-            break;
-        case kAecOnServerSide:
-            audio_service_.EnableDeviceAec(false);
-            display->ShowNotification(Lang::Strings::RTC_MODE_ON);
-            break;
-        case kAecOnDeviceSide:
-            audio_service_.EnableDeviceAec(true);
-            display->ShowNotification(Lang::Strings::RTC_MODE_ON);
-            break;
-        }
+  aec_mode_ = mode;
+  Schedule([this]() {
+    auto &board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    switch (aec_mode_) {
+    case kAecOff:
+      audio_service_.EnableDeviceAec(false);
+      display->ShowNotification(Lang::Strings::RTC_MODE_OFF);
+      break;
+    case kAecOnServerSide:
+      audio_service_.EnableDeviceAec(false);
+      display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+      break;
+    case kAecOnDeviceSide:
+      audio_service_.EnableDeviceAec(true);
+      display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+      break;
+    }
 
-        // If the AEC mode is changed, close the audio channel
-        if (protocol_ && protocol_->IsAudioChannelOpened()) {
-            protocol_->CloseAudioChannel();
-        }
-    });
+    // If the AEC mode is changed, close the audio channel
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+      protocol_->CloseAudioChannel();
+    }
+  });
 }
-
 
 // New: Receive external audio data (such as music playback)
-void Application::AddAudioData(AudioStreamPacket&& packet) {
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (device_state_ == kDeviceStateIdle && codec->output_enabled()) {
-        // packet.payload contains raw PCM data (int16_t)
-        if (packet.payload.size() >= 2) {
-            size_t num_samples = packet.payload.size() / sizeof(int16_t);
-            std::vector<int16_t> pcm_data(num_samples);
-            memcpy(pcm_data.data(), packet.payload.data(), packet.payload.size());
-            
-            // Check if sample rate matches, if not, perform simple resampling
-            if (packet.sample_rate != codec->output_sample_rate()) {
-                // ESP_LOGI(TAG, "Resampling music audio from %d to %d Hz", 
-                //         packet.sample_rate, codec->output_sample_rate());
-                
-                // Validate sample rate parameters
-                if (packet.sample_rate <= 0 || codec->output_sample_rate() <= 0) {
-                    ESP_LOGE(TAG, "Invalid sample rates: %d -> %d", 
-                            packet.sample_rate, codec->output_sample_rate());
-                    return;
-                }
-                
-                std::vector<int16_t> resampled;
-                
-                if (packet.sample_rate > codec->output_sample_rate()) {
-                    ESP_LOGI(TAG, "Music playback: Switching sample rate from %d Hz to %d Hz", 
-                        codec->output_sample_rate(), packet.sample_rate);
+void Application::AddAudioData(AudioStreamPacket &&packet) {
+  auto codec = Board::GetInstance().GetAudioCodec();
+  if (device_state_ == kDeviceStateIdle && codec->output_enabled()) {
+    // packet.payload contains raw PCM data (int16_t)
+    if (packet.payload.size() >= 2) {
+      size_t num_samples = packet.payload.size() / sizeof(int16_t);
+      std::vector<int16_t> pcm_data(num_samples);
+      memcpy(pcm_data.data(), packet.payload.data(), packet.payload.size());
 
-                    // Try to dynamically switch sample rate
-                    if (codec->SetOutputSampleRate(packet.sample_rate)) {
-                        ESP_LOGI(TAG, "Successfully switched to music playback sample rate: %d Hz", packet.sample_rate);
-                    } else {
-                        ESP_LOGW(TAG, "Cannot switch sample rate, continue using current sample rate: %d Hz", codec->output_sample_rate());
-                    }
-                } else {
-                    // Upsampling: linear interpolation
-                    float upsample_ratio = codec->output_sample_rate() / static_cast<float>(packet.sample_rate);
-                    size_t expected_size = static_cast<size_t>(pcm_data.size() * upsample_ratio + 0.5f);
-                    resampled.reserve(expected_size);
-                    
-                    for (size_t i = 0; i < pcm_data.size(); ++i) {
-                        // Add original sample
-                        resampled.push_back(pcm_data[i]);
-                        
-                        // Calculate number of samples to interpolate
-                        int interpolation_count = static_cast<int>(upsample_ratio) - 1;
-                        if (interpolation_count > 0 && i + 1 < pcm_data.size()) {
-                            int16_t current = pcm_data[i];
-                            int16_t next = pcm_data[i + 1];
-                            for (int j = 1; j <= interpolation_count; ++j) {
-                                float t = static_cast<float>(j) / (interpolation_count + 1);
-                                int16_t interpolated = static_cast<int16_t>(current + (next - current) * t);
-                                resampled.push_back(interpolated);
-                            }
-                        } else if (interpolation_count > 0) {
-                            // For the last sample, simply repeat it
-                            for (int j = 1; j <= interpolation_count; ++j) {
-                                resampled.push_back(pcm_data[i]);
-                            }
-                        }
-                    }
-                    
-                    ESP_LOGI(TAG, "Upsampled %d -> %d samples (ratio: %.2f)", 
-                            pcm_data.size(), resampled.size(), upsample_ratio);
-                }
-                
-                pcm_data = std::move(resampled);
-            }
-            
-            // Ensure audio output is enabled
-            if (!codec->output_enabled()) {
-                ESP_LOGW(TAG, "%s Enabling audio output for music playback", __func__);
-                codec->EnableOutput(true);
-            }
-            
-            // Send PCM data to audio codec
-            codec->OutputData(pcm_data);
-            
-            audio_service_.UpdateOutputTimestamp();
+      // Check if sample rate matches, if not, perform simple resampling
+      if (packet.sample_rate != codec->output_sample_rate()) {
+        // ESP_LOGI(TAG, "Resampling music audio from %d to %d Hz",
+        //         packet.sample_rate, codec->output_sample_rate());
+
+        // Validate sample rate parameters
+        if (packet.sample_rate <= 0 || codec->output_sample_rate() <= 0) {
+          ESP_LOGE(TAG, "Invalid sample rates: %d -> %d", packet.sample_rate,
+                   codec->output_sample_rate());
+          return;
         }
+
+        std::vector<int16_t> resampled;
+
+        if (packet.sample_rate > codec->output_sample_rate()) {
+          ESP_LOGI(TAG,
+                   "Music playback: Switching sample rate from %d Hz to %d Hz",
+                   codec->output_sample_rate(), packet.sample_rate);
+
+          // Try to dynamically switch sample rate
+          if (codec->SetOutputSampleRate(packet.sample_rate)) {
+            ESP_LOGI(
+                TAG,
+                "Successfully switched to music playback sample rate: %d Hz",
+                packet.sample_rate);
+          } else {
+            ESP_LOGW(TAG,
+                     "Cannot switch sample rate, continue using current sample "
+                     "rate: %d Hz",
+                     codec->output_sample_rate());
+          }
+        } else {
+          // Upsampling: linear interpolation
+          float upsample_ratio = codec->output_sample_rate() /
+                                 static_cast<float>(packet.sample_rate);
+          size_t expected_size =
+              static_cast<size_t>(pcm_data.size() * upsample_ratio + 0.5f);
+          resampled.reserve(expected_size);
+
+          for (size_t i = 0; i < pcm_data.size(); ++i) {
+            // Add original sample
+            resampled.push_back(pcm_data[i]);
+
+            // Calculate number of samples to interpolate
+            int interpolation_count = static_cast<int>(upsample_ratio) - 1;
+            if (interpolation_count > 0 && i + 1 < pcm_data.size()) {
+              int16_t current = pcm_data[i];
+              int16_t next = pcm_data[i + 1];
+              for (int j = 1; j <= interpolation_count; ++j) {
+                float t = static_cast<float>(j) / (interpolation_count + 1);
+                int16_t interpolated =
+                    static_cast<int16_t>(current + (next - current) * t);
+                resampled.push_back(interpolated);
+              }
+            } else if (interpolation_count > 0) {
+              // For the last sample, simply repeat it
+              for (int j = 1; j <= interpolation_count; ++j) {
+                resampled.push_back(pcm_data[i]);
+              }
+            }
+          }
+
+          ESP_LOGI(TAG, "Upsampled %d -> %d samples (ratio: %.2f)",
+                   pcm_data.size(), resampled.size(), upsample_ratio);
+        }
+
+        pcm_data = std::move(resampled);
+      }
+
+      // Ensure audio output is enabled
+      if (!codec->output_enabled()) {
+        ESP_LOGW(TAG, "%s Enabling audio output for music playback", __func__);
+        codec->EnableOutput(true);
+      }
+
+      // Send PCM data to audio codec
+      codec->OutputData(pcm_data);
+
+      audio_service_.UpdateOutputTimestamp();
     }
+  }
 }
 
-void Application::PlaySound(const std::string_view& sound) {
-    audio_service_.PlaySound(sound);
+void Application::PlaySound(const std::string_view &sound) {
+  audio_service_.PlaySound(sound);
+}
+
+void Application::PrepareForServerAlarm(const std::string &message) {
+  if (device_state_ == kDeviceStateSpeaking) {
+    AbortSpeaking(kAbortReasonNone);
+  }
+  StopAllMedia();
+  SetDeviceState(kDeviceStateIdle);
+  Board::GetInstance().GetDisplay()->SetChatMessage("assistant",
+                                                    message.c_str());
 }
 
 /* ==================================================================
  * Media Player API Implementations
  * ================================================================== */
 
-bool Application::PlayMusic(const std::string& song_name, const std::string& artist_name) {
-    if (!music_) {
-        ESP_LOGW(TAG, "Music module not available");
-        return false;
-    }
-
-    // Stop other media before playing music
-    StopOtherMedia(MediaComponent::kMusic);
-
-    // Ensure device is idle before starting playback
-    EnsureIdleForMedia();
-
-    ESP_LOGI(TAG, "PlayMusic: song='%s' artist='%s'", song_name.c_str(), artist_name.c_str());
-    if (!music_->Download(song_name, artist_name)) {
-        ESP_LOGE(TAG, "PlayMusic: failed to get music resource");
-        return false;
-    }
-    auto result = music_->GetDownloadResult();
-    ESP_LOGI(TAG, "PlayMusic: result=%s", result.c_str());
-    return true;
-}
-
-bool Application::PlayRadio(const std::string& station_name) {
-    if (!radio_) {
-        ESP_LOGW(TAG, "Radio module not available");
-        return false;
-    }
-
-    // Stop other media before playing radio
-    StopOtherMedia(MediaComponent::kRadio);
-
-    // Ensure device is idle before starting playback
-    EnsureIdleForMedia();
-
-    ESP_LOGI(TAG, "PlayRadio: station='%s'", station_name.c_str());
-    return radio_->PlayStation(station_name);
-}
-
-bool Application::PlayRadioUrl(const std::string& url, const std::string& station_name) {
-    if (!radio_) {
-        ESP_LOGW(TAG, "Radio module not available");
-        return false;
-    }
-
-    // If TTS is active, queue and play automatically when speaking finishes
-    if (device_state_ == kDeviceStateSpeaking) {
-        ESP_LOGI(TAG, "PlayRadioUrl: deferred (speaking) — queued '%s'", station_name.c_str());
-        pending_media_url_   = url;
-        pending_media_title_ = station_name;
-        return true;
-    }
-
-    // Stop other media before playing radio URL
-    StopOtherMedia(MediaComponent::kRadio);
-
-    // Ensure device is idle before starting playback
-    EnsureIdleForMedia();
-
-    ESP_LOGI(TAG, "PlayRadioUrl: url='%s' name='%s'", url.c_str(), station_name.c_str());
-    return radio_->PlayUrl(url, station_name);
-}
-
-bool Application::PlaySdMedia(const std::string& keyword, bool is_video) {
-#ifdef CONFIG_SD_CARD_ENABLE
-    if (is_video) {
-        if (!sd_video_) {
-            ESP_LOGW(TAG, "PlaySdMedia: video player not initialized");
-            return false;
-        }
-        auto state = sd_video_->GetState();
-        if (state == VideoPlayerState::Idle || state == VideoPlayerState::Stopping) {
-            size_t found = sd_video_->ScanDirectory();
-            if (found == 0) {
-                ESP_LOGW(TAG, "PlaySdMedia: no AVI files found");
-                return false;
-            }
-            for (const auto& entry : sd_video_->GetPlaylist()) {
-                if (entry.path.find(keyword) != std::string::npos) {
-                    return PlayVideo(entry.path);
-                }
-            }
-            ESP_LOGW(TAG, "PlaySdMedia: no AVI matching '%s'", keyword.c_str());
-            return false;
-        }
-        return false;
-    }
-
-    // Audio from SD card
-    if (!sd_music_) {
-        ESP_LOGW(TAG, "SD music module not available");
-        return false;
-    }
-
-    // Stop other media before playing SD music
-    StopOtherMedia(MediaComponent::kSdMusic);
-
-    // Ensure device is idle before starting playback
-    EnsureIdleForMedia();
-
-    ESP_LOGI(TAG, "PlaySdMedia: keyword='%s'", keyword.c_str());
-    if (sd_music_->GetTotalTracks() == 0) {
-        sd_music_->LoadPlaylist();
-    }
-    return sd_music_->PlayByName(keyword);
-#else
-    ESP_LOGW(TAG, "SD card support not enabled");
+bool Application::PlayMusic(const std::string &song_name,
+                            const std::string &artist_name) {
+  if (!music_) {
+    ESP_LOGW(TAG, "Music module not available");
     return false;
+  }
+
+  // Stop other media before playing music
+  StopOtherMedia(MediaComponent::kMusic);
+
+  // Ensure device is idle before starting playback
+  EnsureIdleForMedia();
+
+  ESP_LOGI(TAG, "PlayMusic: song='%s' artist='%s'", song_name.c_str(),
+           artist_name.c_str());
+  if (!music_->Download(song_name, artist_name)) {
+    ESP_LOGE(TAG, "PlayMusic: failed to get music resource");
+    return false;
+  }
+  auto result = music_->GetDownloadResult();
+  ESP_LOGI(TAG, "PlayMusic: result=%s", result.c_str());
+  return true;
+}
+
+bool Application::PlayRadio(const std::string &station_name) {
+  if (!radio_) {
+    ESP_LOGW(TAG, "Radio module not available");
+    return false;
+  }
+
+  // Stop other media before playing radio
+  StopOtherMedia(MediaComponent::kRadio);
+
+  // Ensure device is idle before starting playback
+  EnsureIdleForMedia();
+
+  ESP_LOGI(TAG, "PlayRadio: station='%s'", station_name.c_str());
+  return radio_->PlayStation(station_name);
+}
+
+bool Application::PlayRadioUrl(const std::string &url,
+                               const std::string &station_name) {
+  if (!radio_) {
+    ESP_LOGW(TAG, "Radio module not available");
+    return false;
+  }
+
+  // If TTS is active, queue and play automatically when speaking finishes
+  if (device_state_ == kDeviceStateSpeaking) {
+    ESP_LOGI(TAG, "PlayRadioUrl: deferred (speaking) — queued '%s'",
+             station_name.c_str());
+    pending_media_url_ = url;
+    pending_media_title_ = station_name;
+    return true;
+  }
+
+  // Stop other media before playing radio URL
+  StopOtherMedia(MediaComponent::kRadio);
+
+  // Ensure device is idle before starting playback
+  EnsureIdleForMedia();
+
+  ESP_LOGI(TAG, "PlayRadioUrl: url='%s' name='%s'", url.c_str(),
+           station_name.c_str());
+  return radio_->PlayUrl(url, station_name);
+}
+
+bool Application::PlaySdMedia(const std::string &keyword, bool is_video) {
+#ifdef CONFIG_SD_CARD_ENABLE
+  if (is_video) {
+    if (!sd_video_) {
+      ESP_LOGW(TAG, "PlaySdMedia: video player not initialized");
+      return false;
+    }
+    auto state = sd_video_->GetState();
+    if (state == VideoPlayerState::Idle ||
+        state == VideoPlayerState::Stopping) {
+      size_t found = sd_video_->ScanDirectory();
+      if (found == 0) {
+        ESP_LOGW(TAG, "PlaySdMedia: no AVI files found");
+        return false;
+      }
+      for (const auto &entry : sd_video_->GetPlaylist()) {
+        if (entry.path.find(keyword) != std::string::npos) {
+          return PlayVideo(entry.path);
+        }
+      }
+      ESP_LOGW(TAG, "PlaySdMedia: no AVI matching '%s'", keyword.c_str());
+      return false;
+    }
+    return false;
+  }
+
+  // Audio from SD card
+  if (!sd_music_) {
+    ESP_LOGW(TAG, "SD music module not available");
+    return false;
+  }
+
+  // Stop other media before playing SD music
+  StopOtherMedia(MediaComponent::kSdMusic);
+
+  // Ensure device is idle before starting playback
+  EnsureIdleForMedia();
+
+  ESP_LOGI(TAG, "PlaySdMedia: keyword='%s'", keyword.c_str());
+  if (sd_music_->GetTotalTracks() == 0) {
+    sd_music_->LoadPlaylist();
+  }
+  return sd_music_->PlayByName(keyword);
+#else
+  ESP_LOGW(TAG, "SD card support not enabled");
+  return false;
 #endif
 }
 
-bool Application::PlayVideo(const std::string& file_path) {
+bool Application::PlayVideo(const std::string &file_path) {
 #ifdef CONFIG_SD_CARD_ENABLE
-    if (!sd_video_) {
-        ESP_LOGE(TAG, "PlayVideo: video player not initialized");
-        return false;
-    }
-    if (sd_video_->GetState() == VideoPlayerState::Error) {
-        ESP_LOGE(TAG, "PlayVideo: VideoPlayer in error state");
-        return false;
-    }
-
-    // Stop other media before playing video
-    StopOtherMedia(MediaComponent::kVideo);
-
-    // Ensure device is idle before starting playback
-    EnsureIdleForMedia();
-
-    ESP_LOGI(TAG, "PlayVideo: path='%s'", file_path.c_str());
-    sd_video_->Play(file_path);
-    return true;
-#else
-    ESP_LOGW(TAG, "SD card support not enabled");
+  if (!sd_video_) {
+    ESP_LOGE(TAG, "PlayVideo: video player not initialized");
     return false;
+  }
+  if (sd_video_->GetState() == VideoPlayerState::Error) {
+    ESP_LOGE(TAG, "PlayVideo: VideoPlayer in error state");
+    return false;
+  }
+
+  // Stop other media before playing video
+  StopOtherMedia(MediaComponent::kVideo);
+
+  // Ensure device is idle before starting playback
+  EnsureIdleForMedia();
+
+  ESP_LOGI(TAG, "PlayVideo: path='%s'", file_path.c_str());
+  sd_video_->Play(file_path);
+  return true;
+#else
+  ESP_LOGW(TAG, "SD card support not enabled");
+  return false;
 #endif
 }
 
 void Application::StopAllMedia() {
-    ESP_LOGI(TAG, "StopAllMedia");
-    StopOtherMedia();
+  ESP_LOGI(TAG, "StopAllMedia");
+  StopOtherMedia();
 }
 
 bool Application::IsMediaPlaying() const {
-    if (music_ && music_->IsPlaying()) return true;
-    if (radio_ && radio_->IsPlaying()) return true;
-    if (sd_music_ && sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing) return true;
+  if (music_ && music_->IsPlaying())
+    return true;
+  if (radio_ && radio_->IsPlaying())
+    return true;
+  if (sd_music_ && sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing)
+    return true;
 #ifdef CONFIG_SD_CARD_ENABLE
-    if (sd_video_ && sd_video_->GetState() == VideoPlayerState::Playing) return true;
-    if (mp4_video_ && mp4_video_->GetState() == Mp4PlayerState::Playing) return true;
+  if (sd_video_ && sd_video_->GetState() == VideoPlayerState::Playing)
+    return true;
+  if (mp4_video_ && mp4_video_->GetState() == Mp4PlayerState::Playing)
+    return true;
 #endif
-    return false;
+  return false;
 }
 
 /* ------------------------------------------------------------------
  * EnsureIdleForMedia — transition device to idle before media playback
  *
  * Keeps media components fully decoupled from Application state
- * management. Media players can call this function to ensure the 
- * device is in the correct state for playback without needing to know 
+ * management. Media players can call this function to ensure the
+ * device is in the correct state for playback without needing to know
  * the details of the state machine.
  * ------------------------------------------------------------------ */
 bool Application::EnsureIdleForMedia() {
-    DeviceState ds = device_state_;
+  DeviceState ds = device_state_;
 
-    // Already idle or in a non-interactive state — good to go
-    if (ds == kDeviceStateIdle || ds == kDeviceStateUnknown) {
-        return true;
-    }
+  // Already idle or in a non-interactive state — good to go
+  if (ds == kDeviceStateIdle || ds == kDeviceStateUnknown) {
+    return true;
+  }
 
-    // Only transition from Listening / Speaking to Idle
-    if (ds != kDeviceStateListening && ds != kDeviceStateSpeaking) {
-        ESP_LOGW(TAG, "EnsureIdleForMedia: unexpected state %s, forcing idle",
-                 STATE_STRINGS[ds]);
-        SetDeviceState(kDeviceStateIdle);
-        return true;
-    }
-
-    // Toggle chat to end the conversation and return to idle
-    constexpr int kMaxRetries = 10;
-    constexpr int kRetryDelayMs = 200;
-    for (int i = 0; i < kMaxRetries; ++i) {
-        ToggleChatState();
-        vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
-        ds = device_state_;
-        if (ds == kDeviceStateIdle) {
-            ESP_LOGI(TAG, "EnsureIdleForMedia: entered idle after %d toggle(s)", i + 1);
-            return true;
-        }
-    }
-
-    ESP_LOGW(TAG, "EnsureIdleForMedia: timeout — forcing idle");
+  // Only transition from Listening / Speaking to Idle
+  if (ds != kDeviceStateListening && ds != kDeviceStateSpeaking) {
+    ESP_LOGW(TAG, "EnsureIdleForMedia: unexpected state %s, forcing idle",
+             STATE_STRINGS[ds]);
     SetDeviceState(kDeviceStateIdle);
     return true;
+  }
+
+  // Toggle chat to end the conversation and return to idle
+  constexpr int kMaxRetries = 10;
+  constexpr int kRetryDelayMs = 200;
+  for (int i = 0; i < kMaxRetries; ++i) {
+    ToggleChatState();
+    vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+    ds = device_state_;
+    if (ds == kDeviceStateIdle) {
+      ESP_LOGI(TAG, "EnsureIdleForMedia: entered idle after %d toggle(s)",
+               i + 1);
+      return true;
+    }
+  }
+
+  ESP_LOGW(TAG, "EnsureIdleForMedia: timeout — forcing idle");
+  SetDeviceState(kDeviceStateIdle);
+  return true;
 }
 
 /* ------------------------------------------------------------------
  * StopOtherMedia — centralized media teardown
  * ------------------------------------------------------------------ */
 void Application::StopOtherMedia(MediaComponent except) {
-    if (except != MediaComponent::kMusic && music_ && music_->IsPlaying()) {
-        ESP_LOGI(TAG, "StopOtherMedia: stopping music");
-        music_->StopStreaming();
-    }
-    if (except != MediaComponent::kRadio && radio_ && radio_->IsPlaying()) {
-        ESP_LOGI(TAG, "StopOtherMedia: stopping radio");
-        radio_->Stop();
-    }
+  if (except != MediaComponent::kMusic && music_ && music_->IsPlaying()) {
+    ESP_LOGI(TAG, "StopOtherMedia: stopping music");
+    music_->StopStreaming();
+  }
+  if (except != MediaComponent::kRadio && radio_ && radio_->IsPlaying()) {
+    ESP_LOGI(TAG, "StopOtherMedia: stopping radio");
+    radio_->Stop();
+  }
 #ifdef CONFIG_SD_CARD_ENABLE
-    if (except != MediaComponent::kSdMusic && sd_music_ &&
-        sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing) {
-        ESP_LOGI(TAG, "StopOtherMedia: stopping SD music");
-        sd_music_->Stop();
+  if (except != MediaComponent::kSdMusic && sd_music_ &&
+      sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing) {
+    ESP_LOGI(TAG, "StopOtherMedia: stopping SD music");
+    sd_music_->Stop();
+  }
+  if (except != MediaComponent::kVideo && sd_video_) {
+    auto state = sd_video_->GetState();
+    if (state == VideoPlayerState::Playing ||
+        state == VideoPlayerState::Paused) {
+      ESP_LOGI(TAG, "StopOtherMedia: stopping video");
+      sd_video_->Stop();
     }
-    if (except != MediaComponent::kVideo && sd_video_) {
-        auto state = sd_video_->GetState();
-        if (state == VideoPlayerState::Playing || state == VideoPlayerState::Paused) {
-            ESP_LOGI(TAG, "StopOtherMedia: stopping video");
-            sd_video_->Stop();
-        }
+  }
+  if (except != MediaComponent::kMp4Video && mp4_video_) {
+    auto state = mp4_video_->GetState();
+    if (state == Mp4PlayerState::Playing || state == Mp4PlayerState::Paused) {
+      ESP_LOGI(TAG, "StopOtherMedia: stopping MP4 video");
+      mp4_video_->Stop();
     }
-    if (except != MediaComponent::kMp4Video && mp4_video_) {
-        auto state = mp4_video_->GetState();
-        if (state == Mp4PlayerState::Playing || state == Mp4PlayerState::Paused) {
-            ESP_LOGI(TAG, "StopOtherMedia: stopping MP4 video");
-            mp4_video_->Stop();
-        }
-    }
+  }
 #endif
 }
 
-void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
-    if (!player) return;
+void Application::SetupAudioPlayerCallback(AudioStreamPlayer *player) {
+  if (!player)
+    return;
 
-    // Forward FFT PCM data to the MusicVisualizer or OLED SpectrumManager
-    player->SetFftCallback([this](int16_t* pcm_data, size_t pcm_bytes) {
-        if (music_visualizer_ && music_visualizer_->IsRunning()) {
-            music_visualizer_->FeedAudioData(pcm_data, pcm_bytes);
+  // Forward FFT PCM data to the MusicVisualizer or OLED SpectrumManager
+  player->SetFftCallback([this](int16_t *pcm_data, size_t pcm_bytes) {
+    if (music_visualizer_ && music_visualizer_->IsRunning()) {
+      music_visualizer_->FeedAudioData(pcm_data, pcm_bytes);
+    }
+    if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
+      oled_spectrum_mgr_->FeedAudioData(pcm_data, pcm_bytes);
+    }
+  });
+
+  player->SetPcmCallback(
+      [this](int16_t *pcm_data, int total_samples, int channels,
+             int sample_rate) { audio_service_.UpdateOutputTimestamp(); });
+
+  // Manage MusicVisualizer / OLED spectrum lifecycle via player state
+  // transitions
+  player->SetStateCallback([this](AudioPlayerState old_state,
+                                  AudioPlayerState new_state) {
+    auto display = Board::GetInstance().GetDisplay();
+    auto *disp = lv_display_get_default();
+    auto cf = lv_display_get_color_format(disp);
+
+    if (new_state == AudioPlayerState::Playing) {
+      EnsureIdleForMedia();
+
+      if (cf != LV_COLOR_FORMAT_I1) {
+        Display *lcd = display;
+        // ── LCD path: full MusicVisualizer (spectrum + music UI overlay) ──
+        if (!music_visualizer_) {
+          music_visualizer_ = std::make_unique<music::MusicVisualizer>();
         }
+        auto *viz = music_visualizer_.get();
+
+        // Wire callbacks (safe to call multiple times)
+        viz->SetOverlayCallback(
+            [lcd](bool active) { lcd->SetMediaOverlayActive(active); });
+        viz->SetInfoProvider(
+            [this]() -> music::MusicInfo { return BuildMusicInfo(); });
+        viz->SetFontProvider(
+            [lcd](const lv_font_t **text_font, const lv_font_t **icon_font) {
+              auto *theme = static_cast<LvglTheme *>(lcd->GetTheme());
+              if (theme) {
+                *text_font = theme->text_font()->font();
+                *icon_font = theme->large_icon_font()->font();
+              }
+            });
+
+        // Compute status bar height for canvas positioning
+        int status_h = 0;
+        if (lvgl_port_lock(1000)) {
+          lv_obj_t *container = lv_obj_get_child(lv_screen_active(), 0);
+          lv_obj_t *sb = container ? lv_obj_get_child(container, 0) : nullptr;
+          if (sb)
+            status_h = lv_obj_get_height(sb);
+          lvgl_port_unlock();
+        }
+
+        music::VisualizerConfig cfg;
+        cfg.canvas_x = 0;
+        cfg.canvas_y = status_h;
+        cfg.canvas_width = lcd->width();
+        cfg.canvas_height = lcd->height() - status_h;
+        cfg.lcd_height = lcd->height();
+        cfg.lcd_width = lcd->width();
+        cfg.status_bar_h = status_h;
+        cfg.audio_buf_size = AUDIO_PCM_OUT_BUF_SIZE;
+
+        // Provide initial info snapshot so first UI frame is populated
+        viz->Start(cfg, BuildMusicInfo());
+        ESP_LOGI(
+            TAG,
+            "MusicVisualizer started for LCD display with status bar height %d",
+            status_h);
+      } else {
+        Display *oled = display;
+        // ── OLED path: lightweight monochrome spectrum (no music UI) ──
         if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
-            oled_spectrum_mgr_->FeedAudioData(pcm_data, pcm_bytes);
+          return; // already running
         }
-    });
 
-    player->SetPcmCallback([this](int16_t* pcm_data, int total_samples, int channels, int sample_rate) {
-        audio_service_.UpdateOutputTimestamp();
-    });
-
-    // Manage MusicVisualizer / OLED spectrum lifecycle via player state transitions
-    player->SetStateCallback([this](AudioPlayerState old_state, AudioPlayerState new_state) {
-        auto display = Board::GetInstance().GetDisplay();
-        auto* disp = lv_display_get_default();
-        auto cf = lv_display_get_color_format(disp);
-
-        if (new_state == AudioPlayerState::Playing) {
-            EnsureIdleForMedia();
-
-            if (cf != LV_COLOR_FORMAT_I1) {
-                Display* lcd  = display;
-                // ── LCD path: full MusicVisualizer (spectrum + music UI overlay) ──
-                if (!music_visualizer_) {
-                    music_visualizer_ = std::make_unique<music::MusicVisualizer>();
-                }
-                auto* viz = music_visualizer_.get();
-
-                // Wire callbacks (safe to call multiple times)
-                viz->SetOverlayCallback([lcd](bool active) {
-                    lcd->SetMediaOverlayActive(active);
-                });
-                viz->SetInfoProvider([this]() -> music::MusicInfo {
-                    return BuildMusicInfo();
-                });
-                viz->SetFontProvider([lcd](const lv_font_t** text_font, const lv_font_t** icon_font) {
-                    auto* theme = static_cast<LvglTheme*>(lcd->GetTheme());
-                    if (theme) {
-                        *text_font = theme->text_font()->font();
-                        *icon_font = theme->large_icon_font()->font();
-                    }
-                });
-
-                // Compute status bar height for canvas positioning
-                int status_h = 0;
-                if (lvgl_port_lock(1000)) {
-                    lv_obj_t* container = lv_obj_get_child(lv_screen_active(), 0);
-                    lv_obj_t* sb = container ? lv_obj_get_child(container, 0) : nullptr;
-                    if (sb) status_h = lv_obj_get_height(sb);
-                    lvgl_port_unlock();
-                }
-
-                music::VisualizerConfig cfg;
-                cfg.canvas_x      = 0;
-                cfg.canvas_y      = status_h;
-                cfg.canvas_width  = lcd->width();
-                cfg.canvas_height = lcd->height() - status_h;
-                cfg.lcd_height = lcd->height();
-                cfg.lcd_width = lcd->width();
-                cfg.status_bar_h = status_h;
-                cfg.audio_buf_size = AUDIO_PCM_OUT_BUF_SIZE;
-
-                // Provide initial info snapshot so first UI frame is populated
-                viz->Start(cfg, BuildMusicInfo());
-                ESP_LOGI(TAG, "MusicVisualizer started for LCD display with status bar height %d", status_h);
-            } else {
-                Display* oled  = display;
-                // ── OLED path: lightweight monochrome spectrum (no music UI) ──
-                if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
-                    return;  // already running
-                }
-
-                // Compute status bar height
-                int status_h = 16;  // OLED default
-                if (lvgl_port_lock(1000)) {
-                    lv_obj_t* container = lv_obj_get_child(lv_screen_active(), 0);
-                    lv_obj_t* sb = container ? lv_obj_get_child(container, 0) : nullptr;
-                    if (sb) status_h = lv_obj_get_height(sb);
-                    lvgl_port_unlock();
-                }
-
-                spectrum::SpectrumConfig scfg;
-                scfg.monochrome     = true;
-                scfg.fft_size       = 256;
-                scfg.bar_count      = 16;
-                scfg.canvas_x       = 0;
-                scfg.canvas_y       = status_h;
-                scfg.canvas_width   = oled->width();                  // 128
-                scfg.canvas_height  = oled->height() - status_h;     // 48 or 16
-                scfg.lcd_width      = oled->width();
-                scfg.lcd_height     = oled->height();
-                scfg.status_bar_h   = status_h;
-                scfg.bar_max_height = scfg.canvas_height;
-                scfg.task_stack_size = 3 * 1024;
-                scfg.task_priority   = 1;
-                scfg.task_core       = 0;
-
-                oled_spectrum_mgr_ = std::make_unique<spectrum::SpectrumManager>(scfg);
-                oled_spectrum_mgr_->AllocateAudioBuffer(AUDIO_PCM_OUT_BUF_SIZE);
-                oled_spectrum_mgr_->Start();
-                oled->SetMediaOverlayActive(true);
-                ESP_LOGI(TAG, "OLED SpectrumManager started with status bar height %d", status_h);
-            }
-        } else if (old_state == AudioPlayerState::Playing &&
-                   (new_state == AudioPlayerState::Idle ||
-                    new_state == AudioPlayerState::Stopping)) {
-            if (music_visualizer_) {
-                music_visualizer_->Stop();
-            }
-            if (oled_spectrum_mgr_) {
-                oled_spectrum_mgr_->Stop();
-                display->SetMediaOverlayActive(false);
-            }
+        // Compute status bar height
+        int status_h = 16; // OLED default
+        if (lvgl_port_lock(1000)) {
+          lv_obj_t *container = lv_obj_get_child(lv_screen_active(), 0);
+          lv_obj_t *sb = container ? lv_obj_get_child(container, 0) : nullptr;
+          if (sb)
+            status_h = lv_obj_get_height(sb);
+          lvgl_port_unlock();
         }
-    });
 
-    ESP_LOGI(TAG, "SetupAudioPlayerCallback: MusicVisualizer callbacks installed");
+        spectrum::SpectrumConfig scfg;
+        scfg.monochrome = true;
+        scfg.fft_size = 256;
+        scfg.bar_count = 16;
+        scfg.canvas_x = 0;
+        scfg.canvas_y = status_h;
+        scfg.canvas_width = oled->width();              // 128
+        scfg.canvas_height = oled->height() - status_h; // 48 or 16
+        scfg.lcd_width = oled->width();
+        scfg.lcd_height = oled->height();
+        scfg.status_bar_h = status_h;
+        scfg.bar_max_height = scfg.canvas_height;
+        scfg.task_stack_size = 3 * 1024;
+        scfg.task_priority = 1;
+        scfg.task_core = 0;
+
+        oled_spectrum_mgr_ = std::make_unique<spectrum::SpectrumManager>(scfg);
+        oled_spectrum_mgr_->AllocateAudioBuffer(AUDIO_PCM_OUT_BUF_SIZE);
+        oled_spectrum_mgr_->Start();
+        oled->SetMediaOverlayActive(true);
+        ESP_LOGI(TAG, "OLED SpectrumManager started with status bar height %d",
+                 status_h);
+      }
+    } else if (old_state == AudioPlayerState::Playing &&
+               (new_state == AudioPlayerState::Idle ||
+                new_state == AudioPlayerState::Stopping)) {
+      if (music_visualizer_) {
+        music_visualizer_->Stop();
+      }
+      if (oled_spectrum_mgr_) {
+        oled_spectrum_mgr_->Stop();
+        display->SetMediaOverlayActive(false);
+      }
+    }
+  });
+
+  ESP_LOGI(TAG,
+           "SetupAudioPlayerCallback: MusicVisualizer callbacks installed");
 }
 
 /**
@@ -1570,82 +1640,92 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
  * any concrete player object.
  */
 music::MusicInfo Application::BuildMusicInfo() {
-    music::MusicInfo info;
+  music::MusicInfo info;
 
-    // 1. SD Card player (highest priority — has richest metadata)
-    if (sd_music_ && sd_music_->IsPlaying()) {
-        info.source       = music::SourceType::SD_CARD;
-        info.is_playing   = true;
-        info.title        = sd_music_->GetCurrentTrack();
-        info.position_ms  = sd_music_->GetCurrentPositionMs();
-        info.duration_ms  = sd_music_->GetDurationMs();
-        info.bitrate_kbps = sd_music_->GetBitrate();
-        if (info.bitrate_kbps > 1000) info.bitrate_kbps /= 1000;
+  // 1. SD Card player (highest priority — has richest metadata)
+  if (sd_music_ && sd_music_->IsPlaying()) {
+    info.source = music::SourceType::SD_CARD;
+    info.is_playing = true;
+    info.title = sd_music_->GetCurrentTrack();
+    info.position_ms = sd_music_->GetCurrentPositionMs();
+    info.duration_ms = sd_music_->GetDurationMs();
+    info.bitrate_kbps = sd_music_->GetBitrate();
+    if (info.bitrate_kbps > 1000)
+      info.bitrate_kbps /= 1000;
 
-        char sub[64];
-        snprintf(sub, sizeof(sub), "%d kbps  •  %s",
-                 info.bitrate_kbps, sd_music_->GetDurationString().c_str());
+    char sub[64];
+    snprintf(sub, sizeof(sub), "%d kbps  •  %s", info.bitrate_kbps,
+             sd_music_->GetDurationString().c_str());
+    info.sub_info = sub;
+
+    // Find next track
+    auto tracks = sd_music_->GetPlaylist();
+    std::string cur_path = sd_music_->GetCurrentTrackPath();
+    int idx = -1;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+      if (tracks[i].path == cur_path) {
+        idx = static_cast<int>(i);
+        break;
+      }
+    }
+    if (idx >= 0 && idx < static_cast<int>(tracks.size()) - 1) {
+      info.next_track = tracks[idx + 1].name;
+    } else if (!tracks.empty()) {
+      info.next_track = tracks[0].name;
+    }
+
+    // ESP_LOGI(TAG, "BuildMusicInfo: SD card track='%s' pos=%lldms dur=%lldms
+    // bitrate=%dkbps next='%s'",
+    //          info.title.c_str(), info.position_ms, info.duration_ms,
+    //          info.bitrate_kbps, info.next_track.c_str());
+
+    return info;
+  }
+
+  // 2. Online music player
+  if (music_ && music_->IsPlaying()) {
+    info.source = music::SourceType::ONLINE;
+    info.is_playing = true;
+    info.title = music_->GetTitle();
+    info.position_ms = music_->GetPositionMs();
+    info.duration_ms = music_->GetDurationMs();
+    info.bitrate_kbps = music_->GetBitrateKbps();
+
+    std::string artist = music_->GetArtist();
+    if (!artist.empty()) {
+      if (info.bitrate_kbps > 0) {
+        char sub[96];
+        snprintf(sub, sizeof(sub), "%s  •  %d kbps", artist.c_str(),
+                 info.bitrate_kbps);
         info.sub_info = sub;
-
-        // Find next track
-        auto tracks = sd_music_->GetPlaylist();
-        std::string cur_path = sd_music_->GetCurrentTrackPath();
-        int idx = -1;
-        for (size_t i = 0; i < tracks.size(); ++i) {
-            if (tracks[i].path == cur_path) { idx = static_cast<int>(i); break; }
-        }
-        if (idx >= 0 && idx < static_cast<int>(tracks.size()) - 1) {
-            info.next_track = tracks[idx + 1].name;
-        } else if (!tracks.empty()) {
-            info.next_track = tracks[0].name;
-        }
-
-        // ESP_LOGI(TAG, "BuildMusicInfo: SD card track='%s' pos=%lldms dur=%lldms bitrate=%dkbps next='%s'",
-        //          info.title.c_str(), info.position_ms, info.duration_ms, info.bitrate_kbps, info.next_track.c_str());
-
-        return info;
+      } else {
+        info.sub_info = artist;
+      }
+    } else if (info.bitrate_kbps > 0) {
+      info.sub_info = std::to_string(info.bitrate_kbps) + " kbps";
+    } else {
+      info.sub_info = "Streaming...";
     }
 
-    // 2. Online music player
-    if (music_ && music_->IsPlaying()) {
-        info.source       = music::SourceType::ONLINE;
-        info.is_playing   = true;
-        info.title        = music_->GetTitle();
-        info.position_ms  = music_->GetPositionMs();
-        info.duration_ms  = music_->GetDurationMs();
-        info.bitrate_kbps = music_->GetBitrateKbps();
+    // ESP_LOGI(TAG, "BuildMusicInfo: Online track='%s' artist='%s' pos=%lldms
+    // dur=%lldms bitrate=%dkbps",
+    //          info.title.c_str(), artist.c_str(), info.position_ms,
+    //          info.duration_ms, info.bitrate_kbps);
+    return info;
+  }
 
-        std::string artist = music_->GetArtist();
-        if (!artist.empty()) {
-            if (info.bitrate_kbps > 0) {
-                char sub[96];
-                snprintf(sub, sizeof(sub), "%s  •  %d kbps", artist.c_str(), info.bitrate_kbps);
-                info.sub_info = sub;
-            } else {
-                info.sub_info = artist;
-            }
-        } else if (info.bitrate_kbps > 0) {
-            info.sub_info = std::to_string(info.bitrate_kbps) + " kbps";
-        } else {
-            info.sub_info = "Streaming...";
-        }
+  // 3. Internet radio
+  if (radio_ && radio_->IsPlaying()) {
+    info.source = music::SourceType::RADIO;
+    info.is_playing = true;
+    info.title = radio_->GetCurrentStation();
+    info.sub_info = "Live Broadcast";
+    if (info.title.empty())
+      info.title = "FM Radio";
+    return info;
+  }
 
-        // ESP_LOGI(TAG, "BuildMusicInfo: Online track='%s' artist='%s' pos=%lldms dur=%lldms bitrate=%dkbps",
-        //          info.title.c_str(), artist.c_str(), info.position_ms, info.duration_ms, info.bitrate_kbps);
-        return info;
-    }
-
-    // 3. Internet radio
-    if (radio_ && radio_->IsPlaying()) {
-        info.source     = music::SourceType::RADIO;
-        info.is_playing = true;
-        info.title      = radio_->GetCurrentStation();
-        info.sub_info   = "Live Broadcast";
-        if (info.title.empty()) info.title = "FM Radio";
-        return info;
-    }
-
-    return info;  // SourceType::NONE
+  return info; // SourceType::NONE
 }
 
 /* ==================================================================
@@ -1653,333 +1733,353 @@ music::MusicInfo Application::BuildMusicInfo() {
  * ================================================================== */
 
 bool Application::InitMusic() {
-    music_ = new Esp32Music();
-    if (!music_) {
-        ESP_LOGE(TAG, "InitMusic: allocation failed");
-        return false;
-    }
+  music_ = new Esp32Music();
+  if (!music_) {
+    ESP_LOGE(TAG, "InitMusic: allocation failed");
+    return false;
+  }
 
-    auto codec = Board::GetInstance().GetAudioCodec();
-    music_->Initialize(codec);
-    SetupAudioPlayerCallback(music_);
+  auto codec = Board::GetInstance().GetAudioCodec();
+  music_->Initialize(codec);
+  SetupAudioPlayerCallback(music_);
 
-    McpFeatureTools::RegisterMusicTools(music_);
-    ESP_LOGI(TAG, "InitMusic: online music player ready");
-    return true;
+  McpFeatureTools::RegisterMusicTools(music_);
+  ESP_LOGI(TAG, "InitMusic: online music player ready");
+  return true;
 }
 
 bool Application::InitRadio() {
-    radio_ = new Esp32Radio();
-    if (!radio_) {
-        ESP_LOGE(TAG, "InitRadio: allocation failed");
-        return false;
-    }
+  radio_ = new Esp32Radio();
+  if (!radio_) {
+    ESP_LOGE(TAG, "InitRadio: allocation failed");
+    return false;
+  }
 
-    auto codec = Board::GetInstance().GetAudioCodec();
-    radio_->Initialize(codec);
-    SetupAudioPlayerCallback(radio_);
+  auto codec = Board::GetInstance().GetAudioCodec();
+  radio_->Initialize(codec);
+  SetupAudioPlayerCallback(radio_);
 
-    McpFeatureTools::RegisterRadioTools(radio_);
-    ESP_LOGI(TAG, "InitRadio: internet radio player ready");
-    return true;
+  McpFeatureTools::RegisterRadioTools(radio_);
+  ESP_LOGI(TAG, "InitRadio: internet radio player ready");
+  return true;
 }
 
 bool Application::InitSdMusic() {
 #ifdef CONFIG_SD_CARD_ENABLE
-    auto sd_card = Board::GetInstance().GetSdCard();
-    if (!sd_card) {
-        ESP_LOGW(TAG, "InitSdMusic: no SD card available");
-        return false;
-    }
-
-    sd_music_ = new Esp32SdMusic();
-    if (!sd_music_) {
-        ESP_LOGE(TAG, "InitSdMusic: allocation failed");
-        return false;
-    }
-
-    auto codec = Board::GetInstance().GetAudioCodec();
-    sd_music_->Initialize(sd_card, codec);
-    sd_music_->LoadPlaylist();
-    SetupAudioPlayerCallback(sd_music_);
-
-    McpFeatureTools::RegisterSdMusicTools(sd_music_);
-    ESP_LOGI(TAG, "InitSdMusic: SD card music player ready");
-    return true;
-#else
+  auto sd_card = Board::GetInstance().GetSdCard();
+  if (!sd_card) {
+    ESP_LOGW(TAG, "InitSdMusic: no SD card available");
     return false;
+  }
+
+  sd_music_ = new Esp32SdMusic();
+  if (!sd_music_) {
+    ESP_LOGE(TAG, "InitSdMusic: allocation failed");
+    return false;
+  }
+
+  auto codec = Board::GetInstance().GetAudioCodec();
+  sd_music_->Initialize(sd_card, codec);
+  sd_music_->LoadPlaylist();
+  SetupAudioPlayerCallback(sd_music_);
+
+  McpFeatureTools::RegisterSdMusicTools(sd_music_);
+  ESP_LOGI(TAG, "InitSdMusic: SD card music player ready");
+  return true;
+#else
+  return false;
 #endif
 }
 
 bool Application::InitVideo() {
 #ifdef CONFIG_SD_CARD_ENABLE
-    auto& board = Board::GetInstance();
-    auto sd_card = board.GetSdCard();
-    if (!sd_card) {
-        ESP_LOGW(TAG, "InitVideo: no SD card available");
-        return false;
-    }
-    auto display = board.GetDisplay();
-    auto codec = board.GetAudioCodec();
-    // --- Get the raw LCD panel handle (bypasses LVGL for max FPS) ---
-    auto* lcd = dynamic_cast<LcdDisplay*>(display);
-    if (lcd != nullptr) {
-        sd_video_ = &VideoPlayer::GetInstance();
-        // Initialize: pass LCD panel handle, resolution, codec, SD card
-        bool ok = sd_video_->Initialize(
-            lcd->GetPanelHandle(),
-            static_cast<uint16_t>(lcd->width()),
-            static_cast<uint16_t>(lcd->height()),
-            codec,
-            sd_card,
-            display,   // Pass Display* for LVGL canvas support
-            // Choose render mode for testing:
-            //   VideoRenderMode::DirectLcd  — bypass LVGL, max FPS (default not stable)
-            //   VideoRenderMode::LvglCanvas — through LVGL canvas pipeline
-            VideoRenderMode::LvglCanvas
-        );
-
-        if (ok) {
-            // Scan /sdcard/videos/ for .avi files and build playlist
-            size_t found = sd_video_->ScanDirectory();
-            ESP_LOGI(TAG, "InitVideo: found %d video files on SD card", found);
-
-            // Manage main application UI lifecycle during video playback.
-            // Hide emoji/chat/idle card when video starts playing, restore
-            // when stopped — mirrors SetupAudioPlayerCallback() pattern for audio.
-            sd_video_->SetStateCallback([](VideoPlayerState old_state,
-                                        VideoPlayerState new_state) {
-                auto display = Board::GetInstance().GetDisplay();
-                if (!display) return;
-
-                if (new_state == VideoPlayerState::Playing) {
-                    // Activate media overlay to hide main UI (emoji/chat/idle card)
-                    display->SetMediaOverlayActive(true);
-                    ESP_LOGI(TAG, "Video playing: main UI hidden via media overlay");
-                } else if (old_state == VideoPlayerState::Playing &&
-                        (new_state == VideoPlayerState::Idle ||
-                            new_state == VideoPlayerState::Stopping)) {
-                    display->SetMediaOverlayActive(false);
-                    ESP_LOGI(TAG, "Video stopped: main UI restored via media overlay");
-                }
-            });
-
-            sd_video_->SetClockSyncCallback([](uint32_t rate, uint8_t bits, uint8_t channels) {
-                // This callback is called in the video decoding thread right before starting playback, so we need to be careful about performance.
-                // so it's a good place to ensure the device is idle and ready for media without blocking the main thread.
-                // When playback starts, ensure device is idle and ready for media
-                ESP_LOGI(TAG, "Video clock sync callback: ensuring idle for media");
-                Application::GetInstance().EnsureIdleForMedia();
-            });
-
-            sd_video_->SetAudioCallback([this](int16_t* pcm, size_t samples, int channels) {
-                // This callback is called in the video decoding thread, so we need to be careful about performance.
-                // We can use this callback to update the output timestamp for synchronization purposes.
-                audio_service_.UpdateOutputTimestamp();
-            });
-        }
-
-        McpFeatureTools::RegisterSdVideoTools(sd_video_);
-        ESP_LOGI(TAG, "InitVideo: video player ready");
-    } else {
-        ESP_LOGW(TAG, "InitVideo: display is not LCD, video player not initialized");
-    }
-    return true;
-#else
+  auto &board = Board::GetInstance();
+  auto sd_card = board.GetSdCard();
+  if (!sd_card) {
+    ESP_LOGW(TAG, "InitVideo: no SD card available");
     return false;
+  }
+  auto display = board.GetDisplay();
+  auto codec = board.GetAudioCodec();
+  // --- Get the raw LCD panel handle (bypasses LVGL for max FPS) ---
+  auto *lcd = dynamic_cast<LcdDisplay *>(display);
+  if (lcd != nullptr) {
+    sd_video_ = &VideoPlayer::GetInstance();
+    // Initialize: pass LCD panel handle, resolution, codec, SD card
+    bool ok = sd_video_->Initialize(
+        lcd->GetPanelHandle(), static_cast<uint16_t>(lcd->width()),
+        static_cast<uint16_t>(lcd->height()), codec, sd_card,
+        display, // Pass Display* for LVGL canvas support
+        // Choose render mode for testing:
+        //   VideoRenderMode::DirectLcd  — bypass LVGL, max FPS (default not
+        //   stable) VideoRenderMode::LvglCanvas — through LVGL canvas pipeline
+        VideoRenderMode::LvglCanvas);
+
+    if (ok) {
+      // Scan /sdcard/videos/ for .avi files and build playlist
+      size_t found = sd_video_->ScanDirectory();
+      ESP_LOGI(TAG, "InitVideo: found %d video files on SD card", found);
+
+      // Manage main application UI lifecycle during video playback.
+      // Hide emoji/chat/idle card when video starts playing, restore
+      // when stopped — mirrors SetupAudioPlayerCallback() pattern for audio.
+      sd_video_->SetStateCallback([](VideoPlayerState old_state,
+                                     VideoPlayerState new_state) {
+        auto display = Board::GetInstance().GetDisplay();
+        if (!display)
+          return;
+
+        if (new_state == VideoPlayerState::Playing) {
+          // Activate media overlay to hide main UI (emoji/chat/idle card)
+          display->SetMediaOverlayActive(true);
+          ESP_LOGI(TAG, "Video playing: main UI hidden via media overlay");
+        } else if (old_state == VideoPlayerState::Playing &&
+                   (new_state == VideoPlayerState::Idle ||
+                    new_state == VideoPlayerState::Stopping)) {
+          display->SetMediaOverlayActive(false);
+          ESP_LOGI(TAG, "Video stopped: main UI restored via media overlay");
+        }
+      });
+
+      sd_video_->SetClockSyncCallback(
+          [](uint32_t rate, uint8_t bits, uint8_t channels) {
+            // This callback is called in the video decoding thread right before
+            // starting playback, so we need to be careful about performance. so
+            // it's a good place to ensure the device is idle and ready for
+            // media without blocking the main thread. When playback starts,
+            // ensure device is idle and ready for media
+            ESP_LOGI(TAG, "Video clock sync callback: ensuring idle for media");
+            Application::GetInstance().EnsureIdleForMedia();
+          });
+
+      sd_video_->SetAudioCallback(
+          [this](int16_t *pcm, size_t samples, int channels) {
+            // This callback is called in the video decoding thread, so we need
+            // to be careful about performance. We can use this callback to
+            // update the output timestamp for synchronization purposes.
+            audio_service_.UpdateOutputTimestamp();
+          });
+    }
+
+    McpFeatureTools::RegisterSdVideoTools(sd_video_);
+    ESP_LOGI(TAG, "InitVideo: video player ready");
+  } else {
+    ESP_LOGW(TAG,
+             "InitVideo: display is not LCD, video player not initialized");
+  }
+  return true;
+#else
+  return false;
 #endif
 }
 
 bool Application::InitAlarm() {
-    alarm_manager_ = &AlarmManager::getInstance();
-    alarm_manager_->init();
-    McpFeatureTools::RegisterAlarmTools(alarm_manager_);
-    ESP_LOGI(TAG, "InitAlarm: alarm manager ready");
+  Settings server_settings("alarm_mqtt", false);
+  bool server_enabled = server_settings.GetBool("enabled", true);
+  bool local_fallback = server_settings.GetBool("local_fallback", false);
+  if (server_enabled && !local_fallback) {
+    ESP_LOGI(
+        TAG,
+        "InitAlarm: local scheduler disabled in server-authoritative mode");
     return true;
+  }
+  alarm_manager_ = &AlarmManager::getInstance();
+  alarm_manager_->init();
+  McpFeatureTools::RegisterAlarmTools(alarm_manager_);
+  ESP_LOGI(TAG, "InitAlarm: alarm manager ready");
+  return true;
 }
 
-bool Application::PlayMp4Video(const std::string& file_path) {
+bool Application::InitServerAlarm() {
+  server_alarm_client_ = std::make_unique<ServerAlarmClient>();
+  bool started = server_alarm_client_->Start();
+  ESP_LOGI(TAG, "InitServerAlarm: %s", started ? "started" : "disabled");
+  return started;
+}
+
+bool Application::PlayMp4Video(const std::string &file_path) {
 #ifdef CONFIG_SD_CARD_ENABLE
-    if (!mp4_video_) {
-        ESP_LOGE(TAG, "PlayMp4Video: MP4 player not initialized");
-        return false;
-    }
-    if (mp4_video_->GetState() == Mp4PlayerState::Error) {
-        ESP_LOGE(TAG, "PlayMp4Video: MP4 player in error state");
-        return false;
-    }
-
-    StopOtherMedia(MediaComponent::kMp4Video);
-    EnsureIdleForMedia();
-
-    ESP_LOGI(TAG, "PlayMp4Video: path='%s'", file_path.c_str());
-    return mp4_video_->Play(file_path);
-#else
-    ESP_LOGW(TAG, "SD card support not enabled");
+  if (!mp4_video_) {
+    ESP_LOGE(TAG, "PlayMp4Video: MP4 player not initialized");
     return false;
+  }
+  if (mp4_video_->GetState() == Mp4PlayerState::Error) {
+    ESP_LOGE(TAG, "PlayMp4Video: MP4 player in error state");
+    return false;
+  }
+
+  StopOtherMedia(MediaComponent::kMp4Video);
+  EnsureIdleForMedia();
+
+  ESP_LOGI(TAG, "PlayMp4Video: path='%s'", file_path.c_str());
+  return mp4_video_->Play(file_path);
+#else
+  ESP_LOGW(TAG, "SD card support not enabled");
+  return false;
 #endif
 }
 
 bool Application::InitMp4Video() {
 #ifdef CONFIG_SD_CARD_ENABLE
-    auto& board = Board::GetInstance();
-    auto sd_card = board.GetSdCard();
-    if (!sd_card) {
-        ESP_LOGW(TAG, "InitMp4Video: no SD card");
-        return false;
-    }
-    auto display = board.GetDisplay();
-    auto codec = board.GetAudioCodec();
-    auto* lcd = dynamic_cast<LcdDisplay*>(display);
-    if (lcd != nullptr) {
-        mp4_video_ = &Mp4Player::GetInstance();
-        bool ok = mp4_video_->Initialize(
-            lcd->GetPanelHandle(),
-            static_cast<uint16_t>(lcd->width()),
-            static_cast<uint16_t>(lcd->height()),
-            codec,
-            sd_card,
-            display,
-            Mp4RenderMode::LvglCanvas);
-        if (ok) {
-            size_t found = mp4_video_->ScanDirectory();
-            ESP_LOGI(TAG, "InitMp4Video: found %zu MP4 files", found);
-
-            mp4_video_->SetStateCallback([](Mp4PlayerState old_state,
-                                            Mp4PlayerState new_state) {
-                auto display = Board::GetInstance().GetDisplay();
-                if (!display) return;
-                if (new_state == Mp4PlayerState::Playing) {
-                    display->SetMediaOverlayActive(true);
-                    ESP_LOGI(TAG, "MP4 playing: UI hidden");
-                } else if (old_state == Mp4PlayerState::Playing &&
-                           (new_state == Mp4PlayerState::Idle ||
-                            new_state == Mp4PlayerState::Stopping)) {
-                    display->SetMediaOverlayActive(false);
-                    ESP_LOGI(TAG, "MP4 stopped: UI restored");
-                }
-            });
-
-            mp4_video_->SetAudioCallback([this](int16_t* pcm, size_t samples, int channels) {
-                audio_service_.UpdateOutputTimestamp();
-            });
-        } else {
-            ESP_LOGW(TAG, "InitMp4Video: Initialize failed");
-            mp4_video_ = nullptr;
-        }
-    } else {
-        ESP_LOGW(TAG, "InitMp4Video: display is not LCD");
-    }
-    return true;
-#else
+  auto &board = Board::GetInstance();
+  auto sd_card = board.GetSdCard();
+  if (!sd_card) {
+    ESP_LOGW(TAG, "InitMp4Video: no SD card");
     return false;
+  }
+  auto display = board.GetDisplay();
+  auto codec = board.GetAudioCodec();
+  auto *lcd = dynamic_cast<LcdDisplay *>(display);
+  if (lcd != nullptr) {
+    mp4_video_ = &Mp4Player::GetInstance();
+    bool ok = mp4_video_->Initialize(
+        lcd->GetPanelHandle(), static_cast<uint16_t>(lcd->width()),
+        static_cast<uint16_t>(lcd->height()), codec, sd_card, display,
+        Mp4RenderMode::LvglCanvas);
+    if (ok) {
+      size_t found = mp4_video_->ScanDirectory();
+      ESP_LOGI(TAG, "InitMp4Video: found %zu MP4 files", found);
+
+      mp4_video_->SetStateCallback(
+          [](Mp4PlayerState old_state, Mp4PlayerState new_state) {
+            auto display = Board::GetInstance().GetDisplay();
+            if (!display)
+              return;
+            if (new_state == Mp4PlayerState::Playing) {
+              display->SetMediaOverlayActive(true);
+              ESP_LOGI(TAG, "MP4 playing: UI hidden");
+            } else if (old_state == Mp4PlayerState::Playing &&
+                       (new_state == Mp4PlayerState::Idle ||
+                        new_state == Mp4PlayerState::Stopping)) {
+              display->SetMediaOverlayActive(false);
+              ESP_LOGI(TAG, "MP4 stopped: UI restored");
+            }
+          });
+
+      mp4_video_->SetAudioCallback(
+          [this](int16_t *pcm, size_t samples, int channels) {
+            audio_service_.UpdateOutputTimestamp();
+          });
+    } else {
+      ESP_LOGW(TAG, "InitMp4Video: Initialize failed");
+      mp4_video_ = nullptr;
+    }
+  } else {
+    ESP_LOGW(TAG, "InitMp4Video: display is not LCD");
+  }
+  return true;
+#else
+  return false;
 #endif
 }
 
 // --- [DienBien Mod]- WEATHER SCREEN UPDATE----
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
 void Application::StartWeatherIdleTask() {
-    xTaskCreate([](void* arg) {
-        Application* app = static_cast<Application*>(arg);
+  xTaskCreate(
+      [](void *arg) {
+        Application *app = static_cast<Application *>(arg);
         int tick_count = 0;
         while (true) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            tick_count++;
+          vTaskDelay(pdMS_TO_TICKS(1000));
+          tick_count++;
 
-            if (app->GetDeviceState() == kDeviceStateIdle) {
-                if (app->IsMediaPlaying()) {
-                    // When music/radio is playing, hide the idle screen
-                    auto display = Board::GetInstance().GetDisplay();
-                    display->HideIdleCard();
-                } else {
-                    // Update the clock every second
-                    app->UpdateIdleDisplay();
+          if (app->GetDeviceState() == kDeviceStateIdle) {
+            if (app->IsMediaPlaying()) {
+              // When music/radio is playing, hide the idle screen
+              auto display = Board::GetInstance().GetDisplay();
+              display->HideIdleCard();
+            } else {
+              // Update the clock every second
+              app->UpdateIdleDisplay();
 
-                    // Weather fetch logic: call at the 5th second after boot OR every 30 minutes (1800 seconds)
-                    if (tick_count == 5 || tick_count % 1800 == 0) {
-                        ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
-                        auto& weather_service = WeatherService::GetInstance();
-                        if (weather_service.FetchWeatherData()) {
-                            app->UpdateIdleDisplay();
-                        }
-                    }
+              // Weather fetch logic: call at the 5th second after boot OR every
+              // 30 minutes (1800 seconds)
+              if (tick_count == 5 || tick_count % 1800 == 0) {
+                ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
+                auto &weather_service = WeatherService::GetInstance();
+                if (weather_service.FetchWeatherData()) {
+                  app->UpdateIdleDisplay();
                 }
+              }
             }
+          }
         }
         vTaskDelete(NULL);
-    }, "weather_idle_task", 1024 * 6, this, 2, &weather_idle_task_handle_);
+      },
+      "weather_idle_task", 1024 * 6, this, 2, &weather_idle_task_handle_);
 }
 
 void Application::UpdateIdleDisplay() {
-    auto& weather_service = WeatherService::GetInstance();
-    const WeatherInfo& weather_info = weather_service.GetWeatherInfo();
-    
-    IdleCardInfo card;
+  auto &weather_service = WeatherService::GetInstance();
+  const WeatherInfo &weather_info = weather_service.GetWeatherInfo();
 
-    // 2. THÔNG TIN HỆ THỐNG
-    auto& board = Board::GetInstance();
-    card.network_icon = board.GetNetworkStateIcon();
-    if (board.GetBoardType() == "wifi") {
-        auto& wifi_station = WifiStation::GetInstance();
-        card.rssi = wifi_station.GetRssi();
+  IdleCardInfo card;
+
+  // 2. THÔNG TIN HỆ THỐNG
+  auto &board = Board::GetInstance();
+  card.network_icon = board.GetNetworkStateIcon();
+  if (board.GetBoardType() == "wifi") {
+    auto &wifi_station = WifiStation::GetInstance();
+    card.rssi = wifi_station.GetRssi();
+  } else {
+    AtModem *cellular_modem = static_cast<AtModem *>(board.GetNetwork());
+    card.rssi = cellular_modem ? cellular_modem->GetCsq() : 0;
+  }
+
+  int battery_level;
+  bool charging, discharging;
+  const char *icon = nullptr;
+  if (board.GetBatteryLevel(battery_level, charging, discharging)) {
+    if (charging) {
+      icon = FONT_AWESOME_BATTERY_BOLT;
     } else {
-        AtModem* cellular_modem = static_cast<AtModem*>(board.GetNetwork());
-        card.rssi = cellular_modem ? cellular_modem->GetCsq() : 0;
+      const char *const levels[] = {
+          FONT_AWESOME_BATTERY_EMPTY,          // 0-19%
+          FONT_AWESOME_BATTERY_QUARTER,        // 20-39%
+          FONT_AWESOME_BATTERY_HALF,           // 40-59%
+          FONT_AWESOME_BATTERY_THREE_QUARTERS, // 60-79%
+          FONT_AWESOME_BATTERY_FULL,           // 80-99%
+          FONT_AWESOME_BATTERY_FULL            // 100%
+      };
+      icon = levels[battery_level / 20];
     }
+    card.battery_level = battery_level;
+    card.battery_icon = icon;
+    card.is_charging = charging;
+  } else {
+    card.battery_icon = FONT_AWESOME_BATTERY_BOLT;
+    card.battery_level = -1; // Không biết mức pin
+    card.is_charging = false;
+  }
 
-    int battery_level;
-    bool charging, discharging;
-    const char* icon = nullptr;
-    if (board.GetBatteryLevel(battery_level, charging, discharging)) {
-        if (charging) {
-            icon = FONT_AWESOME_BATTERY_BOLT;
-        } else {
-            const char* const levels[] = {
-                FONT_AWESOME_BATTERY_EMPTY,            // 0-19%
-                FONT_AWESOME_BATTERY_QUARTER,          // 20-39%
-                FONT_AWESOME_BATTERY_HALF,             // 40-59%
-                FONT_AWESOME_BATTERY_THREE_QUARTERS,   // 60-79%
-                FONT_AWESOME_BATTERY_FULL,             // 80-99%
-                FONT_AWESOME_BATTERY_FULL              // 100%
-            };
-            icon = levels[battery_level / 20];
-        }
-        card.battery_level = battery_level;
-        card.battery_icon = icon;
-        card.is_charging = charging;
-    } else {
-        card.battery_icon = FONT_AWESOME_BATTERY_BOLT;
-        card.battery_level = -1; // Không biết mức pin
-        card.is_charging = false;
-    }
+  // 3. THÔNG TIN THỜI TIẾT
+  if (weather_info.valid) {
+    card.city = weather_info.city;
 
-    // 3. THÔNG TIN THỜI TIẾT
-    if (weather_info.valid) {
-        card.city = weather_info.city;
-        
-        char temp_buf[16];
-        snprintf(temp_buf, sizeof(temp_buf), "%d°C", (int)round(weather_info.temp));
-        card.temperature_text = temp_buf;
+    char temp_buf[16];
+    snprintf(temp_buf, sizeof(temp_buf), "%d°C", (int)round(weather_info.temp));
+    card.temperature_text = temp_buf;
 
-        card.description_text = weather_info.description;
-        card.humidity_text = std::to_string(weather_info.humidity) + "%";
+    card.description_text = weather_info.description;
+    card.humidity_text = std::to_string(weather_info.humidity) + "%";
 
-        char extra_buf[32];
-        snprintf(extra_buf, sizeof(extra_buf), "%.1f m/s", weather_info.wind_speed);
-        card.wind_text = extra_buf;
+    char extra_buf[32];
+    snprintf(extra_buf, sizeof(extra_buf), "%.1f m/s", weather_info.wind_speed);
+    card.wind_text = extra_buf;
 
-        // Cập nhật Forecast vào Card
-        card.forecast = weather_info.forecast; // COPY DỮ LIỆU DỰ BÁO SANG UI
+    // Cập nhật Forecast vào Card
+    card.forecast = weather_info.forecast; // COPY DỮ LIỆU DỰ BÁO SANG UI
 
-        card.icon = WeatherUI::GetWeatherIcon(weather_info.icon_code);
-    } else {
-        card.city = "Dang cap nhat...";
-        card.temperature_text = "--";
-        card.icon = "\uf128"; 
-    }
+    card.icon = WeatherUI::GetWeatherIcon(weather_info.icon_code);
+  } else {
+    card.city = "Dang cap nhat...";
+    card.temperature_text = "--";
+    card.icon = "\uf128";
+  }
 
-    auto display = Board::GetInstance().GetDisplay();
-    display->ShowIdleCard(card);
+  auto display = Board::GetInstance().GetDisplay();
+  display->ShowIdleCard(card);
 }
 #endif
 // --- [DienBien Mod]- END WEATHER SCREEN UPDATE----

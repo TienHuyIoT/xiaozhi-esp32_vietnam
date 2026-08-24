@@ -14,6 +14,7 @@ extern "C" {
 #include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <algorithm>
 #include <string>
 #include <cstring>
 #include <cJSON.h>
@@ -31,10 +32,19 @@ static constexpr int kMaxImageDurationMs = 30000;
 static constexpr int kFetchMaxAttempts = 3;
 static constexpr int kFetchRetryDelayMs = 800;
 
+enum class ImageDisplayMode {
+    kImages,
+    kPaymentQr,
+    kPaymentSuccess,
+};
+
 struct ImageDisplayRequest {
     LvglDisplay* display;
     std::vector<std::string> urls;
     int duration_ms;
+    ImageDisplayMode mode;
+    std::string product_title;
+    int preparation_seconds;
 };
 
 static std::mutex s_image_worker_mutex;
@@ -187,7 +197,8 @@ static uint8_t* DownloadJpeg(const std::string& url, size_t* out_len) {
     return nullptr;
 }
 
-static void FetchAndShow(LvglDisplay* display, const std::string& url) {
+static void FetchAndShow(LvglDisplay* display, const std::string& url,
+                         bool payment_qr = false) {
     // --- Download JPEG (with retry for transient proxy rate-limits) ---
     size_t total = 0;
     uint8_t* jpeg_buf = DownloadJpeg(url, &total);
@@ -300,14 +311,39 @@ static void FetchAndShow(LvglDisplay* display, const std::string& url) {
         DisplayLockGuard lock(display);
         auto image = std::make_unique<LvglAllocatedImage>(
             rgb_buf, rgb_size, w, h, stride, LV_COLOR_FORMAT_RGB565);
-        display->KeepPreviewVisible(true);
-        display->SetPreviewImage(std::move(image));
+        if (payment_qr) {
+            display->ShowPaymentQrImage(std::move(image));
+        } else {
+            display->KeepPreviewVisible(true);
+            display->SetPreviewImage(std::move(image));
+        }
     }
     // rgb_buf ownership is now held by LvglAllocatedImage; freed by its destructor
 }
 
 static void ProcessImageDisplayRequest(const ImageDisplayRequest& request) {
     ulTaskNotifyTake(pdTRUE, 0);
+
+    if (request.mode == ImageDisplayMode::kPaymentQr) {
+        for (int remaining = request.preparation_seconds; remaining > 0; --remaining) {
+            request.display->ShowPaymentPreparing(request.product_title, remaining);
+            if (WaitForDurationOrNewRequest(1000)) {
+                return;
+            }
+        }
+        if (!request.urls.empty()) {
+            FetchAndShow(request.display, request.urls.front(), true);
+        }
+        return;
+    }
+
+    if (request.mode == ImageDisplayMode::kPaymentSuccess) {
+        request.display->ShowPaymentSuccess(request.product_title);
+        if (!WaitForDurationOrNewRequest(request.duration_ms)) {
+            request.display->ClearPaymentScreen();
+        }
+        return;
+    }
 
     for (const auto& url : request.urls) {
         if (url.empty()) {
@@ -351,7 +387,8 @@ void StartImageDisplayTask(LvglDisplay* display,
         duration_ms = kMaxImageDurationMs;
     }
 
-    auto* request = new (std::nothrow) ImageDisplayRequest{display, std::move(urls), duration_ms};
+    auto* request = new (std::nothrow) ImageDisplayRequest{
+        display, std::move(urls), duration_ms, ImageDisplayMode::kImages, "", 0};
     if (request == nullptr) {
         ESP_LOGE(TAG, "OOM: cannot allocate image display request");
         return;
@@ -362,6 +399,57 @@ void StartImageDisplayTask(LvglDisplay* display,
         return;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(s_image_worker_mutex);
+        delete s_pending_request;
+        s_pending_request = request;
+        xTaskNotifyGive(s_image_worker_task);
+    }
+}
+
+void StartPaymentQrDisplayTask(LvglDisplay* display,
+                               std::string image_url,
+                               std::string product_title,
+                               int preparation_seconds) {
+    if (!display || image_url.empty()) return;
+    preparation_seconds = std::max(0, std::min(preparation_seconds, 10));
+
+    auto* request = new (std::nothrow) ImageDisplayRequest{
+        display, {std::move(image_url)}, 0, ImageDisplayMode::kPaymentQr,
+        std::move(product_title), preparation_seconds};
+    if (request == nullptr) {
+        ESP_LOGE(TAG, "OOM: cannot allocate payment QR request");
+        return;
+    }
+    if (!EnsureImageDisplayWorkerStarted()) {
+        delete request;
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(s_image_worker_mutex);
+        delete s_pending_request;
+        s_pending_request = request;
+        xTaskNotifyGive(s_image_worker_task);
+    }
+}
+
+void StartPaymentSuccessDisplayTask(LvglDisplay* display,
+                                    std::string product_title,
+                                    int duration_ms) {
+    if (!display) return;
+    duration_ms = std::max(1000, std::min(duration_ms, kMaxImageDurationMs));
+
+    auto* request = new (std::nothrow) ImageDisplayRequest{
+        display, {}, duration_ms, ImageDisplayMode::kPaymentSuccess,
+        std::move(product_title), 0};
+    if (request == nullptr) {
+        ESP_LOGE(TAG, "OOM: cannot allocate payment success request");
+        return;
+    }
+    if (!EnsureImageDisplayWorkerStarted()) {
+        delete request;
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(s_image_worker_mutex);
         delete s_pending_request;

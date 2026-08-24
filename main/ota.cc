@@ -238,7 +238,8 @@ bool Ota::CheckVersion(std::string& url) {
     // Parse the JSON response and check if the version is newer
     // If it is, set has_new_version_ to true and store the new version and URL
     if (url != CONFIG_OTA_URL) {
-        ESP_LOGI(TAG, "JSON response  %s", data.c_str());
+        ESP_LOGI(TAG, "OTA JSON response received (%u bytes)",
+                 static_cast<unsigned>(data.size()));
     }
     cJSON *root = cJSON_Parse(data.c_str());
     if (root == NULL) {
@@ -289,6 +290,31 @@ bool Ota::CheckVersion(std::string& url) {
         has_mqtt_config_ = true;
     } else {
         ESP_LOGI(TAG, "No mqtt section found !");
+    }
+
+    cJSON* alarm_mqtt = cJSON_GetObjectItem(root, "alarm_mqtt");
+    if (cJSON_IsObject(alarm_mqtt)) {
+        Settings settings("alarm_mqtt", true);
+        cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, alarm_mqtt) {
+            if (cJSON_IsString(item)) {
+                if (settings.GetString(item->string) != item->valuestring) {
+                    settings.SetString(item->string, item->valuestring);
+                }
+            } else if (cJSON_IsNumber(item)) {
+                if (settings.GetInt(item->string) != item->valueint) {
+                    settings.SetInt(item->string, item->valueint);
+                }
+            } else if (cJSON_IsBool(item)) {
+                bool value = cJSON_IsTrue(item);
+                if (settings.GetBool(item->string) != value) {
+                    settings.SetBool(item->string, value);
+                }
+            }
+        }
+        ESP_LOGI(TAG, "Stored server alarm MQTT configuration");
+    } else {
+        ESP_LOGI(TAG, "No alarm_mqtt section found; server alarms stay disabled");
     }
 
     has_websocket_config_ = false;

@@ -21,6 +21,7 @@
 class AudioStreamPlayer;
 class VideoPlayer;
 class AlarmManager;
+class ServerAlarmClient;
 class Mp4Player;
 
 // Forward declaration for MusicVisualizer (owned by Application)
@@ -80,6 +81,7 @@ public:
     // 新增：接收外部音频数据（如音乐播放）
     void AddAudioData(AudioStreamPacket&& packet);
     void PlaySound(const std::string_view& sound);
+    void PrepareForServerAlarm(const std::string& message);
     AudioService& GetAudioService() { return audio_service_; }
 	Esp32Music* GetMusic() { return music_; }
 	Esp32Radio* GetRadio() { return radio_; }
@@ -193,6 +195,7 @@ public:
 
     /** Initialize alarm clock manager and register MCP tools. */
     bool InitAlarm();
+    bool InitServerAlarm();
 
     /** Get the alarm manager instance. */
     AlarmManager* GetAlarmManager() const { return alarm_manager_; }
@@ -219,6 +222,7 @@ private:
     Esp32SdMusic* sd_music_ = nullptr;
     VideoPlayer* sd_video_ = nullptr;
     AlarmManager* alarm_manager_ = nullptr;
+    std::unique_ptr<ServerAlarmClient> server_alarm_client_;
     Mp4Player* mp4_video_ = nullptr;
 
     // Music spectrum visualizer (owned by Application, not Display)

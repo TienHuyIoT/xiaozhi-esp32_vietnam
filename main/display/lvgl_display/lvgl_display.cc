@@ -1,5 +1,7 @@
 #include <esp_log.h>
 #include <esp_err.h>
+#include <algorithm>
+#include <cstdio>
 #include <string>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +43,8 @@ LvglDisplay::LvglDisplay() {
 }
 
 LvglDisplay::~LvglDisplay() {
+    payment_overlay_ = nullptr;
+    payment_image_cached_.reset();
     if (notification_timer_ != nullptr) {
         esp_timer_stop(notification_timer_);
         esp_timer_delete(notification_timer_);
@@ -96,6 +100,109 @@ void LvglDisplay::ShowNotification(const char* notification, int duration_ms) {
 
     esp_timer_stop(notification_timer_);
     ESP_ERROR_CHECK(esp_timer_start_once(notification_timer_, duration_ms * 1000));
+}
+
+void LvglDisplay::ResetPaymentOverlay() {
+    if (payment_overlay_ == nullptr) {
+        payment_overlay_ = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(payment_overlay_, LV_HOR_RES, LV_VER_RES);
+        lv_obj_align(payment_overlay_, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_set_style_radius(payment_overlay_, 0, 0);
+        lv_obj_set_style_border_width(payment_overlay_, 0, 0);
+        lv_obj_set_style_pad_all(payment_overlay_, 12, 0);
+        lv_obj_set_scrollbar_mode(payment_overlay_, LV_SCROLLBAR_MODE_OFF);
+    } else {
+        lv_obj_clean(payment_overlay_);
+    }
+    payment_image_cached_.reset();
+    lv_obj_remove_flag(payment_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(payment_overlay_);
+}
+
+void LvglDisplay::ShowPaymentPreparing(const std::string& product_title,
+                                       int seconds_remaining) {
+    DisplayLockGuard lock(this);
+    ResetPaymentOverlay();
+    lv_obj_set_style_bg_color(payment_overlay_, lv_color_hex(0x101418), 0);
+    lv_obj_set_style_bg_opa(payment_overlay_, LV_OPA_COVER, 0);
+
+    auto* heading = lv_label_create(payment_overlay_);
+    lv_label_set_text(heading, "Chu\xE1\xBA\xA9n b\xE1\xBB\x8B thanh to\xC3\xA1n");
+    lv_obj_set_width(heading, LV_PCT(92));
+    lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(heading, lv_color_white(), 0);
+    lv_obj_align(heading, LV_ALIGN_CENTER, 0, -58);
+
+    auto* product = lv_label_create(payment_overlay_);
+    lv_label_set_text(product, product_title.c_str());
+    lv_label_set_long_mode(product, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(product, LV_PCT(92));
+    lv_obj_set_style_text_align(product, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(product, lv_color_white(), 0);
+    lv_obj_align(product, LV_ALIGN_CENTER, 0, -8);
+
+    char countdown[64];
+    snprintf(countdown, sizeof(countdown),
+             "M\xC3\xA3 QR hi\xE1\xBB\x83n th\xE1\xBB\x8B sau %d gi\xC3\xA2y",
+             seconds_remaining);
+    auto* countdown_label = lv_label_create(payment_overlay_);
+    lv_label_set_text(countdown_label, countdown);
+    lv_obj_set_width(countdown_label, LV_PCT(92));
+    lv_obj_set_style_text_align(countdown_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(countdown_label, lv_color_hex(0xD0D7DE), 0);
+    lv_obj_align(countdown_label, LV_ALIGN_CENTER, 0, 48);
+}
+
+void LvglDisplay::ShowPaymentQrImage(std::unique_ptr<LvglImage> image) {
+    if (!image) return;
+    DisplayLockGuard lock(this);
+    ResetPaymentOverlay();
+    lv_obj_set_style_bg_color(payment_overlay_, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(payment_overlay_, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(payment_overlay_, 0, 0);
+
+    payment_image_cached_ = std::move(image);
+    auto* image_obj = lv_image_create(payment_overlay_);
+    auto* image_dsc = payment_image_cached_->image_dsc();
+    lv_image_set_src(image_obj, image_dsc);
+    if (image_dsc->header.w > 0 && image_dsc->header.h > 0) {
+        int available = std::min(width_, height_) - 8;
+        int scale_w = 256 * available / image_dsc->header.w;
+        int scale_h = 256 * available / image_dsc->header.h;
+        lv_image_set_scale(image_obj, std::min(scale_w, scale_h));
+    }
+    lv_obj_center(image_obj);
+}
+
+void LvglDisplay::ShowPaymentSuccess(const std::string& product_title) {
+    DisplayLockGuard lock(this);
+    ResetPaymentOverlay();
+    lv_obj_set_style_bg_color(payment_overlay_, lv_color_hex(0x075E3A), 0);
+    lv_obj_set_style_bg_opa(payment_overlay_, LV_OPA_COVER, 0);
+
+    auto* heading = lv_label_create(payment_overlay_);
+    lv_label_set_text(heading, "Thanh to\xC3\xA1n th\xC3\xA0nh c\xC3\xB4ng");
+    lv_obj_set_width(heading, LV_PCT(92));
+    lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(heading, lv_color_white(), 0);
+    lv_obj_align(heading, LV_ALIGN_CENTER, 0, -30);
+
+    auto* product = lv_label_create(payment_overlay_);
+    lv_label_set_text(product, product_title.c_str());
+    lv_label_set_long_mode(product, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(product, LV_PCT(92));
+    lv_obj_set_style_text_align(product, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(product, lv_color_white(), 0);
+    lv_obj_align(product, LV_ALIGN_CENTER, 0, 25);
+}
+
+void LvglDisplay::ClearPaymentScreen() {
+    DisplayLockGuard lock(this);
+    if (payment_overlay_ != nullptr) {
+        lv_obj_del(payment_overlay_);
+        payment_overlay_ = nullptr;
+    }
+    payment_image_cached_.reset();
 }
 
 void LvglDisplay::UpdateStatusBar(bool update_all) {

@@ -11,6 +11,7 @@
 
 #include <string>
 #include <chrono>
+#include <memory>
 
 class LvglDisplay : public Display {
 public:
@@ -24,6 +25,10 @@ public:
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
     virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80);
+    void ShowPaymentPreparing(const std::string& product_title, int seconds_remaining);
+    void ShowPaymentQrImage(std::unique_ptr<LvglImage> image);
+    void ShowPaymentSuccess(const std::string& product_title);
+    void ClearPaymentScreen();
 
 protected:
     esp_pm_lock_handle_t pm_lock_ = nullptr;
@@ -43,6 +48,11 @@ protected:
 
     std::chrono::system_clock::time_point last_status_update_time_;
     esp_timer_handle_t notification_timer_ = nullptr;
+
+    lv_obj_t* payment_overlay_ = nullptr;
+    std::unique_ptr<LvglImage> payment_image_cached_ = nullptr;
+
+    void ResetPaymentOverlay();
 
     friend class DisplayLockGuard;
     virtual bool Lock(int timeout_ms = 0) = 0;

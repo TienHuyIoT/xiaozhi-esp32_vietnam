@@ -395,8 +395,27 @@ private:
             ResetWifiConfiguration();
         }, 5);
 
+        boot_button_.OnDoubleClick([]() {
+            Application::GetInstance().ToggleMcpToolMenu();
+        });
+
+        boot_button_.OnTripleClick([]() {
+            Application::GetInstance().ConfirmMcpToolMenuSelection();
+        });
+
+        boot_button_.OnLongPress([]() {
+            auto& app = Application::GetInstance();
+            if (app.IsMcpToolMenuOpen()) {
+                app.PreviousMcpToolMenuCard();
+            }
+        });
+
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
+            if (app.IsMcpToolMenuOpen()) {
+                app.NextMcpToolMenuCard();
+                return;
+            }
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
                 ResetWifiConfiguration();
             }
@@ -411,7 +430,7 @@ private:
 
 public:
     CompactWifiBoardLCD() :
-        boot_button_(BOOT_BUTTON_GPIO) {
+        boot_button_(BOOT_BUTTON_GPIO, false, 650) {
         InitializeSpi();
         InitializeLcdDisplay();
 #ifdef CONFIG_TOUCH_PANEL_ENABLE

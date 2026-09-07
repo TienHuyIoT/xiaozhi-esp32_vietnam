@@ -11,6 +11,8 @@
 
 #include <atomic>
 #include <memory>
+#include <vector>
+#include <string>
 
 #define PREVIEW_IMAGE_DURATION_MS 10000
 
@@ -44,6 +46,11 @@ protected:
     lv_obj_t* emoji_box_ = nullptr;
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
+
+    // Single-line scroll state (non-WeChat style)
+    std::vector<std::string> scroll_lines_;     // Lines split from current text
+    int scroll_current_line_ = 0;               // Currently displayed line index
+    lv_timer_t* scroll_timer_ = nullptr;        // Timer to auto-advance lines
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     std::atomic_bool preview_keep_visible_{false};  // Disable auto-hide timer for camera preview during AI analysis
 

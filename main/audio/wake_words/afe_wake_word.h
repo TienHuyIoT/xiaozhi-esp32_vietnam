@@ -49,6 +49,7 @@ private:
     StaticTask_t* wake_word_encode_task_buffer_ = nullptr;
     StackType_t* wake_word_encode_task_stack_ = nullptr;
     std::deque<std::vector<int16_t>> wake_word_pcm_;
+    std::mutex pcm_mutex_;
     std::deque<std::vector<uint8_t>> wake_word_opus_;
     std::mutex wake_word_mutex_;
     std::condition_variable wake_word_cv_;

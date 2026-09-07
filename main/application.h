@@ -18,6 +18,7 @@
 #include "esp32_sd_music.h"
 #include "esp32_music.h"
 #include "esp32_radio.h"
+#include "features/mcp_tools/mcp_tool_menu.h"
 class AudioStreamPlayer;
 class VideoPlayer;
 class AlarmManager;
@@ -82,6 +83,18 @@ public:
     void AddAudioData(AudioStreamPacket&& packet);
     void PlaySound(const std::string_view& sound);
     void PrepareForServerAlarm(const std::string& message);
+    bool IsMcpToolMenuOpen() const;
+    void ToggleMcpToolMenu();
+    void CloseMcpToolMenu();
+    void NextMcpToolMenuCard();
+    void PreviousMcpToolMenuCard();
+    void ConfirmMcpToolMenuSelection();
+    void UpdateMcpToolConnection(bool online);
+    void UpdateMcpToolCatalog(std::string revision,
+                              std::vector<McpToolEntry> tools,
+                              bool ready, bool truncated);
+    void UpdateMcpToolResult(const std::string& request_id, bool success,
+                             const std::string& message);
     AudioService& GetAudioService() { return audio_service_; }
 	Esp32Music* GetMusic() { return music_; }
 	Esp32Radio* GetRadio() { return radio_; }
@@ -223,6 +236,7 @@ private:
     VideoPlayer* sd_video_ = nullptr;
     AlarmManager* alarm_manager_ = nullptr;
     std::unique_ptr<ServerAlarmClient> server_alarm_client_;
+    std::unique_ptr<McpToolMenu> mcp_tool_menu_;
     Mp4Player* mp4_video_ = nullptr;
 
     // Music spectrum visualizer (owned by Application, not Display)

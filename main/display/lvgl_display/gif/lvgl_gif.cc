@@ -167,13 +167,17 @@ void LvglGif::NextFrame() {
 
     // Get next frame
     int has_next = gd_get_frame(gif_);
-    if (has_next == 0) {
-        // Animation finished, pause timer
+    if (has_next <= 0) {
         playing_ = false;
         if (timer_) {
             lv_timer_pause(timer_);
         }
-        ESP_LOGD(TAG, "GIF animation completed");
+        if (has_next < 0) {
+            ESP_LOGE(TAG, "GIF frame decode failed; animation stopped");
+        } else {
+            ESP_LOGD(TAG, "GIF animation completed");
+        }
+        return;
     }
 
     // Render current frame

@@ -76,6 +76,7 @@ Application::~Application() {
   if (server_alarm_client_) {
     server_alarm_client_->Stop();
   }
+  mcp_tool_menu_.reset();
   if (clock_timer_handle_ != nullptr) {
     esp_timer_stop(clock_timer_handle_);
     esp_timer_delete(clock_timer_handle_);
@@ -1525,6 +1526,7 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer *player) {
     auto cf = lv_display_get_color_format(disp);
 
     if (new_state == AudioPlayerState::Playing) {
+      CloseMcpToolMenu();
       EnsureIdleForMedia();
 
       if (cf != LV_COLOR_FORMAT_I1) {
@@ -1830,6 +1832,7 @@ bool Application::InitVideo() {
           return;
 
         if (new_state == VideoPlayerState::Playing) {
+          Application::GetInstance().CloseMcpToolMenu();
           // Activate media overlay to hide main UI (emoji/chat/idle card)
           display->SetMediaOverlayActive(true);
           ESP_LOGI(TAG, "Video playing: main UI hidden via media overlay");
@@ -1891,10 +1894,91 @@ bool Application::InitAlarm() {
 }
 
 bool Application::InitServerAlarm() {
+  mcp_tool_menu_ = std::make_unique<McpToolMenu>();
   server_alarm_client_ = std::make_unique<ServerAlarmClient>();
+  mcp_tool_menu_->SetInvokeHandler(
+      [this](const std::string &tool_name, const std::string &revision,
+             const std::string &request_id) {
+        if (!server_alarm_client_ ||
+            !server_alarm_client_->InvokeTool(tool_name, revision, request_id)) {
+          UpdateMcpToolResult(request_id, false, "MQTT chua ket noi");
+        }
+      });
   bool started = server_alarm_client_->Start();
   ESP_LOGI(TAG, "InitServerAlarm: %s", started ? "started" : "disabled");
   return started;
+}
+
+bool Application::IsMcpToolMenuOpen() const {
+  return mcp_tool_menu_ && mcp_tool_menu_->IsOpen();
+}
+
+void Application::ToggleMcpToolMenu() {
+  Schedule([this]() {
+    if (mcp_tool_menu_) {
+      mcp_tool_menu_->Toggle();
+    }
+  });
+}
+
+void Application::CloseMcpToolMenu() {
+  if (mcp_tool_menu_) {
+    mcp_tool_menu_->Close();
+  }
+}
+
+void Application::NextMcpToolMenuCard() {
+  Schedule([this]() {
+    if (mcp_tool_menu_) {
+      mcp_tool_menu_->Next();
+    }
+  });
+}
+
+void Application::PreviousMcpToolMenuCard() {
+  Schedule([this]() {
+    if (mcp_tool_menu_) {
+      mcp_tool_menu_->Previous();
+    }
+  });
+}
+
+void Application::ConfirmMcpToolMenuSelection() {
+  Schedule([this]() {
+    if (mcp_tool_menu_) {
+      mcp_tool_menu_->TripleClick();
+    }
+  });
+}
+
+void Application::UpdateMcpToolConnection(bool online) {
+  Schedule([this, online]() {
+    if (mcp_tool_menu_) {
+      mcp_tool_menu_->SetConnectionState(online);
+    }
+  });
+}
+
+void Application::UpdateMcpToolCatalog(std::string revision,
+                                       std::vector<McpToolEntry> tools,
+                                       bool ready, bool truncated) {
+  Schedule([this, revision = std::move(revision), tools = std::move(tools),
+            ready, truncated]() mutable {
+    if (mcp_tool_menu_) {
+      mcp_tool_menu_->SetCatalog(std::move(revision), std::move(tools), ready,
+                                 truncated);
+    }
+  });
+}
+
+void Application::UpdateMcpToolResult(const std::string &request_id,
+                                      bool success,
+                                      const std::string &message) {
+  Schedule([this, request_id, success, message]() {
+    if (mcp_tool_menu_) {
+      mcp_tool_menu_->SetResult(request_id, success, message);
+    }
+  });
 }
 
 bool Application::PlayMp4Video(const std::string &file_path) {
@@ -1946,6 +2030,7 @@ bool Application::InitMp4Video() {
             if (!display)
               return;
             if (new_state == Mp4PlayerState::Playing) {
+              Application::GetInstance().CloseMcpToolMenu();
               display->SetMediaOverlayActive(true);
               ESP_LOGI(TAG, "MP4 playing: UI hidden");
             } else if (old_state == Mp4PlayerState::Playing &&

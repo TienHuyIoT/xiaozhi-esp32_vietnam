@@ -1,5 +1,6 @@
 #include "image_display.h"
 
+#include "application.h"
 #include "board.h"
 #include "display/display.h"
 #include "display/lvgl_display/lvgl_display.h"
@@ -379,6 +380,7 @@ static void ImageDisplayWorkerTaskFn(void* arg) {
 void StartImageDisplayTask(LvglDisplay* display,
                            std::vector<std::string> urls,
                            int duration_ms) {
+    Application::GetInstance().CloseMcpToolMenu();
     if (!display || urls.empty()) return;
 
     if (duration_ms < 0) {
@@ -411,6 +413,7 @@ void StartPaymentQrDisplayTask(LvglDisplay* display,
                                std::string image_url,
                                std::string product_title,
                                int preparation_seconds) {
+    Application::GetInstance().CloseMcpToolMenu();
     if (!display || image_url.empty()) return;
     preparation_seconds = std::max(0, std::min(preparation_seconds, 10));
 
@@ -436,6 +439,7 @@ void StartPaymentQrDisplayTask(LvglDisplay* display,
 void StartPaymentSuccessDisplayTask(LvglDisplay* display,
                                     std::string product_title,
                                     int duration_ms) {
+    Application::GetInstance().CloseMcpToolMenu();
     if (!display) return;
     duration_ms = std::max(1000, std::min(duration_ms, kMaxImageDurationMs));
 
@@ -518,6 +522,7 @@ static void ImagePollTaskFn(void* arg) {
 }
 
 void StartImagePollingTask(LvglDisplay* display, const std::string& server_url) {
+    Application::GetInstance().CloseMcpToolMenu();
     if (!display || server_url.empty()) return;
 
     auto* ctx = new ImagePollCtx{display, server_url};

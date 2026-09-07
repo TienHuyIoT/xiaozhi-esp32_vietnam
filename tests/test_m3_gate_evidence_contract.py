@@ -228,6 +228,35 @@ def test_dem_luot_theo_turn_final(analyzer):
     assert report["turns"]["turn_final_count"] == 7
 
 
+def test_bao_cao_bang_chung_pump_so_huu_socket(analyzer):
+    backend = [
+        '[INBOUND_OBS] {"event":"receive_owner_acquired",'
+        '"owner":"connection_pump","scope":"connection","receiver_count":1}',
+        '[INBOUND_OBS] khong-phai-json',
+    ]
+
+    report = analyzer.build_report(serial_text="", backend_lines=backend)
+
+    assert report["inbound_pump"] == {
+        "ownership_observed": True,
+        "ownership_acquired_count": 1,
+        "max_receiver_count": 1,
+        "duplicate_reader_observed": False,
+    }
+
+
+def test_bao_cao_canh_bao_neu_pump_thay_hai_reader(analyzer):
+    backend = [
+        '[INBOUND_OBS] {"event":"receive_owner_acquired",'
+        '"owner":"connection_pump","scope":"connection","receiver_count":2}',
+    ]
+
+    report = analyzer.build_report(serial_text="", backend_lines=backend)
+
+    assert report["inbound_pump"]["max_receiver_count"] == 2
+    assert report["inbound_pump"]["duplicate_reader_observed"] is True
+
+
 def test_reboot_giua_run_khong_gay_interval_am(analyzer):
     # Sau `rst:` dong ho thiet bi ve 0; dung host_monotonic thi interval van dung.
     log = "\n".join([

@@ -600,7 +600,7 @@ CONFIG_PARTITION_TABLE_MD5=y
 #
 # Xiaozhi Assistant
 #
-CONFIG_OTA_URL="https://32sonic.duckdns.org/sonic/ota/"
+CONFIG_OTA_URL="http://172.20.10.2:8000/sonic/ota/"
 # CONFIG_FLASH_NONE_ASSETS is not set
 # CONFIG_FLASH_DEFAULT_ASSETS is not set
 CONFIG_FLASH_CUSTOM_ASSETS=y

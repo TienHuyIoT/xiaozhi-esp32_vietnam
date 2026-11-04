@@ -1,5 +1,6 @@
 
 #include <driver/spi_common.h>
+#include <driver/gpio.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
@@ -18,6 +19,8 @@
 #include "wifi_board.h"
 #include "websocket_control_server.h"
 
+#include <new>
+
 #define TAG "OttoRobot"
 
 class OttoRobot : public WifiBoard {
@@ -33,7 +36,76 @@ private:
     Button boot_button_;
     WebSocketControlServer* ws_control_server_ = nullptr;
 
-    void InitializeSpi() {
+    bool spi_initialized_ = false;
+    bool backlight_ready_ = false;
+
+    static bool IsOutputPin(int pin) {
+        return pin >= 0 &&
+               GPIO_IS_VALID_GPIO(static_cast<gpio_num_t>(pin)) &&
+               GPIO_IS_VALID_OUTPUT_GPIO(static_cast<gpio_num_t>(pin));
+    }
+
+    bool IsDisplayConfigValid() const {
+        const int pins[] = {
+            gpio_config_.display_mosi,
+            gpio_config_.display_clk,
+            gpio_config_.display_dc,
+            gpio_config_.display_rst,
+            gpio_config_.display_cs,
+            gpio_config_.display_backlight
+        };
+
+        for (int pin : pins) {
+            if (!IsOutputPin(pin)) {
+                ESP_LOGE(TAG, "Invalid display GPIO: %d", pin);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool IsAudioConfigValid() const {
+        const int pins[] = {
+            gpio_config_.spk_bclk,
+            gpio_config_.spk_lrck,
+            gpio_config_.spk_dout,
+            gpio_config_.mic_sck,
+            gpio_config_.mic_ws,
+            gpio_config_.mic_din
+        };
+
+        for (int pin : pins) {
+            if (!GPIO_IS_VALID_GPIO(static_cast<gpio_num_t>(pin))) {
+                ESP_LOGE(TAG, "Invalid audio GPIO: %d", pin);
+                return false;
+            }
+        }
+
+        const int output_pins[] = {
+            gpio_config_.spk_bclk,
+            gpio_config_.spk_lrck,
+            gpio_config_.spk_dout,
+            gpio_config_.mic_sck,
+            gpio_config_.mic_ws
+        };
+
+        for (int pin : output_pins) {
+            if (!IsOutputPin(pin)) {
+                ESP_LOGE(TAG, "Audio GPIO cannot output: %d", pin);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool InitializeSpi() {
+        if (!IsDisplayConfigValid()) {
+            ESP_LOGE(TAG, "Display GPIO configuration is invalid");
+            return false;
+        }
+
         spi_bus_config_t buscfg = {};
 
         buscfg.mosi_io_num = gpio_config_.display_mosi;
@@ -44,16 +116,34 @@ private:
         buscfg.max_transfer_sz =
             DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
 
-        ESP_ERROR_CHECK(
-            spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO)
+        esp_err_t err = spi_bus_initialize(
+            SPI3_HOST,
+            &buscfg,
+            SPI_DMA_CH_AUTO
         );
+
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "SPI initialization failed: %s",
+                esp_err_to_name(err)
+            );
+            return false;
+        }
+
+        spi_initialized_ = true;
+        ESP_LOGI(TAG, "SPI initialized");
+        return true;
     }
 
-    void InitializeLcdDisplay() {
+    bool InitializeLcdDisplay() {
+        if (!spi_initialized_) {
+            ESP_LOGE(TAG, "Cannot initialize LCD: SPI is unavailable");
+            return false;
+        }
+
         esp_lcd_panel_io_handle_t panel_io = nullptr;
         esp_lcd_panel_handle_t panel = nullptr;
-
-        ESP_LOGD(TAG, "Install panel IO");
 
         esp_lcd_panel_io_spi_config_t io_config = {};
 
@@ -65,15 +155,20 @@ private:
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
 
-        ESP_ERROR_CHECK(
-            esp_lcd_new_panel_io_spi(
-                SPI3_HOST,
-                &io_config,
-                &panel_io
-            )
+        esp_err_t err = esp_lcd_new_panel_io_spi(
+            SPI3_HOST,
+            &io_config,
+            &panel_io
         );
 
-        ESP_LOGD(TAG, "Install LCD driver");
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "LCD panel IO initialization failed: %s",
+                esp_err_to_name(err)
+            );
+            return false;
+        }
 
         esp_lcd_panel_dev_config_t panel_config = {};
 
@@ -81,34 +176,55 @@ private:
         panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
         panel_config.bits_per_pixel = 16;
 
-        ESP_ERROR_CHECK(
-            esp_lcd_new_panel_st7789(
-                panel_io,
-                &panel_config,
-                &panel
-            )
+        err = esp_lcd_new_panel_st7789(
+            panel_io,
+            &panel_config,
+            &panel
         );
 
-        ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
-        ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "ST7789 driver initialization failed: %s",
+                esp_err_to_name(err)
+            );
+            esp_lcd_panel_io_del(panel_io);
+            return false;
+        }
 
-        ESP_ERROR_CHECK(
-            esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR)
-        );
-
-        ESP_ERROR_CHECK(
-            esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY)
-        );
-
-        ESP_ERROR_CHECK(
-            esp_lcd_panel_mirror(
+        err = esp_lcd_panel_reset(panel);
+        if (err == ESP_OK) {
+            err = esp_lcd_panel_init(panel);
+        }
+        if (err == ESP_OK) {
+            err = esp_lcd_panel_invert_color(
+                panel,
+                DISPLAY_INVERT_COLOR
+            );
+        }
+        if (err == ESP_OK) {
+            err = esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
+        }
+        if (err == ESP_OK) {
+            err = esp_lcd_panel_mirror(
                 panel,
                 DISPLAY_MIRROR_X,
                 DISPLAY_MIRROR_Y
-            )
-        );
+            );
+        }
 
-        display_ = new OttoEmojiDisplay(
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "ST7789 panel setup failed: %s",
+                esp_err_to_name(err)
+            );
+            esp_lcd_panel_del(panel);
+            esp_lcd_panel_io_del(panel_io);
+            return false;
+        }
+
+        display_ = new (std::nothrow) OttoEmojiDisplay(
             panel_io,
             panel,
             DISPLAY_WIDTH,
@@ -119,6 +235,16 @@ private:
             DISPLAY_MIRROR_Y,
             DISPLAY_SWAP_XY
         );
+
+        if (display_ == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate Otto display");
+            esp_lcd_panel_del(panel);
+            esp_lcd_panel_io_del(panel_io);
+            return false;
+        }
+
+        ESP_LOGI(TAG, "Otto ST7789 display initialized");
+        return true;
     }
 
     void InitializeButtons() {
@@ -135,21 +261,31 @@ private:
     }
 
     void InitializeWebSocketControlServer() {
+        if (ws_control_server_ != nullptr) {
+            return;
+        }
+
         ESP_LOGI(TAG, "Initialize WebSocket control server");
 
-        ws_control_server_ = new WebSocketControlServer();
+        ws_control_server_ = new (std::nothrow) WebSocketControlServer();
+
+        if (ws_control_server_ == nullptr) {
+            ESP_LOGE(TAG, "Cannot allocate WebSocket control server");
+            return;
+        }
 
         if (!ws_control_server_->Start(8080)) {
             ESP_LOGE(TAG, "Failed to start WebSocket control server");
 
             delete ws_control_server_;
             ws_control_server_ = nullptr;
-        } else {
-            ESP_LOGI(
-                TAG,
-                "GPIO configuration page: http://<robot-ip>:8080/gpio"
-            );
+            return;
         }
+
+        ESP_LOGI(
+            TAG,
+            "GPIO configuration page: http://<robot-ip>:8080/gpio"
+        );
     }
 
     void StartNetwork() override {
@@ -168,26 +304,52 @@ public:
 
         ESP_LOGI(TAG, "GPIO configuration loaded");
 
-        InitializeSpi();
-        InitializeLcdDisplay();
         InitializeButtons();
 
-        GetBacklight()->RestoreBrightness();
+        if (InitializeSpi()) {
+            if (InitializeLcdDisplay()) {
+                ESP_LOGI(TAG, "Display ready");
+            } else {
+                ESP_LOGW(TAG, "Display unavailable; Wi-Fi setup remains available");
+            }
+        } else {
+            ESP_LOGW(TAG, "SPI unavailable; Wi-Fi setup remains available");
+        }
+
+        backlight_ready_ = IsOutputPin(gpio_config_.display_backlight);
+
+        if (backlight_ready_ && display_ != nullptr) {
+            GetBacklight()->RestoreBrightness();
+        }
     }
 
     AudioCodec* GetAudioCodec() override {
-        static NoAudioCodecSimplex audio_codec(
-            AUDIO_INPUT_SAMPLE_RATE,
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            gpio_config_.spk_bclk,
-            gpio_config_.spk_lrck,
-            gpio_config_.spk_dout,
-            gpio_config_.mic_sck,
-            gpio_config_.mic_ws,
-            gpio_config_.mic_din
-        );
+        if (!IsAudioConfigValid()) {
+            ESP_LOGE(TAG, "Audio disabled because GPIO configuration is invalid");
+            return nullptr;
+        }
 
-        return &audio_codec;
+        static NoAudioCodecSimplex* audio_codec = nullptr;
+
+        if (audio_codec == nullptr) {
+            audio_codec = new (std::nothrow) NoAudioCodecSimplex(
+                AUDIO_INPUT_SAMPLE_RATE,
+                AUDIO_OUTPUT_SAMPLE_RATE,
+                static_cast<gpio_num_t>(gpio_config_.spk_bclk),
+                static_cast<gpio_num_t>(gpio_config_.spk_lrck),
+                static_cast<gpio_num_t>(gpio_config_.spk_dout),
+                static_cast<gpio_num_t>(gpio_config_.mic_sck),
+                static_cast<gpio_num_t>(gpio_config_.mic_ws),
+                static_cast<gpio_num_t>(gpio_config_.mic_din)
+            );
+
+            if (audio_codec == nullptr) {
+                ESP_LOGE(TAG, "Cannot allocate audio codec");
+                return nullptr;
+            }
+        }
+
+        return audio_codec;
     }
 
     Display* GetDisplay() override {
@@ -195,6 +357,10 @@ public:
     }
 
     Backlight* GetBacklight() override {
+        if (!backlight_ready_) {
+            return nullptr;
+        }
+
         static PwmBacklight backlight(
             gpio_config_.display_backlight,
             DISPLAY_BACKLIGHT_OUTPUT_INVERT

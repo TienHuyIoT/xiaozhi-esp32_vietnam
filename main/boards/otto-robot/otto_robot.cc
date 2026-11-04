@@ -31,7 +31,7 @@ private:
     LcdDisplay* display_;
     PowerManager* power_manager_;
 
-    // Đọc cấu hình GPIO đã lưu trong NVS.
+    // Cấu hình GPIO được đọc từ NVS.
     OttoGpioConfig gpio_config_;
 
     Button boot_button_;
@@ -49,11 +49,9 @@ private:
         buscfg.sclk_io_num = gpio_config_.display_clk;
         buscfg.quadwp_io_num = GPIO_NUM_NC;
         buscfg.quadhd_io_num = GPIO_NUM_NC;
-        buscfg.max_transfer_sz =
-            DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
+        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
 
-        ESP_ERROR_CHECK(
-            spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
+        ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
     void InitializeLcdDisplay() {
@@ -71,8 +69,7 @@ private:
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
 
-        ESP_ERROR_CHECK(
-            esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
+        ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
 
         ESP_LOGD(TAG, "Install LCD driver");
 
@@ -81,15 +78,13 @@ private:
         panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
         panel_config.bits_per_pixel = 16;
 
-        ESP_ERROR_CHECK(
-            esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
+        ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
 
         esp_lcd_panel_reset(panel);
         esp_lcd_panel_init(panel);
         esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
         esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
-        esp_lcd_panel_mirror(
-            panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
 
         display_ = new OttoEmojiDisplay(
             panel_io,
@@ -100,7 +95,8 @@ private:
             DISPLAY_OFFSET_Y,
             DISPLAY_MIRROR_X,
             DISPLAY_MIRROR_Y,
-            DISPLAY_SWAP_XY);
+            DISPLAY_SWAP_XY
+        );
     }
 
     void InitializeButtons() {
@@ -131,8 +127,7 @@ private:
             delete ws_control_server_;
             ws_control_server_ = nullptr;
         } else {
-            ESP_LOGI(TAG,
-                     "WebSocket control server started on port 8080");
+            ESP_LOGI(TAG, "WebSocket control server started on port 8080");
         }
     }
 
@@ -165,11 +160,9 @@ public:
         static NoAudioCodecSimplex audio_codec(
             AUDIO_INPUT_SAMPLE_RATE,
             AUDIO_OUTPUT_SAMPLE_RATE,
-
             gpio_config_.spk_bclk,
             gpio_config_.spk_lrck,
             gpio_config_.spk_dout,
-
             gpio_config_.mic_sck,
             gpio_config_.mic_ws,
             gpio_config_.mic_din

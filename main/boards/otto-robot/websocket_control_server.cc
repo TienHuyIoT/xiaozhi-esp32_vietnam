@@ -31,7 +31,15 @@ static bool ReadJsonInt(cJSON* root, const char* key, int& value) {
         return false;
     }
 
-    value = item->valueint;
+    // Chỉ chấp nhận số nguyên.
+    double number = item->valuedouble;
+
+    if (number < -1 || number > 48 ||
+        number != static_cast<int>(number)) {
+        return false;
+    }
+
+    value = static_cast<int>(number);
     return true;
 }
 
@@ -71,29 +79,39 @@ static cJSON* GpioConfigToJson(const OttoGpioConfig& c) {
 // GPIO CONFIG API: GET /api/gpio
 // ============================================================
 
-static esp_err_t gpio_get_handler(httpd_req_t* req) {
+esp_err_t WebSocketControlServer::gpio_get_handler(httpd_req_t* req) {
     OttoGpioConfig config = OttoGpioConfigManager::Load();
 
     cJSON* root = GpioConfigToJson(config);
 
     if (!root) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "JSON allocation failed");
+        httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "JSON allocation failed"
+        );
         return ESP_FAIL;
     }
 
     char* json = cJSON_PrintUnformatted(root);
-
     cJSON_Delete(root);
 
     if (!json) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "JSON serialization failed");
+        httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "JSON serialization failed"
+        );
         return ESP_FAIL;
     }
 
     httpd_resp_set_type(req, "application/json");
-    esp_err_t ret = httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+
+    esp_err_t ret = httpd_resp_send(
+        req,
+        json,
+        HTTPD_RESP_USE_STRLEN
+    );
 
     free(json);
     return ret;
@@ -103,23 +121,30 @@ static esp_err_t gpio_get_handler(httpd_req_t* req) {
 // GPIO CONFIG API: POST /api/gpio
 // ============================================================
 
-static esp_err_t gpio_post_handler(httpd_req_t* req) {
+esp_err_t WebSocketControlServer::gpio_post_handler(httpd_req_t* req) {
     const size_t MAX_BODY_SIZE = 2048;
 
     if (req->content_len <= 0 ||
-        req->content_len > MAX_BODY_SIZE) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "Invalid request size");
+        static_cast<size_t>(req->content_len) > MAX_BODY_SIZE) {
+
+        httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "Invalid request size"
+        );
         return ESP_FAIL;
     }
 
-    size_t body_len = req->content_len;
+    size_t body_len = static_cast<size_t>(req->content_len);
 
-    char* body = (char*)calloc(1, body_len + 1);
+    char* body = static_cast<char*>(calloc(1, body_len + 1));
 
     if (!body) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "Out of memory");
+        httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Out of memory"
+        );
         return ESP_ERR_NO_MEM;
     }
 
@@ -129,17 +154,21 @@ static esp_err_t gpio_post_handler(httpd_req_t* req) {
         int ret = httpd_req_recv(
             req,
             body + received,
-            body_len - received
+            static_cast<int>(body_len - received)
         );
 
         if (ret <= 0) {
             free(body);
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                                "Failed to receive request");
+
+            httpd_resp_send_err(
+                req,
+                HTTPD_400_BAD_REQUEST,
+                "Failed to receive request"
+            );
             return ESP_FAIL;
         }
 
-        received += ret;
+        received += static_cast<size_t>(ret);
     }
 
     cJSON* root = cJSON_Parse(body);
@@ -147,8 +176,12 @@ static esp_err_t gpio_post_handler(httpd_req_t* req) {
 
     if (!root || !cJSON_IsObject(root)) {
         cJSON_Delete(root);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "Invalid JSON");
+
+        httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "Invalid JSON"
+        );
         return ESP_FAIL;
     }
 
@@ -180,20 +213,29 @@ static esp_err_t gpio_post_handler(httpd_req_t* req) {
     cJSON_Delete(root);
 
     if (!valid) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "Missing or invalid GPIO fields");
+        httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "Missing or invalid GPIO fields"
+        );
         return ESP_FAIL;
     }
 
     if (!OttoGpioConfigManager::Validate(c)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "GPIO validation failed. Check range and duplicates.");
+        httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "GPIO validation failed. Check range and duplicates."
+        );
         return ESP_FAIL;
     }
 
     if (!OttoGpioConfigManager::Save(c)) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "Failed to save GPIO configuration");
+        httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Failed to save GPIO configuration"
+        );
         return ESP_FAIL;
     }
 
@@ -209,7 +251,7 @@ static esp_err_t gpio_post_handler(httpd_req_t* req) {
 // GPIO CONFIG WEB PAGE: GET /gpio
 // ============================================================
 
-static esp_err_t gpio_page_handler(httpd_req_t* req) {
+esp_err_t WebSocketControlServer::gpio_page_handler(httpd_req_t* req) {
     static const char html[] = R"HTML(
 <!DOCTYPE html>
 <html lang="vi">
@@ -217,8 +259,10 @@ static esp_err_t gpio_page_handler(httpd_req_t* req) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Otto Robot GPIO</title>
+
 <style>
 *{box-sizing:border-box}
+
 body{
     margin:0;
     padding:16px;
@@ -226,16 +270,35 @@ body{
     color:#edf2f7;
     font-family:Arial,sans-serif
 }
-.container{max-width:620px;margin:auto}
-h1{font-size:24px;margin-bottom:8px}
-.description{color:#aab6c5;font-size:14px;line-height:1.5}
+
+.container{
+    max-width:620px;
+    margin:auto
+}
+
+h1{
+    font-size:24px;
+    margin-bottom:8px
+}
+
+.description{
+    color:#aab6c5;
+    font-size:14px;
+    line-height:1.5
+}
+
 .group{
     background:#1c293b;
     padding:16px;
     border-radius:12px;
     margin:16px 0
 }
-h2{font-size:17px;margin:0 0 14px}
+
+h2{
+    font-size:17px;
+    margin:0 0 14px
+}
+
 .field{
     display:flex;
     align-items:center;
@@ -243,7 +306,12 @@ h2{font-size:17px;margin:0 0 14px}
     gap:12px;
     margin:12px 0
 }
-.field label{font-size:14px;flex:1}
+
+.field label{
+    font-size:14px;
+    flex:1
+}
+
 .field input{
     width:105px;
     padding:10px;
@@ -253,7 +321,12 @@ h2{font-size:17px;margin:0 0 14px}
     color:white;
     font-size:16px
 }
-.note{font-size:12px;color:#aab6c5}
+
+.note{
+    font-size:12px;
+    color:#aab6c5
+}
+
 button{
     width:100%;
     padding:15px;
@@ -265,7 +338,11 @@ button{
     font-weight:bold;
     margin-top:12px
 }
-button:disabled{opacity:.5}
+
+button:disabled{
+    opacity:.5
+}
+
 #status{
     margin:14px 0;
     padding:12px;
@@ -275,9 +352,13 @@ button:disabled{opacity:.5}
 }
 </style>
 </head>
+
 <body>
+
 <div class="container">
+
 <h1>Otto Robot - GPIO</h1>
+
 <p class="description">
 Cấu hình chân GPIO cho các thiết bị.
 Nhập -1 nếu thiết bị chưa được kết nối.
@@ -337,6 +418,7 @@ trước khi lưu.
 <button id="save" onclick="saveConfig()">Lưu cấu hình GPIO</button>
 
 <div id="status">Đang tải cấu hình...</div>
+
 </div>
 
 <script>
@@ -356,7 +438,10 @@ async function loadConfig(){
 
     try{
         const response = await fetch("/api/gpio");
-        if(!response.ok) throw new Error("HTTP " + response.status);
+
+        if(!response.ok){
+            throw new Error("HTTP " + response.status);
+        }
 
         const data = await response.json();
 
@@ -365,6 +450,7 @@ async function loadConfig(){
         });
 
         statusBox.textContent = "Đã đọc cấu hình thành công.";
+
     }catch(error){
         statusBox.textContent = "Lỗi đọc cấu hình: " + error.message;
     }
@@ -385,6 +471,11 @@ async function saveConfig(){
 
         if(!Number.isInteger(data[key])){
             statusBox.textContent = "GPIO phải là số nguyên: " + key;
+            return;
+        }
+
+        if(data[key] < -1 || data[key] > 48){
+            statusBox.textContent = "GPIO ngoài phạm vi: " + key;
             return;
         }
     }
@@ -412,8 +503,10 @@ async function saveConfig(){
         statusBox.textContent =
             "Đã lưu cấu hình thành công.\n" +
             "Hãy khởi động lại robot để áp dụng.";
+
     }catch(error){
         statusBox.textContent = "Lỗi lưu cấu hình: " + error.message;
+
     }finally{
         document.getElementById("save").disabled = false;
     }
@@ -421,12 +514,18 @@ async function saveConfig(){
 
 loadConfig();
 </script>
+
 </body>
 </html>
 )HTML";
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
-    return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+
+    return httpd_resp_send(
+        req,
+        html,
+        HTTPD_RESP_USE_STRLEN
+    );
 }
 
 // ============================================================
@@ -443,19 +542,23 @@ WebSocketControlServer::~WebSocketControlServer() {
     instance_ = nullptr;
 }
 
-esp_err_t WebSocketControlServer::ws_handler(httpd_req_t *req) {
+// ============================================================
+// WEBSOCKET HANDLER
+// ============================================================
+
+esp_err_t WebSocketControlServer::ws_handler(httpd_req_t* req) {
     if (instance_ == nullptr) {
         return ESP_FAIL;
     }
 
     if (req->method == HTTP_GET) {
-        ESP_LOGI(TAG, "Handshake done, the new connection was opened");
+        ESP_LOGI(TAG, "Handshake done, new connection opened");
         instance_->AddClient(req);
         return ESP_OK;
     }
 
     httpd_ws_frame_t ws_pkt;
-    uint8_t *buf = NULL;
+    uint8_t* buf = nullptr;
 
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
@@ -463,17 +566,27 @@ esp_err_t WebSocketControlServer::ws_handler(httpd_req_t *req) {
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
 
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_ws_recv_frame failed to get frame len with %d", ret);
+        ESP_LOGE(
+            TAG,
+            "httpd_ws_recv_frame failed to get frame length: %d",
+            ret
+        );
         return ret;
     }
 
-    ESP_LOGI(TAG, "frame len is %d", ws_pkt.len);
+    ESP_LOGI(TAG, "Frame length: %d", static_cast<int>(ws_pkt.len));
 
-    if (ws_pkt.len) {
-        buf = (uint8_t*)calloc(1, ws_pkt.len + 1);
+    // Giới hạn kích thước frame để tránh cấp phát bộ nhớ quá lớn.
+    if (ws_pkt.len > 4096) {
+        ESP_LOGE(TAG, "WebSocket frame too large");
+        return ESP_FAIL;
+    }
 
-        if (buf == NULL) {
-            ESP_LOGE(TAG, "Failed to calloc memory for buf");
+    if (ws_pkt.len > 0) {
+        buf = static_cast<uint8_t*>(calloc(1, ws_pkt.len + 1));
+
+        if (buf == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate WebSocket buffer");
             return ESP_ERR_NO_MEM;
         }
 
@@ -482,12 +595,10 @@ esp_err_t WebSocketControlServer::ws_handler(httpd_req_t *req) {
         ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
 
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "httpd_ws_recv_frame failed with %d", ret);
+            ESP_LOGE(TAG, "WebSocket receive failed: %d", ret);
             free(buf);
             return ret;
         }
-
-        ESP_LOGI(TAG, "Got packet with message: %s", ws_pkt.payload);
     }
 
     ESP_LOGI(TAG, "Packet type: %d", ws_pkt.type);
@@ -502,7 +613,12 @@ esp_err_t WebSocketControlServer::ws_handler(httpd_req_t *req) {
     if (ws_pkt.type == HTTPD_WS_TYPE_TEXT) {
         if (ws_pkt.len > 0 && buf != nullptr) {
             buf[ws_pkt.len] = '\0';
-            instance_->HandleMessage(req, (const char*)buf, ws_pkt.len);
+
+            instance_->HandleMessage(
+                req,
+                reinterpret_cast<const char*>(buf),
+                ws_pkt.len
+            );
         }
     } else {
         ESP_LOGW(TAG, "Unsupported frame type: %d", ws_pkt.type);
@@ -517,6 +633,11 @@ esp_err_t WebSocketControlServer::ws_handler(httpd_req_t *req) {
 // ============================================================
 
 bool WebSocketControlServer::Start(int port) {
+    if (server_handle_ != nullptr) {
+        ESP_LOGW(TAG, "Server is already running");
+        return true;
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
     config.server_port = port;
@@ -526,7 +647,7 @@ bool WebSocketControlServer::Start(int port) {
     httpd_uri_t ws_uri = {
         .uri = "/ws",
         .method = HTTP_GET,
-        .handler = ws_handler,
+        .handler = WebSocketControlServer::ws_handler,
         .user_ctx = nullptr,
         .is_websocket = true
     };
@@ -534,26 +655,27 @@ bool WebSocketControlServer::Start(int port) {
     httpd_uri_t gpio_page_uri = {
         .uri = "/gpio",
         .method = HTTP_GET,
-        .handler = gpio_page_handler,
+        .handler = WebSocketControlServer::gpio_page_handler,
         .user_ctx = nullptr
     };
 
     httpd_uri_t gpio_get_uri = {
         .uri = "/api/gpio",
         .method = HTTP_GET,
-        .handler = gpio_get_handler,
+        .handler = WebSocketControlServer::gpio_get_handler,
         .user_ctx = nullptr
     };
 
     httpd_uri_t gpio_post_uri = {
         .uri = "/api/gpio",
         .method = HTTP_POST,
-        .handler = gpio_post_handler,
+        .handler = WebSocketControlServer::gpio_post_handler,
         .user_ctx = nullptr
     };
 
     if (httpd_start(&server_handle_, &config) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start WebSocket server");
+        ESP_LOGE(TAG, "Failed to start HTTP server");
+        server_handle_ = nullptr;
         return false;
     }
 
@@ -563,8 +685,10 @@ bool WebSocketControlServer::Start(int port) {
         httpd_register_uri_handler(server_handle_, &gpio_post_uri) != ESP_OK) {
 
         ESP_LOGE(TAG, "Failed to register HTTP routes");
+
         httpd_stop(server_handle_);
         server_handle_ = nullptr;
+
         return false;
     }
 
@@ -574,9 +698,14 @@ bool WebSocketControlServer::Start(int port) {
     return true;
 }
 
+// ============================================================
+// STOP SERVER
+// ============================================================
+
 void WebSocketControlServer::Stop() {
-    if (server_handle_) {
+    if (server_handle_ != nullptr) {
         httpd_stop(server_handle_);
+
         server_handle_ = nullptr;
         clients_.clear();
 
@@ -584,13 +713,19 @@ void WebSocketControlServer::Stop() {
     }
 }
 
+// ============================================================
+// WEBSOCKET MESSAGE HANDLING
+// ============================================================
+
 void WebSocketControlServer::HandleMessage(
-    httpd_req_t *req,
+    httpd_req_t* req,
     const char* data,
     size_t len
 ) {
+    (void)req;
+
     if (data == nullptr || len == 0) {
-        ESP_LOGE(TAG, "Invalid message: data is null or len is 0");
+        ESP_LOGE(TAG, "Invalid message");
         return;
     }
 
@@ -599,7 +734,7 @@ void WebSocketControlServer::HandleMessage(
         return;
     }
 
-    char* temp_buf = (char*)malloc(len + 1);
+    char* temp_buf = static_cast<char*>(malloc(len + 1));
 
     if (temp_buf == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate memory");
@@ -620,16 +755,20 @@ void WebSocketControlServer::HandleMessage(
     cJSON* payload = nullptr;
     cJSON* type = cJSON_GetObjectItem(root, "type");
 
-    if (type && cJSON_IsString(type) &&
+    if (type &&
+        cJSON_IsString(type) &&
         strcmp(type->valuestring, "mcp") == 0) {
 
         payload = cJSON_GetObjectItem(root, "payload");
 
         if (payload != nullptr) {
             cJSON_DetachItemViaPointer(root, payload);
+
             McpServer::GetInstance().ParseMessage(payload);
+
             cJSON_Delete(payload);
         }
+
     } else {
         payload = cJSON_Duplicate(root, 1);
 
@@ -646,23 +785,36 @@ void WebSocketControlServer::HandleMessage(
     cJSON_Delete(root);
 }
 
-void WebSocketControlServer::AddClient(httpd_req_t *req) {
+// ============================================================
+// CLIENT MANAGEMENT
+// ============================================================
+
+void WebSocketControlServer::AddClient(httpd_req_t* req) {
     int sock_fd = httpd_req_to_sockfd(req);
 
     if (clients_.find(sock_fd) == clients_.end()) {
         clients_[sock_fd] = req;
-        ESP_LOGI(TAG, "Client connected: %d (total: %zu)",
-                 sock_fd, clients_.size());
+
+        ESP_LOGI(
+            TAG,
+            "Client connected: %d (total: %zu)",
+            sock_fd,
+            clients_.size()
+        );
     }
 }
 
-void WebSocketControlServer::RemoveClient(httpd_req_t *req) {
+void WebSocketControlServer::RemoveClient(httpd_req_t* req) {
     int sock_fd = httpd_req_to_sockfd(req);
 
     clients_.erase(sock_fd);
 
-    ESP_LOGI(TAG, "Client disconnected: %d (total: %zu)",
-             sock_fd, clients_.size());
+    ESP_LOGI(
+        TAG,
+        "Client disconnected: %d (total: %zu)",
+        sock_fd,
+        clients_.size()
+    );
 }
 
 size_t WebSocketControlServer::GetClientCount() const {

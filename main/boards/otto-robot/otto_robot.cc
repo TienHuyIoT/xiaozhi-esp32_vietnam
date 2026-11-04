@@ -20,6 +20,7 @@
 #include "websocket_control_server.h"
 
 #include <new>
+#include <cstdlib>
 
 #define TAG "OttoRobot"
 
@@ -324,9 +325,34 @@ public:
     }
 
     AudioCodec* GetAudioCodec() override {
-        if (!IsAudioConfigValid()) {
-            ESP_LOGE(TAG, "Audio disabled because GPIO configuration is invalid");
-            return nullptr;
+        int spk_bclk;
+        int spk_lrck;
+        int spk_dout;
+        int mic_sck;
+        int mic_ws;
+        int mic_din;
+
+        if (IsAudioConfigValid()) {
+            // Use GPIO values saved from the Wi-Fi configuration page.
+            spk_bclk = gpio_config_.spk_bclk;
+            spk_lrck = gpio_config_.spk_lrck;
+            spk_dout = gpio_config_.spk_dout;
+            mic_sck = gpio_config_.mic_sck;
+            mic_ws = gpio_config_.mic_ws;
+            mic_din = gpio_config_.mic_din;
+        } else {
+            // Invalid saved configuration: fall back to board defaults.
+            ESP_LOGW(
+                TAG,
+                "Invalid audio GPIO config; using default GPIO pins"
+            );
+
+            spk_bclk = AUDIO_I2S_SPK_GPIO_BCLK;
+            spk_lrck = AUDIO_I2S_SPK_GPIO_LRCK;
+            spk_dout = AUDIO_I2S_SPK_GPIO_DOUT;
+            mic_sck = AUDIO_I2S_MIC_GPIO_SCK;
+            mic_ws = AUDIO_I2S_MIC_GPIO_WS;
+            mic_din = AUDIO_I2S_MIC_GPIO_DIN;
         }
 
         static NoAudioCodecSimplex* audio_codec = nullptr;
@@ -335,18 +361,18 @@ public:
             audio_codec = new (std::nothrow) NoAudioCodecSimplex(
                 AUDIO_INPUT_SAMPLE_RATE,
                 AUDIO_OUTPUT_SAMPLE_RATE,
-                static_cast<gpio_num_t>(gpio_config_.spk_bclk),
-                static_cast<gpio_num_t>(gpio_config_.spk_lrck),
-                static_cast<gpio_num_t>(gpio_config_.spk_dout),
-                static_cast<gpio_num_t>(gpio_config_.mic_sck),
-                static_cast<gpio_num_t>(gpio_config_.mic_ws),
-                static_cast<gpio_num_t>(gpio_config_.mic_din)
+                static_cast<gpio_num_t>(spk_bclk),
+                static_cast<gpio_num_t>(spk_lrck),
+                static_cast<gpio_num_t>(spk_dout),
+                static_cast<gpio_num_t>(mic_sck),
+                static_cast<gpio_num_t>(mic_ws),
+                static_cast<gpio_num_t>(mic_din)
             );
+        }
 
-            if (audio_codec == nullptr) {
-                ESP_LOGE(TAG, "Cannot allocate audio codec");
-                return nullptr;
-            }
+        if (audio_codec == nullptr) {
+            ESP_LOGE(TAG, "Failed to create audio codec");
+            std::abort();
         }
 
         return audio_codec;

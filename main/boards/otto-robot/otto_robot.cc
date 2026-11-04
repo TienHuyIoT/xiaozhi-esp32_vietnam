@@ -13,13 +13,12 @@
 #include "display/lcd_display.h"
 #include "otto_emoji_display.h"
 #include "otto_gpio_config.h"
+#include "otto_head_controller.h"
 #include "system_reset.h"
 #include "wifi_board.h"
 #include "websocket_control_server.h"
 
 #define TAG "OttoRobot"
-
-extern void InitializeOttoController();
 
 class OttoRobot : public WifiBoard {
 private:
@@ -27,6 +26,9 @@ private:
 
     // GPIO configuration loaded from NVS.
     OttoGpioConfig gpio_config_;
+
+    // Dedicated 2-servo head controller.
+    OttoHeadController head_controller_;
 
     Button boot_button_;
     WebSocketControlServer* ws_control_server_ = nullptr;
@@ -89,12 +91,15 @@ private:
 
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
+
         ESP_ERROR_CHECK(
             esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR)
         );
+
         ESP_ERROR_CHECK(
             esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY)
         );
+
         ESP_ERROR_CHECK(
             esp_lcd_panel_mirror(
                 panel,
@@ -129,11 +134,6 @@ private:
         });
     }
 
-    void InitializeOttoController() {
-        ESP_LOGI(TAG, "Initialize Otto robot MCP controller");
-        ::InitializeOttoController();
-    }
-
     void InitializeWebSocketControlServer() {
         ESP_LOGI(TAG, "Initialize WebSocket control server");
 
@@ -163,6 +163,7 @@ private:
 public:
     OttoRobot()
         : gpio_config_(OttoGpioConfigManager::Load()),
+          head_controller_(gpio_config_),
           boot_button_(BOOT_BUTTON_GPIO) {
 
         ESP_LOGI(TAG, "GPIO configuration loaded");
@@ -170,7 +171,6 @@ public:
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeButtons();
-        InitializeOttoController();
 
         GetBacklight()->RestoreBrightness();
     }

@@ -3,6 +3,7 @@
 
 #include "mcp_server.h"
 
+#include <driver/gpio.h>
 #include <esp_log.h>
 #include <freertos/task.h>
 
@@ -16,10 +17,16 @@ OttoHeadController::OttoHeadController(
 ) {
     mutex_ = xSemaphoreCreateMutex();
 
-    if (config.servo_pan >= 0 &&
+    const bool servo_pins_valid =
+        config.servo_pan >= 0 &&
         config.servo_tilt >= 0 &&
-        mutex_ != nullptr) {
+        GPIO_IS_VALID_GPIO(static_cast<gpio_num_t>(config.servo_pan)) &&
+        GPIO_IS_VALID_GPIO(static_cast<gpio_num_t>(config.servo_tilt)) &&
+        GPIO_IS_VALID_OUTPUT_GPIO(static_cast<gpio_num_t>(config.servo_pan)) &&
+        GPIO_IS_VALID_OUTPUT_GPIO(static_cast<gpio_num_t>(config.servo_tilt)) &&
+        config.servo_pan != config.servo_tilt;
 
+    if (servo_pins_valid && mutex_ != nullptr) {
         pan_servo_.Attach(config.servo_pan);
         tilt_servo_.Attach(config.servo_tilt);
 
@@ -35,7 +42,10 @@ OttoHeadController::OttoHeadController(
             config.servo_tilt
         );
     } else {
-        ESP_LOGI(TAG, "Pan/Tilt disabled");
+        ESP_LOGI(
+            TAG,
+            "Pan/Tilt disabled: pins not configured or invalid"
+        );
     }
 
     RegisterMcpTools();
@@ -58,7 +68,7 @@ bool OttoHeadController::MoveTo(
     int tilt,
     int speed
 ) {
-    if (!initialized_) {
+    if (!initialized_ || mutex_ == nullptr) {
         return false;
     }
 
@@ -85,10 +95,10 @@ bool OttoHeadController::MoveTo(
         tilt_servo_.SetPosition(tilt);
 
         const int pan_diff =
-            abs(pan_servo_.GetPosition() - pan);
+            std::abs(pan_servo_.GetPosition() - pan);
 
         const int tilt_diff =
-            abs(tilt_servo_.GetPosition() - tilt);
+            std::abs(tilt_servo_.GetPosition() - tilt);
 
         if (pan_diff <= 1 && tilt_diff <= 1) {
             reached = true;

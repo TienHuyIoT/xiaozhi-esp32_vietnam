@@ -111,13 +111,14 @@ bool OttoGpioConfigManager::Validate(const OttoGpioConfig& c) {
 
     std::set<int> used;
 
+    // Kiểm tra GPIO hợp lệ và không trùng.
     for (int pin : pins) {
         if (pin == -1) {
             continue;
         }
 
-        if (pin < 0 || pin > 48) {
-            ESP_LOGE(TAG, "GPIO outside allowed range: %d", pin);
+        if (!GPIO_IS_VALID_GPIO(static_cast<gpio_num_t>(pin))) {
+            ESP_LOGE(TAG, "Invalid GPIO: %d", pin);
             return false;
         }
 
@@ -127,7 +128,7 @@ bool OttoGpioConfigManager::Validate(const OttoGpioConfig& c) {
         }
     }
 
-    // Required pins
+    // Các chân bắt buộc.
     const int required_pins[] = {
         c.mic_ws,
         c.mic_sck,
@@ -150,13 +151,43 @@ bool OttoGpioConfigManager::Validate(const OttoGpioConfig& c) {
         }
     }
 
-    // LCD1602 requires both SDA and SCL
+    // Những chân cần khả năng OUTPUT.
+    const int output_pins[] = {
+        c.mic_ws,
+        c.mic_sck,
+        c.spk_dout,
+        c.spk_bclk,
+        c.spk_lrck,
+        c.display_mosi,
+        c.display_clk,
+        c.display_dc,
+        c.display_rst,
+        c.display_cs,
+        c.display_backlight,
+        c.servo_pan,
+        c.servo_tilt,
+        c.lcd_sda,
+        c.lcd_scl
+    };
+
+    for (int pin : output_pins) {
+        if (pin == -1) {
+            continue;
+        }
+
+        if (!GPIO_IS_VALID_OUTPUT_GPIO(static_cast<gpio_num_t>(pin))) {
+            ESP_LOGE(TAG, "GPIO cannot be used as output: %d", pin);
+            return false;
+        }
+    }
+
+    // LCD1602 cần đủ SDA và SCL.
     if ((c.lcd_sda == -1) != (c.lcd_scl == -1)) {
         ESP_LOGE(TAG, "LCD1602 requires both SDA and SCL");
         return false;
     }
 
-    // PAN and TILT must be configured together
+    // Hai servo cần cấu hình cùng lúc.
     if ((c.servo_pan == -1) != (c.servo_tilt == -1)) {
         ESP_LOGE(TAG, "Servo requires both PAN and TILT");
         return false;
@@ -221,7 +252,7 @@ bool OttoGpioConfigManager::Save(const OttoGpioConfig& c) {
         {"lcd_scl", c.lcd_scl}
     };
 
-    // Write all GPIO values
+    // Ghi toàn bộ GPIO vào NVS.
     for (const auto& entry : entries) {
         err = nvs_set_i32(
             handle,
@@ -242,9 +273,8 @@ bool OttoGpioConfigManager::Save(const OttoGpioConfig& c) {
         }
     }
 
-    // Commit changes
+    // Commit dữ liệu.
     err = nvs_commit(handle);
-
     nvs_close(handle);
 
     if (err != ESP_OK) {
@@ -257,6 +287,5 @@ bool OttoGpioConfigManager::Save(const OttoGpioConfig& c) {
     }
 
     ESP_LOGI(TAG, "GPIO configuration saved successfully");
-
     return true;
 }

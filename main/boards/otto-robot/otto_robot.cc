@@ -27,13 +27,8 @@
 class OttoRobot : public WifiBoard {
 private:
     LcdDisplay* display_ = nullptr;
-
-    // GPIO configuration loaded from NVS.
     OttoGpioConfig gpio_config_;
-
-    // Dedicated 2-servo head controller.
     OttoHeadController head_controller_;
-
     Button boot_button_;
     WebSocketControlServer* ws_control_server_ = nullptr;
 
@@ -124,11 +119,8 @@ private:
         );
 
         if (err != ESP_OK) {
-            ESP_LOGE(
-                TAG,
-                "SPI initialization failed: %s",
-                esp_err_to_name(err)
-            );
+            ESP_LOGE(TAG, "SPI initialization failed: %s",
+                     esp_err_to_name(err));
             return false;
         }
 
@@ -163,11 +155,8 @@ private:
         );
 
         if (err != ESP_OK) {
-            ESP_LOGE(
-                TAG,
-                "LCD panel IO initialization failed: %s",
-                esp_err_to_name(err)
-            );
+            ESP_LOGE(TAG, "LCD panel IO initialization failed: %s",
+                     esp_err_to_name(err));
             return false;
         }
 
@@ -184,11 +173,8 @@ private:
         );
 
         if (err != ESP_OK) {
-            ESP_LOGE(
-                TAG,
-                "ST7789 driver initialization failed: %s",
-                esp_err_to_name(err)
-            );
+            ESP_LOGE(TAG, "ST7789 driver initialization failed: %s",
+                     esp_err_to_name(err));
             esp_lcd_panel_io_del(panel_io);
             return false;
         }
@@ -198,10 +184,7 @@ private:
             err = esp_lcd_panel_init(panel);
         }
         if (err == ESP_OK) {
-            err = esp_lcd_panel_invert_color(
-                panel,
-                DISPLAY_INVERT_COLOR
-            );
+            err = esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
         }
         if (err == ESP_OK) {
             err = esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
@@ -215,11 +198,8 @@ private:
         }
 
         if (err != ESP_OK) {
-            ESP_LOGE(
-                TAG,
-                "ST7789 panel setup failed: %s",
-                esp_err_to_name(err)
-            );
+            ESP_LOGE(TAG, "ST7789 panel setup failed: %s",
+                     esp_err_to_name(err));
             esp_lcd_panel_del(panel);
             esp_lcd_panel_io_del(panel_io);
             return false;
@@ -277,23 +257,17 @@ private:
 
         if (!ws_control_server_->Start(8080)) {
             ESP_LOGE(TAG, "Failed to start WebSocket control server");
-
             delete ws_control_server_;
             ws_control_server_ = nullptr;
             return;
         }
 
-        ESP_LOGI(
-            TAG,
-            "GPIO configuration page: http://<robot-ip>:8080/gpio"
-        );
+        ESP_LOGI(TAG, "GPIO configuration page: http://<robot-ip>:8080/gpio");
     }
 
     void StartNetwork() override {
         WifiBoard::StartNetwork();
-
         vTaskDelay(pdMS_TO_TICKS(1000));
-
         InitializeWebSocketControlServer();
     }
 
@@ -333,7 +307,6 @@ public:
         int mic_din;
 
         if (IsAudioConfigValid()) {
-            // Use GPIO values saved from the Wi-Fi configuration page.
             spk_bclk = gpio_config_.spk_bclk;
             spk_lrck = gpio_config_.spk_lrck;
             spk_dout = gpio_config_.spk_dout;
@@ -341,11 +314,7 @@ public:
             mic_ws = gpio_config_.mic_ws;
             mic_din = gpio_config_.mic_din;
         } else {
-            // Invalid saved configuration: fall back to board defaults.
-            ESP_LOGW(
-                TAG,
-                "Invalid audio GPIO config; using default GPIO pins"
-            );
+            ESP_LOGW(TAG, "Invalid audio GPIO config; using default GPIO pins");
 
             spk_bclk = AUDIO_I2S_SPK_GPIO_BCLK;
             spk_lrck = AUDIO_I2S_SPK_GPIO_LRCK;
@@ -388,7 +357,7 @@ public:
         }
 
         static PwmBacklight backlight(
-            gpio_config_.display_backlight,
+            static_cast<gpio_num_t>(gpio_config_.display_backlight),
             DISPLAY_BACKLIGHT_OUTPUT_INVERT
         );
 

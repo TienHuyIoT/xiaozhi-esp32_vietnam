@@ -30,6 +30,9 @@ OttoGpioConfig OttoGpioConfigManager::Load() {
         -1, -1, -1, -1, -1, -1
     };
 
+    // Lưu cấu hình mặc định để khôi phục nếu NVS không hợp lệ.
+    const OttoGpioConfig defaults = c;
+
     Settings s(NVS_NAMESPACE);
 
     c.mic_ws = s.GetInt("mic_ws", c.mic_ws);
@@ -54,6 +57,12 @@ OttoGpioConfig OttoGpioConfigManager::Load() {
     c.lcd_sda = s.GetInt("lcd_sda", -1);
     c.lcd_scl = s.GetInt("lcd_scl", -1);
 
+    // Kiểm tra cấu hình đã lưu trước khi sử dụng.
+    if (!Validate(c)) {
+        ESP_LOGE(TAG, "Cấu hình GPIO trong NVS không hợp lệ, dùng mặc định");
+        return defaults;
+    }
+
     return c;
 }
 
@@ -74,25 +83,26 @@ bool OttoGpioConfigManager::Validate(const OttoGpioConfig& c) {
             continue;
         }
 
-        // ESP32-S3: GPIO từ 0 đến 48
+        // ESP32-S3: GPIO từ 0 đến 48.
         if (pin < 0 || pin > 48) {
             ESP_LOGE(TAG, "GPIO ngoài phạm vi: %d", pin);
             return false;
         }
 
+        // Không cho phép hai thiết bị sử dụng cùng một GPIO.
         if (!used.insert(pin).second) {
             ESP_LOGE(TAG, "GPIO bị trùng: %d", pin);
             return false;
         }
     }
 
-    // Hai chân LCD1602 phải được cấu hình cùng nhau
+    // LCD1602 phải cấu hình cả SDA và SCL.
     if ((c.lcd_sda == -1) != (c.lcd_scl == -1)) {
         ESP_LOGE(TAG, "LCD1602 cần cấu hình cả SDA và SCL");
         return false;
     }
 
-    // Hai chân servo phải được cấu hình cùng nhau
+    // Hai servo phải cấu hình cả PAN và TILT.
     if ((c.servo_pan == -1) != (c.servo_tilt == -1)) {
         ESP_LOGE(TAG, "Servo cần cấu hình cả PAN và TILT");
         return false;
@@ -103,6 +113,7 @@ bool OttoGpioConfigManager::Validate(const OttoGpioConfig& c) {
 
 bool OttoGpioConfigManager::Save(const OttoGpioConfig& c) {
     if (!Validate(c)) {
+        ESP_LOGE(TAG, "Không thể lưu: cấu hình GPIO không hợp lệ");
         return false;
     }
 

@@ -5,6 +5,7 @@
 
 #include <esp_log.h>
 #include <driver/gpio.h>
+#include <nvs.h>
 #include <set>
 
 static const char* TAG = "OttoGPIO";
@@ -43,7 +44,6 @@ OttoGpioConfig OttoGpioConfigManager::Load() {
         -1  // lcd_scl
     };
 
-    // Lưu bản mặc định để phục hồi nếu NVS không hợp lệ.
     const OttoGpioConfig defaults = c;
 
     Settings s(NVS_NAMESPACE);
@@ -74,18 +74,12 @@ OttoGpioConfig OttoGpioConfigManager::Load() {
     c.lcd_sda = s.GetInt("lcd_sda", -1);
     c.lcd_scl = s.GetInt("lcd_scl", -1);
 
-    // Kiểm tra cấu hình sau khi đọc NVS.
     if (!Validate(c)) {
-        ESP_LOGE(
-            TAG,
-            "NVS GPIO configuration invalid. Using default configuration."
-        );
-
+        ESP_LOGE(TAG, "NVS GPIO configuration invalid. Using defaults.");
         return defaults;
     }
 
     ESP_LOGI(TAG, "GPIO configuration loaded successfully");
-
     return c;
 }
 
@@ -98,24 +92,19 @@ bool OttoGpioConfigManager::Validate(const OttoGpioConfig& c) {
         c.mic_ws,
         c.mic_sck,
         c.mic_din,
-
         c.spk_dout,
         c.spk_bclk,
         c.spk_lrck,
-
         c.display_mosi,
         c.display_clk,
         c.display_dc,
         c.display_rst,
         c.display_cs,
         c.display_backlight,
-
         c.servo_pan,
         c.servo_tilt,
-
         c.pir,
         c.dht11,
-
         c.lcd_sda,
         c.lcd_scl
     };
@@ -138,16 +127,14 @@ bool OttoGpioConfigManager::Validate(const OttoGpioConfig& c) {
         }
     }
 
-    // Các chân của thiết bị đang sử dụng không được để trống.
+    // Required pins
     const int required_pins[] = {
         c.mic_ws,
         c.mic_sck,
         c.mic_din,
-
         c.spk_dout,
         c.spk_bclk,
         c.spk_lrck,
-
         c.display_mosi,
         c.display_clk,
         c.display_dc,
@@ -163,13 +150,13 @@ bool OttoGpioConfigManager::Validate(const OttoGpioConfig& c) {
         }
     }
 
-    // LCD1602 cần đủ hai chân I2C.
+    // LCD1602 requires both SDA and SCL
     if ((c.lcd_sda == -1) != (c.lcd_scl == -1)) {
         ESP_LOGE(TAG, "LCD1602 requires both SDA and SCL");
         return false;
     }
 
-    // Hai servo cần được cấu hình cùng lúc.
+    // PAN and TILT must be configured together
     if ((c.servo_pan == -1) != (c.servo_tilt == -1)) {
         ESP_LOGE(TAG, "Servo requires both PAN and TILT");
         return false;
@@ -188,33 +175,86 @@ bool OttoGpioConfigManager::Save(const OttoGpioConfig& c) {
         return false;
     }
 
-    Settings s(NVS_NAMESPACE, true);
+    nvs_handle_t handle = 0;
 
-    // Microphone
-    s.SetInt("mic_ws", c.mic_ws);
-    s.SetInt("mic_sck", c.mic_sck);
-    s.SetInt("mic_din", c.mic_din);
+    esp_err_t err = nvs_open(
+        NVS_NAMESPACE,
+        NVS_READWRITE,
+        &handle
+    );
 
-    // Speaker
-    s.SetInt("spk_out", c.spk_dout);
-    s.SetInt("spk_bclk", c.spk_bclk);
-    s.SetInt("spk_lrck", c.spk_lrck);
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Cannot open NVS namespace: %s",
+            esp_err_to_name(err)
+        );
+        return false;
+    }
 
-    // Display
-    s.SetInt("disp_mosi", c.display_mosi);
-    s.SetInt("disp_clk", c.display_clk);
-    s.SetInt("disp_dc", c.display_dc);
-    s.SetInt("disp_rst", c.display_rst);
-    s.SetInt("disp_cs", c.display_cs);
-    s.SetInt("disp_bl", c.display_backlight);
+    struct GpioEntry {
+        const char* key;
+        int value;
+    };
 
-    // Optional hardware
-    s.SetInt("servo_pan", c.servo_pan);
-    s.SetInt("servo_tilt", c.servo_tilt);
-    s.SetInt("pir", c.pir);
-    s.SetInt("dht11", c.dht11);
-    s.SetInt("lcd_sda", c.lcd_sda);
-    s.SetInt("lcd_scl", c.lcd_scl);
+    const GpioEntry entries[] = {
+        {"mic_ws", c.mic_ws},
+        {"mic_sck", c.mic_sck},
+        {"mic_din", c.mic_din},
+
+        {"spk_out", c.spk_dout},
+        {"spk_bclk", c.spk_bclk},
+        {"spk_lrck", c.spk_lrck},
+
+        {"disp_mosi", c.display_mosi},
+        {"disp_clk", c.display_clk},
+        {"disp_dc", c.display_dc},
+        {"disp_rst", c.display_rst},
+        {"disp_cs", c.display_cs},
+        {"disp_bl", c.display_backlight},
+
+        {"servo_pan", c.servo_pan},
+        {"servo_tilt", c.servo_tilt},
+        {"pir", c.pir},
+        {"dht11", c.dht11},
+        {"lcd_sda", c.lcd_sda},
+        {"lcd_scl", c.lcd_scl}
+    };
+
+    // Write all GPIO values
+    for (const auto& entry : entries) {
+        err = nvs_set_i32(
+            handle,
+            entry.key,
+            static_cast<int32_t>(entry.value)
+        );
+
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "Failed to write %s: %s",
+                entry.key,
+                esp_err_to_name(err)
+            );
+
+            nvs_close(handle);
+            return false;
+        }
+    }
+
+    // Commit changes
+    err = nvs_commit(handle);
+
+    nvs_close(handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "NVS commit failed: %s",
+            esp_err_to_name(err)
+        );
+        return false;
+    }
 
     ESP_LOGI(TAG, "GPIO configuration saved successfully");
 

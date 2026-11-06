@@ -1,4 +1,4 @@
-Name: Build Boards
+name: Build Boards
 
 on:
   workflow_dispatch:

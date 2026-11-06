@@ -1,13 +1,19 @@
+
 name: Build Boards
 
 on:
   push:
     branches:
       - main
-      - ci/* # for ci test
+      - develop_vn
+      - feature/otto-fullscreen-gpio-config
+      - ci/*
   pull_request:
     branches:
       - main
+      - develop_vn
+      - feature/otto-fullscreen-gpio-config
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,31 +36,34 @@ jobs:
       - id: list
         name: Get all variant list
         run: |
-          echo "all_variants=$(python scripts/release.py --list-boards --json)" >> $GITHUB_OUTPUT
+          echo "all_variants=$(python scripts/release.py --list-boards --json)" >> "$GITHUB_OUTPUT"
 
       - id: select
-        name: Select variants based on changes
+        name: Select variants
         env:
           ALL_VARIANTS: ${{ steps.list.outputs.all_variants }}
         run: |
           EVENT_NAME="${{ github.event_name }}"
+          BRANCH="${{ github.ref_name }}"
 
-          # push 到 main 分支，编译全部变体
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            echo "variants=$ALL_VARIANTS" >> $GITHUB_OUTPUT
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$BRANCH" == "feature/otto-fullscreen-gpio-config" ]]; then
+            FILTERED=$(echo "$ALL_VARIANTS" | jq -c 'map(select(.board == "otto-robot"))')
+            echo "variants=$FILTERED" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # pull_request 场景
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            echo "variants=$ALL_VARIANTS" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          echo "Base: $BASE_SHA, Head: $HEAD_SHA"
-
-          CHANGED=$(git diff --name-only $BASE_SHA $HEAD_SHA || true)
-          echo -e "Changed files:\n$CHANGED"
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)
 
           NEED_ALL=0
           declare -A AFFECTED
+
           while IFS= read -r file; do
             if [[ "$file" == main/* && "$file" != main/boards/* ]]; then
               NEED_ALL=1
@@ -71,15 +80,13 @@ jobs:
           done <<< "$CHANGED"
 
           if [[ "$NEED_ALL" -eq 1 ]]; then
-            echo "variants=$ALL_VARIANTS" >> $GITHUB_OUTPUT
+            echo "variants=$ALL_VARIANTS" >> "$GITHUB_OUTPUT"
+          elif [[ ${#AFFECTED[@]} -eq 0 ]]; then
+            echo "variants=[]" >> "$GITHUB_OUTPUT"
           else
-            if [[ ${#AFFECTED[@]} -eq 0 ]]; then
-              echo "variants=[]" >> $GITHUB_OUTPUT
-            else
-              BOARDS_JSON=$(printf '%s\n' "${!AFFECTED[@]}" | sort -u | jq -R -s -c 'split("\n")[:-1]')
-              FILTERED=$(echo "$ALL_VARIANTS" | jq -c --argjson boards "$BOARDS_JSON" 'map(select(.board as $b | $boards | index($b)))')
-              echo "variants=$FILTERED" >> $GITHUB_OUTPUT
-            fi
+            BOARDS_JSON=$(printf '%s\n' "${!AFFECTED[@]}" | sort -u | jq -R -s -c 'split("\n")[:-1]')
+            FILTERED=$(echo "$ALL_VARIANTS" | jq -c --argjson boards "$BOARDS_JSON" 'map(select(.board as $b | $boards | index($b)))')
+            echo "variants=$FILTERED" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -87,7 +94,7 @@ jobs:
     needs: prepare
     if: ${{ needs.prepare.outputs.variants != '[]' }}
     strategy:
-      fail-fast: false  # 单个变体失败不影响其它变体
+      fail-fast: false
       matrix:
         include: ${{ fromJson(needs.prepare.outputs.variants) }}
     runs-on: ubuntu-latest
@@ -100,7 +107,7 @@ jobs:
       - name: Build current variant
         shell: bash
         run: |
-          source $IDF_PATH/export.sh
+          source "$IDF_PATH/export.sh"
           python scripts/release.py ${{ matrix.board }} --name ${{ matrix.name }}
 
       - name: Upload artifacts

@@ -397,9 +397,10 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     CheckI2CDevice(0x38, "FT6236G Touch");
     
     // Touch configuration - enable interrupt, use polling mode
+    // https://github.com/espressif/esp-bsp/issues/234
     const esp_lcd_touch_config_t tp_cfg = {
-      .x_max = DISPLAY_WIDTH,
-      .y_max = DISPLAY_HEIGHT,
+      .x_max = 240,
+      .y_max = 320,
       // TOUCH_RST_PIN already handled above, should not handle reset here by driver 
       // due to timing delay 10ms is very short and causes issues inside driver
       .rst_gpio_num = GPIO_NUM_NC, // TOUCH_RST_PIN
@@ -409,9 +410,9 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
         .interrupt = 0,
       },
       .flags = {
-        .swap_xy = DISPLAY_SWAP_XY,
-        .mirror_x = DISPLAY_MIRROR_X,
-        .mirror_y = !DISPLAY_MIRROR_Y,
+        .swap_xy = 1,
+        .mirror_x = 1,
+        .mirror_y = 0,
       }
     };
     
@@ -442,6 +443,13 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     }
     ESP_LOGI(TAG, "✅ Touch panel FT6236G initialized successfully with custom driver!");
 
+    /**
+     * @brief Configure touch controller settings based on user configuration
+     * In esp_lcd_touch_new_i2c_ft6x36 already copy the user config to the driver, so we do not need to set it again, 
+     * but we can still apply the flags for swap/mirror if needed.
+     * The driver will handle the swap/mirror settings internally, but we can also call the esp_lcd_touch_set_swap_xy, 
+     * esp_lcd_touch_set_mirror_x, and esp_lcd_touch_set_mirror_y functions to ensure the settings are applied correctly.
+    */
     // esp_lcd_touch_set_swap_xy(tp_, tp_cfg.flags.swap_xy);
     // esp_lcd_touch_set_mirror_x(tp_, tp_cfg.flags.mirror_x);
     // esp_lcd_touch_set_mirror_y(tp_, tp_cfg.flags.mirror_y);

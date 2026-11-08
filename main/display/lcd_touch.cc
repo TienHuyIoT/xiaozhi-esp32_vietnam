@@ -4,7 +4,7 @@
 
 static const char* TAG = "LcdTouch";
 
-#define TOUCH_POLLING_DELAY_MS 10
+#define TOUCH_POLLING_DELAY_MS 5
 
 // ============================================================================
 // LcdTouch Base Class Implementation
@@ -124,7 +124,7 @@ void LcdTouch::touch_driver_read(lv_indev_t* drv, lv_indev_data_t* data) {
     }
 
     // Write to shared snapshot so LVGL read_cb (ReadFromBuffer) has fresh data
-    if (point_mutex_ && xSemaphoreTake(point_mutex_, 0) == pdTRUE) {
+    if (point_mutex_ && xSemaphoreTake(point_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
         latest_point_.state = data->state;
         if (data->state == LV_INDEV_STATE_PRESSED) {
             latest_point_.x = data->point.x;
@@ -139,7 +139,7 @@ void LcdTouch::touch_driver_read(lv_indev_t* drv, lv_indev_data_t* data) {
 }
 
 void LcdTouch::ReadFromBuffer(lv_indev_data_t* data) {
-    if (point_mutex_ && xSemaphoreTake(point_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
+    if (point_mutex_ && xSemaphoreTake(point_mutex_, 0) == pdTRUE) {
         data->point.x = latest_point_.x;
         data->point.y = latest_point_.y;
         data->state   = latest_point_.state;
